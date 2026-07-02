@@ -1,8 +1,8 @@
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
-const empty = { transaction_type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '' };
+const empty = { type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '' };
 const fields = [
-  { name: 'transaction_type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
+  { name: 'type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
   { name: 'amount', label: 'Сумма', type: 'number' },
   { name: 'source', label: 'Источник' },
   { name: 'payment_method', label: 'Способ оплаты' },
@@ -16,8 +16,14 @@ export default function FinancePage() {
   const crud = useCrudResource('finance/', { type: '', source: '', payment_method: '', date_from: '', date_to: '' });
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
-  const income = crud.items.filter((item) => item.transaction_type === 'income').reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const expense = crud.items.filter((item) => item.transaction_type === 'expense').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const transactionType = (item) => item.type ?? item.transaction_type;
+  const income = crud.items.filter((item) => transactionType(item) === 'income').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const expense = crud.items.filter((item) => transactionType(item) === 'expense').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const editTransaction = (row) => {
+    const { transaction_type, ...editableRow } = row;
+    crud.setEditing({ ...editableRow, type: row.type ?? transaction_type });
+    crud.setModalOpen(true);
+  };
 
   return (
     <>
@@ -33,12 +39,12 @@ export default function FinancePage() {
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
       </Filters>
       <Table data={crud.items} columns={[
-        { key: 'transaction_type', header: 'Тип', render: (row) => <Badge value={row.transaction_type} /> },
+        { key: 'type', header: 'Тип', render: (row) => <Badge value={transactionType(row)} /> },
         { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
         { key: 'source', header: 'Источник' },
         { key: 'payment_method', header: 'Оплата' },
         { key: 'paid_at', header: 'Дата', render: (row) => (row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—') },
-        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>

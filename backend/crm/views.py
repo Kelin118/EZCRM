@@ -7,10 +7,12 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .excel_import import import_excel
 from .models import (
     ChatMessage,
     Client,
@@ -141,7 +143,12 @@ class VisitViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(visited_at__date=date)
         return queryset.order_by('-visited_at', '-created_at')
 
-    def _apply_lesson_deduction(self, visit):
+    def _restore_lesson(self, subscription):
+        if subscription and subscription.remaining_visits < subscription.total_visits:
+            subscription.remaining_visits += 1
+            subscription.save(update_fields=('remaining_visits', 'updated_at'))
+
+    def _deduct_lesson(self, visit):
         if (
             visit.status == Visit.Status.ATTENDED
             and visit.subscription_id
@@ -156,12 +163,23 @@ class VisitViewSet(BaseAuthenticatedViewSet):
     def perform_create(self, serializer):
         with transaction.atomic():
             visit = serializer.save()
-            self._apply_lesson_deduction(visit)
+            self._deduct_lesson(visit)
 
     def perform_update(self, serializer):
         with transaction.atomic():
+            previous = Visit.objects.select_related('subscription').get(pk=serializer.instance.pk)
             visit = serializer.save()
-            self._apply_lesson_deduction(visit)
+            subscription_changed = previous.subscription_id != visit.subscription_id
+            should_restore = previous.lesson_deducted and (
+                visit.status != Visit.Status.ATTENDED or subscription_changed
+            )
+
+            if should_restore:
+                self._restore_lesson(previous.subscription)
+                visit.lesson_deducted = False
+                visit.save(update_fields=('lesson_deducted', 'updated_at'))
+
+            self._deduct_lesson(visit)
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
@@ -319,6 +337,24 @@ class ChatMessageViewSet(BaseAuthenticatedViewSet):
 class StudioSettingsViewSet(BaseAuthenticatedViewSet):
     queryset = StudioSettings.objects.all()
     serializer_class = StudioSettingsSerializer
+
+
+class ExcelImportView(APIView):
+    permission_classes = (IsAuthenticated,)
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response({'detail': 'Файл .xlsx обязателен.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not uploaded_file.name.lower().endswith('.xlsx'):
+            return Response({'detail': 'Поддерживаются только файлы .xlsx.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = import_excel(uploaded_file, request.user)
+        except Exception as exc:
+            return Response({'detail': f'Не удалось прочитать Excel-файл: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class DashboardStatsView(APIView):

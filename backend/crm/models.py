@@ -99,6 +99,11 @@ class Visit(TimeStampedModel):
 
 class Trial(TimeStampedModel):
     class Status(models.TextChoices):
+        LEAD = 'lead', 'Lead'
+        BOOKED = 'booked', 'Booked'
+        ATTENDED = 'attended', 'Attended'
+        BOUGHT = 'bought', 'Bought'
+        LOST = 'lost', 'Lost'
         NEW = 'new', 'New'
         SCHEDULED = 'scheduled', 'Scheduled'
         COMPLETED = 'completed', 'Completed'

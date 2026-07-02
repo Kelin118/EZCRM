@@ -5,6 +5,7 @@ from .views import (
     ChatMessageViewSet,
     ClientViewSet,
     DashboardStatsView,
+    ExcelImportView,
     FinanceTransactionViewSet,
     MasterClassViewSet,
     ReportsSummaryView,
@@ -29,6 +30,7 @@ router.register('settings', StudioSettingsViewSet, basename='settings')
 urlpatterns = [
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),
+    path('import/excel/', ExcelImportView.as_view(), name='excel-import'),
 ]
 
 urlpatterns += router.urls

@@ -66,7 +66,12 @@ class TrialSerializer(serializers.ModelSerializer):
 
 class MasterClassSerializer(serializers.ModelSerializer):
     client_names = serializers.SerializerMethodField()
-    client = serializers.PrimaryKeyRelatedField(queryset=Client.objects.all(), write_only=True, required=False)
+    client = serializers.PrimaryKeyRelatedField(
+        queryset=Client.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = MasterClass

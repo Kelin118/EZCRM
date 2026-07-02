@@ -56,3 +56,33 @@
 [2m17:11:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/ChatPage.jsx, /src/pages/LoginPage.jsx, /src/pages/SettingsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/pageUtils.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/DashboardPage.jsx[22m
 [2m17:11:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/pageUtils.jsx[22m Could not Fast Refresh ("dateOnly" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
 [2m17:11:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/FinancePage.jsx, /src/pages/ChatPage.jsx, /src/pages/TrialsPage.jsx, /src/pages/SettingsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/ClientsPage.jsx, /src/pages/SubscriptionsPage.jsx, /src/pages/MasterClassesPage.jsx, /src/pages/VisitsPage.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/DashboardPage.jsx[22m
+[2m17:31:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css[22m
+[2m17:31:37[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/Button.jsx[22m
+[2m17:31:38[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/Input.jsx[22m
+[2m17:31:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/Badge.jsx[22m
+[2m17:31:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/ui/Badge.jsx[22m
+[2m17:31:41[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/Table.jsx[22m
+[2m17:31:42[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/ui/Table.jsx[22m
+[2m17:31:44[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/Modal.jsx[22m
+[2m17:31:45[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ui/StatCard.jsx[22m
+[2m17:32:25[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css[22m
+[2m17:32:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/layout/AppLayout.jsx, /src/index.css[22m
+[2m17:32:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/layout/AppLayout.jsx[22m
+[2m17:32:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Sidebar.jsx[22m
+[2m17:32:30[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/layout/Sidebar.jsx[22m
+[2m17:32:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Topbar.jsx[22m
+[2m17:32:32[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/layout/Topbar.jsx[22m
+[2m17:33:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/pageUtils.jsx[22m
+[2m17:33:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/pageUtils.jsx[22m Could not Fast Refresh ("dateOnly" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m17:33:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/FinancePage.jsx, /src/pages/ChatPage.jsx, /src/pages/TrialsPage.jsx, /src/pages/SettingsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/ClientsPage.jsx, /src/pages/SubscriptionsPage.jsx, /src/pages/MasterClassesPage.jsx, /src/pages/VisitsPage.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/DashboardPage.jsx[22m
+[2m17:33:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/VisitsPage.jsx[22m Could not Fast Refresh ("visitStatusOptions" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m17:33:10[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/pages/ClientDetailPage.jsx[22m
+[2m17:33:43[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/DashboardPage.jsx, /src/index.css[22m
+[2m17:33:43[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/pages/DashboardPage.jsx[22m
+[2m17:34:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientDetailPage.jsx, /src/index.css[22m
+[2m17:34:37[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/pages/ClientDetailPage.jsx[22m
+[2m17:35:22[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/SettingsPage.jsx, /src/index.css[22m
+[2m17:35:23[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/pages/SettingsPage.jsx[22m
+[2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Sidebar.jsx[22m
+[2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/layout/Sidebar.jsx[22m Could not Fast Refresh ("navItems" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/layout/AppLayout.jsx, /src/components/layout/Topbar.jsx[22m

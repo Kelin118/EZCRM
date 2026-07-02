@@ -72,10 +72,10 @@ export function normalizePayload(payload) {
 
 export function PageHeader({ title, actionLabel, onAction, children }) {
   return (
-    <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+    <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
       <div>
-        <h2 className="text-2xl font-semibold text-slate-900">{title}</h2>
-        {children && <div className="mt-2 flex flex-wrap gap-2">{children}</div>}
+        <h2 className="text-2xl font-bold text-slate-900">{title}</h2>
+        {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
       </div>
       {onAction && (
         <Button onClick={onAction}>
@@ -88,17 +88,17 @@ export function PageHeader({ title, actionLabel, onAction, children }) {
 }
 
 export function Filters({ children }) {
-  return <div className="mb-4 grid gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-sm md:grid-cols-4">{children}</div>;
+  return <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-4">{children}</div>;
 }
 
 export function SelectField({ label, value, onChange, options }) {
   return (
-    <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+    <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
       {label}
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -112,11 +112,11 @@ export function SelectField({ label, value, onChange, options }) {
 
 export function Actions({ onEdit, onDelete }) {
   return (
-    <div className="flex gap-2">
-      <Button variant="secondary" className="h-9 w-9 p-0" onClick={onEdit} aria-label="Редактировать">
+    <div className="flex justify-end gap-2">
+      <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать">
         <Edit size={16} />
       </Button>
-      <Button variant="danger" className="h-9 w-9 p-0" onClick={onDelete} aria-label="Удалить">
+      <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить">
         <Trash2 size={16} />
       </Button>
     </div>
@@ -155,10 +155,10 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
           }
           if (field.type === 'textarea') {
             return (
-              <label key={field.name} className="grid gap-1.5 text-sm font-medium text-slate-700 md:col-span-2">
+              <label key={field.name} className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
                 {field.label}
                 <textarea
-                  className="min-h-24 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+                  className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
                   value={form[field.name] ?? ''}
                   onChange={(event) => setForm({ ...form, [field.name]: event.target.value })}
                 />

@@ -8,7 +8,8 @@ export default {
         app: '#F6F7FB',
       },
       boxShadow: {
-        soft: '0 10px 30px rgba(15, 23, 42, 0.08)',
+        soft: '0 18px 45px rgba(15, 23, 42, 0.08)',
+        card: '0 12px 32px rgba(15, 23, 42, 0.06)',
       },
     },
   },

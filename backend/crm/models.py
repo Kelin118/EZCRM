@@ -13,9 +13,12 @@ class TimeStampedModel(models.Model):
 class Client(TimeStampedModel):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100, blank=True)
+    parent_name = models.CharField(max_length=150, blank=True)
     phone = models.CharField(max_length=30, blank=True)
     email = models.EmailField(blank=True)
     birth_date = models.DateField(null=True, blank=True)
+    school_class = models.CharField(max_length=30, blank=True)
+    direction = models.CharField(max_length=120, blank=True)
     manager = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -45,7 +48,16 @@ class Subscription(TimeStampedModel):
     total_visits = models.PositiveIntegerField(default=0)
     remaining_visits = models.PositiveIntegerField(default=0)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    purchase_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    finance_transaction = models.OneToOneField(
+        'FinanceTransaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='subscription_payment',
+    )
 
     def __str__(self):
         return f'{self.client} - {self.title}'
@@ -53,9 +65,12 @@ class Subscription(TimeStampedModel):
 
 class Visit(TimeStampedModel):
     class Status(models.TextChoices):
-        PLANNED = 'planned', 'Planned'
         ATTENDED = 'attended', 'Attended'
         MISSED = 'missed', 'Missed'
+        MAKEUP = 'makeup', 'Makeup'
+        FROZEN = 'frozen', 'Frozen'
+        TRIAL = 'trial', 'Trial'
+        PLANNED = 'planned', 'Planned'
         CANCELLED = 'cancelled', 'Cancelled'
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='visits')
@@ -75,6 +90,7 @@ class Visit(TimeStampedModel):
     )
     visited_at = models.DateTimeField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNED)
+    lesson_deducted = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
 
     def __str__(self):
@@ -107,6 +123,13 @@ class Trial(TimeStampedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
     payment_date = models.DateField(null=True, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    finance_transaction = models.OneToOneField(
+        'FinanceTransaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trial_payment',
+    )
     bought_subscription = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
 
@@ -139,9 +162,17 @@ class MasterClass(TimeStampedModel):
     starts_at = models.DateTimeField()
     stage = models.CharField(max_length=20, choices=Stage.choices, default=Stage.PLANNED)
     payment_date = models.DateField(null=True, blank=True)
+    payment_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     capacity = models.PositiveIntegerField(default=0)
     participants = models.ManyToManyField(Client, blank=True, related_name='master_classes')
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    finance_transaction = models.OneToOneField(
+        'FinanceTransaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='master_class_payment',
+    )
 
     def __str__(self):
         return self.title

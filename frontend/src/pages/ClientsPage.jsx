@@ -1,12 +1,31 @@
-import { Actions, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { Link } from 'react-router-dom';
 
-const emptyClient = { first_name: '', last_name: '', phone: '', email: '', birth_date: '', notes: '', is_active: true };
+import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+
+const emptyClient = {
+  first_name: '',
+  last_name: '',
+  parent_name: '',
+  phone: '',
+  email: '',
+  birth_date: '',
+  school_class: '',
+  direction: '',
+  manager: '',
+  notes: '',
+  is_active: true,
+};
+
 const fields = [
   { name: 'first_name', label: 'Имя' },
   { name: 'last_name', label: 'Фамилия' },
+  { name: 'parent_name', label: 'Родитель' },
   { name: 'phone', label: 'Телефон' },
   { name: 'email', label: 'Email', type: 'email' },
   { name: 'birth_date', label: 'Дата рождения', type: 'date' },
+  { name: 'school_class', label: 'Класс' },
+  { name: 'direction', label: 'Направление' },
+  { name: 'manager', label: 'ID менеджера', type: 'number' },
   {
     name: 'is_active',
     label: 'Статус',
@@ -16,7 +35,7 @@ const fields = [
       { value: false, label: 'Неактивен' },
     ],
   },
-  { name: 'notes', label: 'Заметки', type: 'textarea' },
+  { name: 'notes', label: 'Комментарий', type: 'textarea' },
 ];
 
 export default function ClientsPage() {
@@ -40,11 +59,32 @@ export default function ClientsPage() {
       <Table
         data={crud.items}
         columns={[
-          { key: 'name', header: 'Клиент', render: (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() },
+          {
+            key: 'name',
+            header: 'Клиент',
+            render: (row) => (
+              <Link className="font-medium text-brand hover:underline" to={`/clients/${row.id}`}>
+                {`${row.first_name || ''} ${row.last_name || ''}`.trim() || `Клиент #${row.id}`}
+              </Link>
+            ),
+          },
+          { key: 'parent_name', header: 'Родитель' },
           { key: 'phone', header: 'Телефон' },
-          { key: 'email', header: 'Email' },
-          { key: 'is_active', header: 'Статус', render: (row) => (row.is_active ? 'Активен' : 'Неактивен') },
-          { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+          { key: 'school_class', header: 'Класс' },
+          { key: 'direction', header: 'Направление' },
+          { key: 'is_active', header: 'Статус', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Активен' : 'Неактивен'}</Badge> },
+          {
+            key: 'actions',
+            header: '',
+            render: (row) => (
+              <div className="flex gap-2">
+                <Link to={`/clients/${row.id}`}>
+                  <Button variant="secondary">Открыть</Button>
+                </Link>
+                <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} />
+              </div>
+            ),
+          },
         ]}
       />
       <CrudModal title="Клиент" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />

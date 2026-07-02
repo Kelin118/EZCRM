@@ -21,13 +21,28 @@ const nullableFields = new Set([
   'manager',
   'paid_at',
   'payment_date',
+  'purchase_date',
   'scheduled_at',
   'starts_at',
   'subscription',
   'teacher',
 ]);
 
-const readOnlyFields = new Set(['id', 'created_at', 'updated_at', 'sender', 'sender_name']);
+const readOnlyFields = new Set([
+  'id',
+  'created_at',
+  'updated_at',
+  'sender',
+  'sender_name',
+  'client_name',
+  'client_names',
+  'manager_name',
+  'used_lessons',
+  'lessons_left',
+  'lessons_total',
+  'finance_transaction',
+  'lesson_deducted',
+]);
 
 export function normalizePayload(payload) {
   const normalized = {};

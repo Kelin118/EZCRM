@@ -7,6 +7,7 @@ const titles = {
   '/': 'Дашборд',
   '/clients': 'Клиенты',
   '/subscriptions': 'Абонементы',
+  '/visits': 'Посещения',
   '/trials': 'Пробники',
   '/master-classes': 'Мастер-классы',
   '/tasks': 'Задачи',
@@ -26,6 +27,8 @@ export default function Topbar() {
     navigate('/login');
   };
 
+  const title = location.pathname.startsWith('/clients/') ? 'Карточка клиента' : titles[location.pathname] || 'EDUCRM';
+
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-100 bg-white/95 px-4 backdrop-blur lg:px-6">
       <div className="flex items-center gap-3">
@@ -33,7 +36,7 @@ export default function Topbar() {
           <Menu size={20} />
         </Button>
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">{titles[location.pathname] || 'EDUCRM'}</h1>
+          <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
           <p className="text-sm text-slate-500">CRM для учебного центра</p>
         </div>
       </div>

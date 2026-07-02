@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import AppLayout from './components/layout/AppLayout.jsx';
 import ChatPage from './pages/ChatPage.jsx';
+import ClientDetailPage from './pages/ClientDetailPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
@@ -12,6 +13,7 @@ import SettingsPage from './pages/SettingsPage.jsx';
 import SubscriptionsPage from './pages/SubscriptionsPage.jsx';
 import TasksPage from './pages/TasksPage.jsx';
 import TrialsPage from './pages/TrialsPage.jsx';
+import VisitsPage from './pages/VisitsPage.jsx';
 
 function ProtectedRoute() {
   return localStorage.getItem('access') ? <AppLayout /> : <Navigate to="/login" replace />;
@@ -35,7 +37,9 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route index element={<DashboardPage />} />
         <Route path="clients" element={<ClientsPage />} />
+        <Route path="clients/:id" element={<ClientDetailPage />} />
         <Route path="subscriptions" element={<SubscriptionsPage />} />
+        <Route path="visits" element={<VisitsPage />} />
         <Route path="trials" element={<TrialsPage />} />
         <Route path="master-classes" element={<MasterClassesPage />} />
         <Route path="tasks" element={<TasksPage />} />

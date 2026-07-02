@@ -1,8 +1,23 @@
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
-const empty = { title: '', description: '', manager: '', teacher: '', starts_at: '', stage: 'planned', payment_date: '', capacity: 0, price: 0, participants: [] };
+const empty = {
+  title: '',
+  client: '',
+  description: '',
+  manager: '',
+  teacher: '',
+  starts_at: '',
+  stage: 'planned',
+  payment_date: '',
+  capacity: 0,
+  price: 0,
+  payment_amount: 0,
+  participants: [],
+};
+
 const fields = [
   { name: 'title', label: 'Название' },
+  { name: 'client', label: 'ID клиента', type: 'number' },
   { name: 'manager', label: 'ID менеджера', type: 'number' },
   { name: 'teacher', label: 'ID преподавателя', type: 'number' },
   { name: 'starts_at', label: 'Дата и время', type: 'datetime-local' },
@@ -10,6 +25,7 @@ const fields = [
   { name: 'payment_date', label: 'Дата оплаты', type: 'date' },
   { name: 'capacity', label: 'Мест', type: 'number' },
   { name: 'price', label: 'Цена', type: 'number' },
+  { name: 'payment_amount', label: 'Оплачено', type: 'number' },
   { name: 'description', label: 'Описание', type: 'textarea' },
 ];
 
@@ -17,12 +33,12 @@ export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '' });
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
-  const total = crud.items.reduce((sum, item) => sum + Number(item.price || 0), 0);
+  const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
 
   return (
     <>
       <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }}>
-        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Итого: {money(total)}</span>
+        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
       </PageHeader>
       <Filters>
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, { value: 'planned', label: 'Планируется' }, { value: 'completed', label: 'Завершён' }, { value: 'cancelled', label: 'Отменён' }]} />
@@ -32,10 +48,11 @@ export default function MasterClassesPage() {
       </Filters>
       <Table data={crud.items} columns={[
         { key: 'title', header: 'Название' },
-        { key: 'starts_at', header: 'Дата' },
+        { key: 'starts_at', header: 'Дата', render: (row) => (row.starts_at ? new Date(row.starts_at).toLocaleString('ru-RU') : '—') },
         { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage} /> },
         { key: 'capacity', header: 'Мест' },
         { key: 'price', header: 'Цена', render: (row) => money(row.price) },
+        { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
         { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />

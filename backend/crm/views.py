@@ -1,5 +1,6 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
+from django.db import transaction
 from django.db.models import Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
@@ -41,6 +42,25 @@ def _date_param(request, name):
 
 def _decimal(value):
     return value or 0
+
+
+def _paid_at_from_date(value):
+    if not value:
+        return timezone.now()
+    return timezone.make_aware(datetime.combine(value, time.min))
+
+
+def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None):
+    return FinanceTransaction.objects.create(
+        transaction_type=FinanceTransaction.Type.INCOME,
+        amount=amount,
+        source=source,
+        client=client,
+        subscription=subscription,
+        created_by=created_by,
+        paid_at=paid_at,
+        comment=comment,
+    )
 
 
 class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
@@ -89,10 +109,59 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(start_date__lte=date_to)
         return queryset.order_by('-start_date', '-created_at')
 
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            subscription = serializer.save()
+            if subscription.paid_amount > 0 and not subscription.finance_transaction_id:
+                finance_transaction = _create_income_transaction(
+                    client=subscription.client,
+                    amount=subscription.paid_amount,
+                    source='subscription',
+                    paid_at=_paid_at_from_date(subscription.purchase_date),
+                    comment='Оплата абонемента',
+                    created_by=self.request.user,
+                    subscription=subscription,
+                )
+                subscription.finance_transaction = finance_transaction
+                subscription.save(update_fields=('finance_transaction', 'updated_at'))
+
 
 class VisitViewSet(BaseAuthenticatedViewSet):
     queryset = Visit.objects.select_related('client', 'subscription', 'teacher').all()
     serializer_class = VisitSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        client = self.request.query_params.get('client')
+        date = _date_param(self.request, 'date')
+
+        if client:
+            queryset = queryset.filter(client_id=client)
+        if date:
+            queryset = queryset.filter(visited_at__date=date)
+        return queryset.order_by('-visited_at', '-created_at')
+
+    def _apply_lesson_deduction(self, visit):
+        if (
+            visit.status == Visit.Status.ATTENDED
+            and visit.subscription_id
+            and not visit.lesson_deducted
+            and visit.subscription.remaining_visits > 0
+        ):
+            visit.subscription.remaining_visits -= 1
+            visit.subscription.save(update_fields=('remaining_visits', 'updated_at'))
+            visit.lesson_deducted = True
+            visit.save(update_fields=('lesson_deducted', 'updated_at'))
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            visit = serializer.save()
+            self._apply_lesson_deduction(visit)
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            visit = serializer.save()
+            self._apply_lesson_deduction(visit)
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
@@ -103,6 +172,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         queryset = super().get_queryset()
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
+        client = self.request.query_params.get('client')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
 
@@ -110,11 +180,28 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(status=stage)
         if manager:
             queryset = queryset.filter(manager_id=manager)
+        if client:
+            queryset = queryset.filter(client_id=client)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
             queryset = queryset.filter(payment_date__lte=payment_date_to)
         return queryset.order_by('-scheduled_at')
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            trial = serializer.save()
+            if trial.price > 0 and trial.payment_date and not trial.finance_transaction_id:
+                finance_transaction = _create_income_transaction(
+                    client=trial.client,
+                    amount=trial.price,
+                    source='trial',
+                    paid_at=_paid_at_from_date(trial.payment_date),
+                    comment='Оплата пробника',
+                    created_by=self.request.user,
+                )
+                trial.finance_transaction = finance_transaction
+                trial.save(update_fields=('finance_transaction', 'updated_at'))
 
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
@@ -125,6 +212,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         queryset = super().get_queryset()
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
+        client = self.request.query_params.get('client')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
 
@@ -132,11 +220,29 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(stage=stage)
         if manager:
             queryset = queryset.filter(manager_id=manager)
+        if client:
+            queryset = queryset.filter(participants__id=client)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
             queryset = queryset.filter(payment_date__lte=payment_date_to)
-        return queryset.order_by('-starts_at')
+        return queryset.distinct().order_by('-starts_at')
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            master_class = serializer.save()
+            if master_class.payment_amount > 0 and master_class.payment_date and not master_class.finance_transaction_id:
+                client = master_class.participants.first()
+                finance_transaction = _create_income_transaction(
+                    client=client,
+                    amount=master_class.payment_amount,
+                    source='master_class',
+                    paid_at=_paid_at_from_date(master_class.payment_date),
+                    comment='Оплата МК',
+                    created_by=self.request.user,
+                )
+                master_class.finance_transaction = finance_transaction
+                master_class.save(update_fields=('finance_transaction', 'updated_at'))
 
 
 class TaskViewSet(BaseAuthenticatedViewSet):
@@ -147,12 +253,15 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         queryset = super().get_queryset()
         status_value = self.request.query_params.get('status')
         assigned_to = self.request.query_params.get('assigned_to')
+        client = self.request.query_params.get('client')
         due_date = _date_param(self.request, 'due_date')
 
         if status_value:
             queryset = queryset.filter(status=status_value)
         if assigned_to:
             queryset = queryset.filter(assigned_to_id=assigned_to)
+        if client:
+            queryset = queryset.filter(client_id=client)
         if due_date:
             queryset = queryset.filter(due_at__date=due_date)
         return queryset.order_by('due_at', '-created_at')
@@ -174,6 +283,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         transaction_type = self.request.query_params.get('type')
         source = self.request.query_params.get('source')
         payment_method = self.request.query_params.get('payment_method')
+        client = self.request.query_params.get('client')
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
 
@@ -183,6 +293,8 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(source=source)
         if payment_method:
             queryset = queryset.filter(payment_method=payment_method)
+        if client:
+            queryset = queryset.filter(client_id=client)
         if date_from:
             queryset = queryset.filter(paid_at__date__gte=date_from)
         if date_to:
@@ -247,6 +359,28 @@ class DashboardStatsView(APIView):
                 'balance': income_total - expense_total,
                 'tasks_today': Task.objects.filter(due_at__date=today).exclude(status=Task.Status.DONE).count(),
                 'tasks_overdue': Task.objects.filter(due_at__date__lt=today).exclude(status=Task.Status.DONE).count(),
+                'visits_today': Visit.objects.filter(visited_at__date=today).count(),
+                'subscriptions_ending': Subscription.objects.filter(
+                    status=Subscription.Status.ACTIVE,
+                    end_date__isnull=False,
+                    end_date__gte=today,
+                    end_date__lte=ending_date,
+                ).count(),
+                'trials_today': Trial.objects.filter(scheduled_at__date=today).count(),
+                'master_classes_today': MasterClass.objects.filter(starts_at__date=today).count(),
+                'income_today': _decimal(
+                    FinanceTransaction.objects.filter(
+                        transaction_type=FinanceTransaction.Type.INCOME,
+                        paid_at__date=today,
+                    ).aggregate(total=Sum('amount'))['total']
+                ),
+                'income_month': _decimal(
+                    FinanceTransaction.objects.filter(
+                        transaction_type=FinanceTransaction.Type.INCOME,
+                        paid_at__year=today.year,
+                        paid_at__month=today.month,
+                    ).aggregate(total=Sum('amount'))['total']
+                ),
             }
         )
 

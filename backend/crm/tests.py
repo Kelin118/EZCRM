@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import check_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase
 
@@ -44,3 +45,113 @@ class RolePermissionTests(APITestCase):
             )
             response = self.client.post('/api/import/excel/', {'file': upload}, format='multipart')
             self.assertEqual(response.status_code, 403)
+
+
+class UserRegistrationAndEmployeeTests(APITestCase):
+    def admin_payload(self, username='first-admin'):
+        return {
+            'username': username,
+            'full_name': 'First Admin',
+            'phone': '+77000000000',
+            'email': 'admin@example.com',
+            'password': 'password123',
+            'password_confirm': 'password123',
+        }
+
+    def test_register_creates_admin_when_no_admin_exists(self):
+        User = get_user_model()
+        response = self.client.post('/api/auth/register/', self.admin_payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        user = User.objects.get(username='first-admin')
+        self.assertEqual(user.role, 'admin')
+        self.assertTrue(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertTrue(user.check_password('password123'))
+        self.assertNotIn('password', response.data)
+
+    def test_register_is_closed_when_admin_exists(self):
+        User = get_user_model()
+        User.objects.create_user(username='admin', password='password123', role='admin', is_active=True)
+
+        response = self.client.post('/api/auth/register/', self.admin_payload('second-admin'), format='json')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('Регистрация закрыта', response.data['detail'])
+
+    def test_manager_cannot_get_employees(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='manager', password='password123', role='manager')
+        self.client.force_authenticate(manager)
+
+        response = self.client.get('/api/users/employees/')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_create_manager(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin')
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            '/api/users/employees/',
+            {
+                'username': 'manager',
+                'full_name': 'Sales Manager',
+                'phone': '+77001112233',
+                'email': 'manager@example.com',
+                'role': 'manager',
+                'password': 'password123',
+                'password_confirm': 'password123',
+                'is_active': True,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        manager = User.objects.get(username='manager')
+        self.assertEqual(manager.role, 'manager')
+        self.assertEqual(manager.phone, '+77001112233')
+        self.assertTrue(manager.check_password('password123'))
+        self.assertNotIn('password', response.data)
+
+    def test_admin_can_deactivate_employee(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin')
+        employee = User.objects.create_user(username='teacher', password='password123', role='teacher', is_active=True)
+        self.client.force_authenticate(admin)
+
+        response = self.client.delete(f'/api/users/employees/{employee.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+    def test_admin_can_set_employee_password(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin')
+        employee = User.objects.create_user(username='teacher', password='password123', role='teacher')
+        old_hash = employee.password
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            f'/api/users/employees/{employee.id}/set-password/',
+            {'password': 'newpassword123', 'password_confirm': 'newpassword123'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        employee.refresh_from_db()
+        self.assertNotEqual(employee.password, old_hash)
+        self.assertTrue(check_password('newpassword123', employee.password))
+
+    def test_cannot_deactivate_last_active_admin(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', is_active=True)
+        self.client.force_authenticate(admin)
+
+        response = self.client.patch(f'/api/users/employees/{admin.id}/', {'is_active': False}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        admin.refresh_from_db()
+        self.assertTrue(admin.is_active)

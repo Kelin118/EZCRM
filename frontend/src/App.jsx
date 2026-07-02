@@ -8,10 +8,12 @@ import ChatPage from './pages/ChatPage.jsx';
 import ClientDetailPage from './pages/ClientDetailPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
+import EmployeesPage from './pages/EmployeesPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
+import RegisterPage from './pages/RegisterPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import SubscriptionsPage from './pages/SubscriptionsPage.jsx';
 import TasksPage from './pages/TasksPage.jsx';
@@ -66,6 +68,14 @@ export default function App() {
           </PublicRoute>
         }
       />
+      <Route
+        path="/register"
+        element={
+          <PublicRoute>
+            <RegisterPage />
+          </PublicRoute>
+        }
+      />
       <Route element={<ProtectedRoute />}>
         <Route index element={<DashboardPage />} />
         <Route path="clients" element={<ClientsPage />} />
@@ -77,6 +87,7 @@ export default function App() {
         <Route path="tasks" element={<TasksPage />} />
         <Route path="finance" element={<FinancePage />} />
         <Route path="reports" element={<ReportsPage />} />
+        <Route path="employees" element={<EmployeesPage />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

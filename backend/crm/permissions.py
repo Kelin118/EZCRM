@@ -36,6 +36,11 @@ class RolePermission(BasePermission):
         return self.has_permission(request, view)
 
 
+class IsAdminRole(BasePermission):
+    def has_permission(self, request, view):
+        return is_authenticated(request.user) and is_admin(request.user)
+
+
 class ClientPermission(RolePermission):
     allowed_by_role = {
         MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},

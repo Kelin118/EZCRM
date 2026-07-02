@@ -1,6 +1,6 @@
 import { BookOpen } from 'lucide-react';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, setStoredUser } from '../auth.js';
@@ -39,22 +39,25 @@ export default function LoginPage() {
             <BookOpen size={24} />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">EDUCRM</h1>
+            <h1 className="text-2xl font-semibold text-slate-900">EZCRM</h1>
             <p className="text-sm text-slate-500">Вход в систему</p>
           </div>
         </div>
         <div className="grid gap-4">
-          <Input label="Логин" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+          <Input label="Логин" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
           <Input
             label="Пароль"
             type="password"
             value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            onChange={(event) => setForm({ ...form, password: event.target.value })}
           />
-          {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+          {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? 'Входим...' : 'Войти'}
           </Button>
+          <Link className="text-center text-sm font-semibold text-brand hover:underline" to="/register">
+            Создать первый аккаунт
+          </Link>
         </div>
       </form>
     </div>

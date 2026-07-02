@@ -10,6 +10,7 @@ import {
   Settings,
   Sparkles,
   Ticket,
+  UserCog,
   Users,
 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
@@ -26,6 +27,7 @@ export const navItems = [
   { to: '/tasks', label: 'Задачи', icon: ClipboardList, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { to: '/finance', label: 'Финансы', icon: CreditCard, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { to: '/reports', label: 'Отчёты', icon: PieChart, roles: [ROLES.ACCOUNTANT] },
+  { to: '/employees', label: 'Сотрудники', icon: UserCog, roles: [ROLES.ADMIN] },
   { to: '/chat', label: 'Чат', icon: MessageSquare, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { to: '/settings', label: 'Настройки', icon: Settings, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
 ];

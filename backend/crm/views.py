@@ -101,7 +101,7 @@ class CurrentUserView(APIView):
                 'id': user.id,
                 'username': user.username,
                 'full_name': user.get_full_name() or user.username,
-                'role': role(user),
+                'role': 'admin' if user.is_superuser else role(user),
             }
         )
 

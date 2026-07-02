@@ -13,11 +13,16 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import api from '../api/axios.js';
+import { canCreateTasks, canManageClients, getStoredUser, hasRole, ROLES } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import StatCard from '../components/ui/StatCard.jsx';
 import { money } from './pageUtils.jsx';
 
 export default function DashboardPage() {
+  const user = getStoredUser();
+  const canAddClient = canManageClients(user);
+  const canAddTask = canCreateTasks(user);
+  const canViewFinance = hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT]);
   const [stats, setStats] = useState({});
 
   useEffect(() => {
@@ -41,8 +46,8 @@ export default function DashboardPage() {
             <p className="mt-2 max-w-2xl text-sm leading-6 text-white/75">Все ключевые показатели центра собраны на одном экране.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link to="/clients"><Button variant="accent"><Plus size={16} />Клиент</Button></Link>
-            <Link to="/tasks"><Button variant="secondary"><CheckSquare size={16} />Задача</Button></Link>
+            {canAddClient && <Link to="/clients"><Button variant="accent"><Plus size={16} />Клиент</Button></Link>}
+            {canAddTask && <Link to="/tasks"><Button variant="secondary"><CheckSquare size={16} />Задача</Button></Link>}
             <Link to="/chat"><Button variant="secondary"><MessageSquare size={16} />Чат</Button></Link>
           </div>
         </div>
@@ -66,7 +71,7 @@ export default function DashboardPage() {
           {todayItems.every(([, value]) => !value) && <EmptyState text="На сегодня нет запланированных активностей." />}
         </section>
 
-        <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+        {canViewFinance && <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
           <SectionTitle title="Финансы" subtitle="Доходы, расходы и баланс" />
           <div className="mt-4 grid gap-3">
             <FinanceRow label="Доход сегодня" value={money(stats.income_today)} tone="green" />
@@ -75,7 +80,7 @@ export default function DashboardPage() {
             <FinanceRow label="Расход всего" value={money(stats.expense_total)} tone="red" />
             <FinanceRow label="Баланс" value={money(stats.balance)} tone="accent" strong />
           </div>
-        </section>
+        </section>}
       </div>
 
       <section className="grid gap-4 lg:grid-cols-3">

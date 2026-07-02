@@ -1,6 +1,7 @@
 import { CheckCircle2 } from 'lucide-react';
 
 import api from '../api/axios.js';
+import { canCreateTasks, canDeleteTask, getStoredUser, hasRole, ROLES } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, useCrudResource } from './pageUtils.jsx';
 
 const statuses = [
@@ -21,6 +22,9 @@ const fields = [
 
 export default function TasksPage() {
   const crud = useCrudResource('tasks/', { status: '', assigned_to: '', due_date: '' });
+  const user = getStoredUser();
+  const canCreate = canCreateTasks(user);
+  const canEdit = hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.TEACHER]);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
 
@@ -31,7 +35,7 @@ export default function TasksPage() {
 
   return (
     <>
-      <PageHeader title="Задачи" actionLabel="Добавить задачу" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }} />
+      <PageHeader title="Задачи" actionLabel="Добавить задачу" onAction={canCreate ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined} />
       <Filters>
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, ...statuses]} />
         <Input label="ID ответственного" value={crud.filters.assigned_to} onChange={(e) => crud.setFilters({ ...crud.filters, assigned_to: e.target.value })} />
@@ -52,7 +56,7 @@ export default function TasksPage() {
                       <p className="font-medium text-slate-900">{task.title}</p>
                       <p className="mt-1 text-xs text-slate-500">{task.due_at ? new Date(task.due_at).toLocaleString('ru-RU') : 'Без срока'}</p>
                     </div>
-                    <Actions onEdit={() => { crud.setEditing(task); crud.setModalOpen(true); }} onDelete={() => crud.remove(task.id)} />
+                    <Actions canEdit={canEdit} canDelete={canDeleteTask(task, user)} onEdit={() => { crud.setEditing(task); crud.setModalOpen(true); }} onDelete={() => crud.remove(task.id)} />
                   </div>
                   {task.description && <p className="mt-2 text-sm text-slate-600">{task.description}</p>}
                   {task.status !== 'done' && (

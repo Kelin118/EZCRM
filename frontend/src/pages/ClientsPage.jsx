@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 
+import { canDeleteDangerous, canManageClients, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const emptyClient = {
@@ -40,12 +41,15 @@ const fields = [
 
 export default function ClientsPage() {
   const crud = useCrudResource('clients/', { search: '', status: '', manager: '' });
+  const user = getStoredUser();
+  const canEdit = canManageClients(user);
+  const canDelete = canDeleteDangerous(user);
   const form = crud.editing || emptyClient;
   const setForm = (value) => crud.setEditing(value);
 
   return (
     <>
-      <PageHeader title="Клиенты" actionLabel="Добавить клиента" onAction={() => { crud.setEditing(emptyClient); crud.setModalOpen(true); }} />
+      <PageHeader title="Клиенты" actionLabel="Добавить клиента" onAction={canEdit ? () => { crud.setEditing(emptyClient); crud.setModalOpen(true); } : undefined} />
       <Filters>
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField
@@ -81,7 +85,7 @@ export default function ClientsPage() {
                 <Link to={`/clients/${row.id}`}>
                   <Button variant="secondary">Открыть</Button>
                 </Link>
-                <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} />
+                <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} />
               </div>
             ),
           },

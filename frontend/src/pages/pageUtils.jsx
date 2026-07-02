@@ -110,15 +110,21 @@ export function SelectField({ label, value, onChange, options }) {
   );
 }
 
-export function Actions({ onEdit, onDelete }) {
+export function Actions({ onEdit, onDelete, canEdit = true, canDelete = true }) {
+  if (!canEdit && !canDelete) return null;
+
   return (
     <div className="flex justify-end gap-2">
-      <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать">
-        <Edit size={16} />
-      </Button>
-      <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить">
-        <Trash2 size={16} />
-      </Button>
+      {canEdit && (
+        <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать">
+          <Edit size={16} />
+        </Button>
+      )}
+      {canDelete && (
+        <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить">
+          <Trash2 size={16} />
+        </Button>
+      )}
     </div>
   );
 }

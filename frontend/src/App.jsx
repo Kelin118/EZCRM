@@ -1,5 +1,8 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
+import api from './api/axios.js';
+import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from './auth.js';
 import AppLayout from './components/layout/AppLayout.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import ClientDetailPage from './pages/ClientDetailPage.jsx';
@@ -16,11 +19,40 @@ import TrialsPage from './pages/TrialsPage.jsx';
 import VisitsPage from './pages/VisitsPage.jsx';
 
 function ProtectedRoute() {
-  return localStorage.getItem('access') ? <AppLayout /> : <Navigate to="/login" replace />;
+  const location = useLocation();
+  const [user, setUser] = useState(() => getStoredUser());
+  const [loading, setLoading] = useState(Boolean(localStorage.getItem(ACCESS_TOKEN_KEY)) && !getStoredUser());
+
+  useEffect(() => {
+    if (!localStorage.getItem(ACCESS_TOKEN_KEY) || user) return;
+
+    let mounted = true;
+    setLoading(true);
+    api
+      .get('auth/me/')
+      .then(({ data }) => {
+        if (!mounted) return;
+        setStoredUser(data);
+        setUser(data);
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
+
+  if (!localStorage.getItem(ACCESS_TOKEN_KEY)) return <Navigate to="/login" replace />;
+  if (loading) return <div className="grid min-h-screen place-items-center bg-app text-sm font-semibold text-slate-500">Загрузка...</div>;
+  if (user && !canAccessPath(location.pathname, user)) return <Navigate to="/" replace />;
+
+  return <AppLayout />;
 }
 
 function PublicRoute({ children }) {
-  return localStorage.getItem('access') ? <Navigate to="/" replace /> : children;
+  return localStorage.getItem(ACCESS_TOKEN_KEY) ? <Navigate to="/" replace /> : children;
 }
 
 export default function App() {

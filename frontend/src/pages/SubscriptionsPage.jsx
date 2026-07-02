@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 
+import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = {
@@ -56,13 +57,16 @@ function Progress({ row }) {
 
 export default function SubscriptionsPage() {
   const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '' });
+  const user = getStoredUser();
+  const canEdit = canManageSubscriptions(user);
+  const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const totalPaid = crud.items.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
 
   return (
     <>
-      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }}>
+      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено за период: {money(totalPaid)}</span>
       </PageHeader>
       <Filters>
@@ -80,7 +84,7 @@ export default function SubscriptionsPage() {
         { key: 'lessons_left', header: 'Осталось', render: (row) => row.lessons_left ?? row.remaining_visits },
         { key: 'progress', header: 'Прогресс', render: (row) => <Progress row={row} /> },
         { key: 'paid_amount', header: 'Оплачено', render: (row) => money(row.paid_amount) },
-        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Абонемент" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>

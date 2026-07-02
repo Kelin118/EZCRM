@@ -1,15 +1,13 @@
 import axios from 'axios';
 
-const ACCESS_TOKEN_KEY = 'access';
-const REFRESH_TOKEN_KEY = 'refresh';
+import { ACCESS_TOKEN_KEY, clearStoredAuth, REFRESH_TOKEN_KEY } from '../auth.js';
 
 const api = axios.create({
   baseURL: 'http://127.0.0.1:8000/api/',
 });
 
 function clearAuthAndRedirect() {
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  clearStoredAuth();
   if (window.location.pathname !== '/login') {
     window.location.href = '/login';
   }
@@ -41,6 +39,10 @@ api.interceptors.response.use(
       } catch {
         clearAuthAndRedirect();
       }
+    }
+
+    if (error.response?.status === 403) {
+      window.dispatchEvent(new CustomEvent('api-forbidden', { detail: 'Нет доступа к этому действию' }));
     }
 
     if (error.response?.status === 401) {

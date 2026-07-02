@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import api from '../api/axios.js';
+import { ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, setStoredUser } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 
@@ -18,8 +19,10 @@ export default function LoginPage() {
     setError('');
     try {
       const { data } = await api.post('token/', form);
-      localStorage.setItem('access', data.access);
-      localStorage.setItem('refresh', data.refresh);
+      localStorage.setItem(ACCESS_TOKEN_KEY, data.access);
+      localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh);
+      const { data: user } = await api.get('auth/me/');
+      setStoredUser(user);
       navigate('/');
     } catch {
       setError('Неверный логин или пароль');

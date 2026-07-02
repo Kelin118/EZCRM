@@ -1,4 +1,5 @@
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
 
 const empty = { type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '' };
 const fields = [
@@ -14,6 +15,9 @@ const fields = [
 
 export default function FinancePage() {
   const crud = useCrudResource('finance/', { type: '', source: '', payment_method: '', date_from: '', date_to: '' });
+  const user = getStoredUser();
+  const canEdit = canManageFinance(user);
+  const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const transactionType = (item) => item.type ?? item.transaction_type;
@@ -27,7 +31,7 @@ export default function FinancePage() {
 
   return (
     <>
-      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }}>
+      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Доход: {money(income)}</span>
         <span className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700">Расход: {money(expense)}</span>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Баланс: {money(income - expense)}</span>
@@ -44,7 +48,7 @@ export default function FinancePage() {
         { key: 'source', header: 'Источник' },
         { key: 'payment_method', header: 'Оплата' },
         { key: 'paid_at', header: 'Дата', render: (row) => (row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—') },
-        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>

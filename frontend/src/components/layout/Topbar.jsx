@@ -1,6 +1,7 @@
 import { LogOut, Search, UserCircle } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
+import { canAccessNavItem, clearStoredAuth, getStoredUser } from '../../auth.js';
 import Button from '../ui/Button.jsx';
 import { navItems } from './Sidebar.jsx';
 
@@ -18,17 +19,25 @@ const titles = {
   '/settings': 'Настройки',
 };
 
+const roleLabels = {
+  admin: 'Администратор',
+  manager: 'Менеджер',
+  teacher: 'Преподаватель',
+  accountant: 'Бухгалтер',
+};
+
 export default function Topbar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const user = getStoredUser();
+  const visibleNavItems = navItems.filter((item) => canAccessNavItem(item, user));
 
   const logout = () => {
-    localStorage.removeItem('access');
-    localStorage.removeItem('refresh');
+    clearStoredAuth();
     navigate('/login');
   };
 
-  const title = location.pathname.startsWith('/clients/') ? 'Карточка клиента' : titles[location.pathname] || 'EDUCRM';
+  const title = location.pathname.startsWith('/clients/') ? 'Карточка клиента' : titles[location.pathname] || 'EZCRM';
 
   return (
     <header className="sticky top-0 z-20 border-b border-white/70 bg-app/90 px-4 py-3 backdrop-blur sm:px-5 lg:px-8">
@@ -45,8 +54,8 @@ export default function Topbar() {
           <div className="hidden items-center gap-2 rounded-2xl border border-slate-100 bg-white px-3 py-2 shadow-sm sm:flex">
             <UserCircle size={22} className="text-brand" />
             <div className="leading-tight">
-              <p className="text-sm font-semibold text-slate-800">Администратор</p>
-              <p className="text-xs text-slate-500">онлайн</p>
+              <p className="text-sm font-semibold text-slate-800">{user?.full_name || user?.username || 'Пользователь'}</p>
+              <p className="text-xs text-slate-500">{roleLabels[user?.role] || user?.role || 'онлайн'}</p>
             </div>
           </div>
           <Button variant="secondary" onClick={logout}>
@@ -55,7 +64,7 @@ export default function Topbar() {
           </Button>
         </div>
         <nav className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin lg:hidden">
-          {navItems.map(({ to, label, icon: Icon }) => (
+          {visibleNavItems.map(({ to, label, icon: Icon }) => (
             <Button
               key={to}
               variant={location.pathname === to ? 'primary' : 'secondary'}

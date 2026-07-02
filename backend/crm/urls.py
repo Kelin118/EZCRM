@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ChatMessageViewSet,
     ClientViewSet,
+    CurrentUserView,
     DashboardStatsView,
     ExcelImportView,
     FinanceTransactionViewSet,
@@ -28,6 +29,7 @@ router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
 
 urlpatterns = [
+    path('auth/me/', CurrentUserView.as_view(), name='auth-me'),
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),
     path('import/excel/', ExcelImportView.as_view(), name='excel-import'),

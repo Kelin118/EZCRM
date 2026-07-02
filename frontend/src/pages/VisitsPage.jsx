@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 
+import { canDeleteDangerous, canManageVisits, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = {
@@ -30,12 +31,15 @@ const fields = [
 
 export default function VisitsPage() {
   const crud = useCrudResource('visits/', { client: '', date: '' });
+  const user = getStoredUser();
+  const canEdit = canManageVisits(user);
+  const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
 
   return (
     <>
-      <PageHeader title="Посещения" actionLabel="Добавить посещение" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }} />
+      <PageHeader title="Посещения" actionLabel="Добавить посещение" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined} />
       <Filters>
         <Input label="ID клиента" value={crud.filters.client} onChange={(e) => crud.setFilters({ ...crud.filters, client: e.target.value })} />
         <Input label="Дата" type="date" value={crud.filters.date} onChange={(e) => crud.setFilters({ ...crud.filters, date: e.target.value })} />
@@ -47,7 +51,7 @@ export default function VisitsPage() {
         { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{visitStatusOptions.find((item) => item.value === row.status)?.label || row.status}</Badge> },
         { key: 'lesson_deducted', header: 'Списано', render: (row) => (row.lesson_deducted ? 'Да' : 'Нет') },
         { key: 'notes', header: 'Комментарий' },
-        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Посещение" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>

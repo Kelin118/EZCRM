@@ -1,4 +1,5 @@
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 
 const empty = {
   title: '',
@@ -31,13 +32,16 @@ const fields = [
 
 export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '' });
+  const user = getStoredUser();
+  const canEdit = canManageSales(user);
+  const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
 
   return (
     <>
-      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={() => { crud.setEditing(empty); crud.setModalOpen(true); }}>
+      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
       </PageHeader>
       <Filters>
@@ -53,7 +57,7 @@ export default function MasterClassesPage() {
         { key: 'capacity', header: 'Мест' },
         { key: 'price', header: 'Цена', render: (row) => money(row.price) },
         { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
-        { key: 'actions', header: '', render: (row) => <Actions onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>

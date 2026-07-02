@@ -86,3 +86,34 @@
 [2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Sidebar.jsx[22m
 [2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/layout/Sidebar.jsx[22m Could not Fast Refresh ("navItems" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
 [2m17:43:20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/layout/AppLayout.jsx, /src/components/layout/Topbar.jsx[22m
+[2m18:56:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/ChatPage.jsx, /src/pages/LoginPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/pageUtils.jsx, /src/pages/DashboardPage.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/SettingsPage.jsx[22m
+[2m18:56:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/pageUtils.jsx[22m Could not Fast Refresh ("dateOnly" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m18:56:11[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/FinancePage.jsx, /src/pages/ChatPage.jsx, /src/pages/TrialsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/ClientsPage.jsx, /src/pages/SubscriptionsPage.jsx, /src/pages/MasterClassesPage.jsx, /src/pages/VisitsPage.jsx, /src/pages/DashboardPage.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/SettingsPage.jsx[22m
+[2m18:56:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/LoginPage.jsx, /src/index.css[22m
+[2m18:56:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/index.css[22m
+[2m18:57:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Sidebar.jsx[22m
+[2m18:57:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/layout/Sidebar.jsx[22m
+[2m18:57:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/layout/Topbar.jsx[22m
+[2m18:57:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mpage reload [39m[2msrc/components/layout/Topbar.jsx[22m
+[2m18:57:45[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/components/layout/AppLayout.jsx, /src/index.css[22m
+[2m18:58:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/pageUtils.jsx[22m
+[2m18:58:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/pageUtils.jsx[22m Could not Fast Refresh ("dateOnly" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m18:58:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/FinancePage.jsx, /src/pages/ChatPage.jsx, /src/pages/TrialsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/TasksPage.jsx, /src/pages/ClientsPage.jsx, /src/pages/SubscriptionsPage.jsx, /src/pages/MasterClassesPage.jsx, /src/pages/VisitsPage.jsx, /src/pages/DashboardPage.jsx, /src/pages/ClientDetailPage.jsx, /src/pages/SettingsPage.jsx[22m
+[2m18:58:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/VisitsPage.jsx[22m Could not Fast Refresh ("visitStatusOptions" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m18:58:09[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/pages/ClientDetailPage.jsx[22m
+[2m18:58:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientsPage.jsx, /src/index.css[22m
+[2m18:58:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientsPage.jsx, /src/index.css[22m
+[2m18:58:46[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/SubscriptionsPage.jsx, /src/index.css[22m
+[2m18:58:55[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/TrialsPage.jsx, /src/index.css[22m
+[2m18:59:05[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/MasterClassesPage.jsx, /src/index.css[22m
+[2m18:59:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/VisitsPage.jsx, /src/index.css[22m
+[2m18:59:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/VisitsPage.jsx[22m Could not Fast Refresh ("visitStatusOptions" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m18:59:14[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/pages/ClientDetailPage.jsx[22m
+[2m18:59:23[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/FinancePage.jsx, /src/index.css[22m
+[2m18:59:36[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/TasksPage.jsx, /src/index.css[22m
+[2m19:00:08[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/SettingsPage.jsx, /src/index.css[22m
+[2m19:01:00[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientDetailPage.jsx, /src/index.css[22m
+[2m19:01:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientDetailPage.jsx, /src/index.css[22m
+[2m19:01:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientDetailPage.jsx, /src/index.css[22m
+[2m19:01:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientDetailPage.jsx, /src/index.css[22m
+[2m19:02:17[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/DashboardPage.jsx, /src/index.css[22m

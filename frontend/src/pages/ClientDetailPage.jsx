@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
+import { canCreateTasks, canManageSubscriptions, canManageVisits, getRole, getStoredUser, ROLES } from '../auth.js';
 import Badge from '../components/ui/Badge.jsx';
 import Button from '../components/ui/Button.jsx';
 import Table from '../components/ui/Table.jsx';
@@ -13,13 +14,19 @@ const tabs = [
   { key: 'subscriptions', label: 'Абонементы' },
   { key: 'trials', label: 'Пробники' },
   { key: 'masterClasses', label: 'МК' },
-  { key: 'visits', label: 'Посещения' },
-  { key: 'finance', label: 'Финансы' },
-  { key: 'tasks', label: 'Задачи' },
+  { key: 'visits', label: 'Посещения', roles: [ROLES.ADMIN, ROLES.TEACHER, ROLES.ACCOUNTANT] },
+  { key: 'finance', label: 'Финансы', roles: [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT] },
+  { key: 'tasks', label: 'Задачи', roles: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TEACHER] },
 ];
 
 export default function ClientDetailPage() {
   const { id } = useParams();
+  const user = getStoredUser();
+  const role = getRole(user);
+  const visibleTabs = useMemo(
+    () => tabs.filter((tab) => !tab.roles || role === ROLES.ADMIN || tab.roles.includes(role)),
+    [role],
+  );
   const [client, setClient] = useState(null);
   const [activeTab, setActiveTab] = useState('subscriptions');
   const [data, setData] = useState({
@@ -33,14 +40,15 @@ export default function ClientDetailPage() {
 
   useEffect(() => {
     async function load() {
+      const getList = (endpoint) => api.get(endpoint, { params: { client: id } });
       const [clientRes, subscriptions, trials, masterClasses, visits, finance, tasks] = await Promise.all([
         api.get(`clients/${id}/`),
-        api.get('subscriptions/', { params: { client: id } }),
-        api.get('trials/', { params: { client: id } }),
-        api.get('master-classes/', { params: { client: id } }),
-        api.get('visits/', { params: { client: id } }),
-        api.get('finance/', { params: { client: id } }),
-        api.get('tasks/', { params: { client: id } }),
+        getList('subscriptions/'),
+        getList('trials/'),
+        getList('master-classes/'),
+        visibleTabs.some((tab) => tab.key === 'visits') ? getList('visits/') : Promise.resolve({ data: [] }),
+        visibleTabs.some((tab) => tab.key === 'finance') ? getList('finance/') : Promise.resolve({ data: [] }),
+        visibleTabs.some((tab) => tab.key === 'tasks') ? getList('tasks/') : Promise.resolve({ data: [] }),
       ]);
 
       setClient(clientRes.data);
@@ -55,7 +63,13 @@ export default function ClientDetailPage() {
     }
 
     load();
-  }, [id]);
+  }, [id, visibleTabs]);
+
+  useEffect(() => {
+    if (!visibleTabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(visibleTabs[0]?.key || 'subscriptions');
+    }
+  }, [activeTab, visibleTabs]);
 
   const fullName = useMemo(() => `${client?.first_name || ''} ${client?.last_name || ''}`.trim(), [client]);
 
@@ -98,16 +112,16 @@ export default function ClientDetailPage() {
           </div>
 
           <div className="grid gap-2 sm:grid-cols-3 xl:min-w-[430px]">
-            <QuickAction to="/subscriptions" icon={CreditCard} label="Абонемент" />
-            <QuickAction to="/tasks" icon={CheckSquare} label="Задача" />
-            <QuickAction to="/visits" icon={CalendarPlus} label="Посещение" />
+            {canManageSubscriptions(user) && <QuickAction to="/subscriptions" icon={CreditCard} label="Абонемент" />}
+            {canCreateTasks(user) && <QuickAction to="/tasks" icon={CheckSquare} label="Задача" />}
+            {canManageVisits(user) && <QuickAction to="/visits" icon={CalendarPlus} label="Посещение" />}
           </div>
         </div>
       </section>
 
       <section className="overflow-hidden rounded-[24px] border border-slate-100 bg-white shadow-card">
         <div className="flex gap-2 overflow-x-auto border-b border-slate-100 bg-slate-50/60 p-3 scrollbar-thin">
-          {tabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.key}
               className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${

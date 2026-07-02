@@ -24,6 +24,24 @@ from .models import (
     Trial,
     Visit,
 )
+from .permissions import (
+    ACCOUNTANT,
+    MANAGER,
+    TEACHER,
+    ChatPermission,
+    ClientPermission,
+    DashboardPermission,
+    ExcelImportPermission,
+    FinancePermission,
+    MasterClassPermission,
+    ReportsPermission,
+    SettingsPermission,
+    SubscriptionPermission,
+    TaskPermission,
+    TrialPermission,
+    VisitPermission,
+    role,
+)
 from .serializers import (
     ChatMessageSerializer,
     ClientSerializer,
@@ -52,6 +70,10 @@ def _paid_at_from_date(value):
     return timezone.make_aware(datetime.combine(value, time.min))
 
 
+def _my_param(request):
+    return request.query_params.get('my') in ('1', 'true', 'True', 'yes')
+
+
 def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None):
     return FinanceTransaction.objects.create(
         transaction_type=FinanceTransaction.Type.INCOME,
@@ -69,7 +91,23 @@ class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
     permission_classes = (IsAuthenticated,)
 
 
+class CurrentUserView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        user = request.user
+        return Response(
+            {
+                'id': user.id,
+                'username': user.username,
+                'full_name': user.get_full_name() or user.username,
+                'role': role(user),
+            }
+        )
+
+
 class ClientViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, ClientPermission)
     queryset = Client.objects.select_related('manager').all()
     serializer_class = ClientSerializer
 
@@ -87,10 +125,13 @@ class ClientViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(is_active=status_value == 'active')
         if manager:
             queryset = queryset.filter(manager_id=manager)
+        if _my_param(self.request):
+            queryset = queryset.filter(manager=self.request.user)
         return queryset.order_by('-created_at')
 
 
 class SubscriptionViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, SubscriptionPermission)
     queryset = Subscription.objects.select_related('client').all()
     serializer_class = SubscriptionSerializer
 
@@ -129,6 +170,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
 
 
 class VisitViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, VisitPermission)
     queryset = Visit.objects.select_related('client', 'subscription', 'teacher').all()
     serializer_class = VisitSerializer
 
@@ -183,6 +225,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, TrialPermission)
     queryset = Trial.objects.select_related('client', 'manager', 'teacher').all()
     serializer_class = TrialSerializer
 
@@ -200,6 +243,8 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(manager_id=manager)
         if client:
             queryset = queryset.filter(client_id=client)
+        if _my_param(self.request):
+            queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
@@ -223,6 +268,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, MasterClassPermission)
     queryset = MasterClass.objects.select_related('manager', 'teacher').prefetch_related('participants').all()
     serializer_class = MasterClassSerializer
 
@@ -240,6 +286,8 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(manager_id=manager)
         if client:
             queryset = queryset.filter(participants__id=client)
+        if _my_param(self.request):
+            queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
@@ -264,6 +312,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
 
 
 class TaskViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, TaskPermission)
     queryset = Task.objects.select_related('assigned_to', 'client').all()
     serializer_class = TaskSerializer
 
@@ -280,6 +329,8 @@ class TaskViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(assigned_to_id=assigned_to)
         if client:
             queryset = queryset.filter(client_id=client)
+        if role(self.request.user) == TEACHER or _my_param(self.request):
+            queryset = queryset.filter(assigned_to=self.request.user)
         if due_date:
             queryset = queryset.filter(due_at__date=due_date)
         return queryset.order_by('due_at', '-created_at')
@@ -293,6 +344,7 @@ class TaskViewSet(BaseAuthenticatedViewSet):
 
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, FinancePermission)
     queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by').all()
     serializer_class = FinanceTransactionSerializer
 
@@ -313,6 +365,11 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(payment_method=payment_method)
         if client:
             queryset = queryset.filter(client_id=client)
+        if role(self.request.user) == MANAGER:
+            queryset = queryset.filter(
+                transaction_type=FinanceTransaction.Type.INCOME,
+                client__manager=self.request.user,
+            )
         if date_from:
             queryset = queryset.filter(paid_at__date__gte=date_from)
         if date_to:
@@ -324,6 +381,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
 
 
 class ChatMessageViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, ChatPermission)
     queryset = ChatMessage.objects.select_related('sender', 'client').filter(is_deleted=False)
     serializer_class = ChatMessageSerializer
 
@@ -335,12 +393,30 @@ class ChatMessageViewSet(BaseAuthenticatedViewSet):
 
 
 class StudioSettingsViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, SettingsPermission)
     queryset = StudioSettings.objects.all()
     serializer_class = StudioSettingsSerializer
 
+    price_fields = {
+        'default_price_ab4',
+        'default_price_ab8',
+        'default_price_trial',
+        'default_price_master_class',
+    }
+
+    def update(self, request, *args, **kwargs):
+        if role(request.user) == ACCOUNTANT:
+            instance = self.get_object()
+            data = {field: request.data[field] for field in self.price_fields if field in request.data}
+            serializer = self.get_serializer(instance, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data)
+        return super().update(request, *args, **kwargs)
+
 
 class ExcelImportView(APIView):
-    permission_classes = (IsAuthenticated,)
+    permission_classes = (IsAuthenticated, ExcelImportPermission)
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request):
@@ -358,21 +434,40 @@ class ExcelImportView(APIView):
 
 
 class DashboardStatsView(APIView):
-    permission_classes = (IsAuthenticated,)
+    permission_classes = (IsAuthenticated, DashboardPermission)
 
     def get(self, request):
         today = timezone.localdate()
         ending_date = today + timedelta(days=7)
-        income_total = _decimal(
-            FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(
-                total=Sum('amount')
-            )['total']
-        )
-        expense_total = _decimal(
-            FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(
-                total=Sum('amount')
-            )['total']
-        )
+        can_view_finance = role(request.user) != TEACHER
+        income_total = 0
+        expense_total = 0
+        income_today = 0
+        income_month = 0
+        if can_view_finance:
+            income_total = _decimal(
+                FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(
+                    total=Sum('amount')
+                )['total']
+            )
+            expense_total = _decimal(
+                FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(
+                    total=Sum('amount')
+                )['total']
+            )
+            income_today = _decimal(
+                FinanceTransaction.objects.filter(
+                    transaction_type=FinanceTransaction.Type.INCOME,
+                    paid_at__date=today,
+                ).aggregate(total=Sum('amount'))['total']
+            )
+            income_month = _decimal(
+                FinanceTransaction.objects.filter(
+                    transaction_type=FinanceTransaction.Type.INCOME,
+                    paid_at__year=today.year,
+                    paid_at__month=today.month,
+                ).aggregate(total=Sum('amount'))['total']
+            )
         trials_total = Trial.objects.count()
         trials_bought = Trial.objects.filter(bought_subscription=True).count()
 
@@ -404,25 +499,14 @@ class DashboardStatsView(APIView):
                 ).count(),
                 'trials_today': Trial.objects.filter(scheduled_at__date=today).count(),
                 'master_classes_today': MasterClass.objects.filter(starts_at__date=today).count(),
-                'income_today': _decimal(
-                    FinanceTransaction.objects.filter(
-                        transaction_type=FinanceTransaction.Type.INCOME,
-                        paid_at__date=today,
-                    ).aggregate(total=Sum('amount'))['total']
-                ),
-                'income_month': _decimal(
-                    FinanceTransaction.objects.filter(
-                        transaction_type=FinanceTransaction.Type.INCOME,
-                        paid_at__year=today.year,
-                        paid_at__month=today.month,
-                    ).aggregate(total=Sum('amount'))['total']
-                ),
+                'income_today': income_today,
+                'income_month': income_month,
             }
         )
 
 
 class ReportsSummaryView(APIView):
-    permission_classes = (IsAuthenticated,)
+    permission_classes = (IsAuthenticated, ReportsPermission)
 
     def get(self, request):
         date_from = _date_param(request, 'date_from')

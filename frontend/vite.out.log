@@ -1,0 +1,12 @@
+
+> educrm-frontend@0.1.0 dev
+> vite --host 127.0.0.1 --port 5173
+
+
+  [32m[1mVITE[22m v7.3.6[39m  [2mready in [0m[1m349[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m14:06:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/pages/pageUtils.jsx[22m
+[2m14:06:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/pages/pageUtils.jsx[22m Could not Fast Refresh (new export)
+[2m14:06:34[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/ClientsPage.jsx, /src/pages/FinancePage.jsx, /src/pages/DashboardPage.jsx, /src/pages/ChatPage.jsx, /src/pages/SubscriptionsPage.jsx, /src/pages/TrialsPage.jsx, /src/pages/SettingsPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/MasterClassesPage.jsx, /src/pages/TasksPage.jsx[22m
+[2m14:18:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/pages/TrialsPage.jsx, /src/index.css[22m

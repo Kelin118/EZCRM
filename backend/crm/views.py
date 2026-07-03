@@ -432,11 +432,24 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         status_value = self.request.query_params.get('status')
         assigned_to = self.request.query_params.get('assigned_to')
         client = self.request.query_params.get('client')
+        search = self.request.query_params.get('search')
         due_date = _date_param(self.request, 'due_date')
+        due_date_from = _date_param(self.request, 'due_date_from')
+        due_date_to = _date_param(self.request, 'due_date_to')
 
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(client__first_name__icontains=search)
+                | Q(client__last_name__icontains=search)
+                | Q(client__phone__icontains=search)
+            )
         if status_value:
             if status_value == Task.Status.NEW:
                 queryset = queryset.filter(Q(status=Task.Status.NEW) | Q(status=Task.Status.TODO))
+            elif status_value == Task.Status.DONE:
+                queryset = queryset.filter(Q(status=Task.Status.DONE) | Q(status='completed'))
             else:
                 queryset = queryset.filter(status=status_value)
         if assigned_to:
@@ -447,6 +460,10 @@ class TaskViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(assigned_to=self.request.user)
         if due_date:
             queryset = queryset.filter(due_at__date=due_date)
+        if due_date_from:
+            queryset = queryset.filter(due_at__date__gte=due_date_from)
+        if due_date_to:
+            queryset = queryset.filter(due_at__date__lte=due_date_to)
         return queryset.order_by('due_at', '-created_at')
 
     @action(detail=True, methods=['patch'], url_path='mark-done')

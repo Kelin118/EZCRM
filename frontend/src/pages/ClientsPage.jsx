@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 import { canDeleteDangerous, canManageClients, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { useEmployeeOptions } from './lookupUtils.jsx';
 
 const emptyClient = {
   first_name: '',
@@ -17,7 +18,7 @@ const emptyClient = {
   is_active: true,
 };
 
-const fields = [
+const baseFields = [
   { name: 'first_name', label: 'Имя' },
   { name: 'last_name', label: 'Фамилия' },
   { name: 'parent_name', label: 'Родитель' },
@@ -26,7 +27,6 @@ const fields = [
   { name: 'birth_date', label: 'Дата рождения', type: 'date' },
   { name: 'school_class', label: 'Класс' },
   { name: 'direction', label: 'Направление' },
-  { name: 'manager', label: 'ID менеджера', type: 'number' },
   {
     name: 'is_active',
     label: 'Статус',
@@ -41,11 +41,17 @@ const fields = [
 
 export default function ClientsPage() {
   const crud = useCrudResource('clients/', { search: '', status: '', manager: '' });
+  const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const user = getStoredUser();
   const canEdit = canManageClients(user);
   const canDelete = canDeleteDangerous(user);
   const form = crud.editing || emptyClient;
   const setForm = (value) => crud.setEditing(value);
+  const fields = [
+    ...baseFields.slice(0, 8),
+    { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
+    ...baseFields.slice(8),
+  ];
 
   return (
     <>
@@ -58,7 +64,7 @@ export default function ClientsPage() {
           onChange={(value) => crud.setFilters({ ...crud.filters, status: value })}
           options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'inactive', label: 'Неактивные' }]}
         />
-        <Input label="ID менеджера" value={crud.filters.manager} onChange={(e) => crud.setFilters({ ...crud.filters, manager: e.target.value })} />
+        <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
       </Filters>
       <Table
         data={crud.items}

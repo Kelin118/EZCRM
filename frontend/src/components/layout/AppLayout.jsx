@@ -15,8 +15,10 @@ export default function AppLayout() {
     };
 
     window.addEventListener('api-forbidden', onForbidden);
+    window.addEventListener('api-error', onForbidden);
     return () => {
       window.removeEventListener('api-forbidden', onForbidden);
+      window.removeEventListener('api-error', onForbidden);
       window.clearTimeout(onForbidden.timeout);
     };
   }, []);

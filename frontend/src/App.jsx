@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import api from './api/axios.js';
 import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from './auth.js';
 import AppLayout from './components/layout/AppLayout.jsx';
+import AuditLogsPage from './pages/AuditLogsPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import ClientDetailPage from './pages/ClientDetailPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
@@ -88,6 +89,7 @@ export default function App() {
         <Route path="finance" element={<FinancePage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="employees" element={<EmployeesPage />} />
+        <Route path="audit-logs" element={<AuditLogsPage />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

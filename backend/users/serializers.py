@@ -32,13 +32,32 @@ def would_remove_last_active_admin(instance, attrs):
 
 class UserPublicSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'full_name', 'phone', 'email', 'role', 'is_active', 'date_joined')
+        fields = ('id', 'username', 'full_name', 'display_name', 'phone', 'email', 'role', 'is_active', 'date_joined')
         read_only_fields = ('id', 'date_joined')
 
     def get_full_name(self, obj):
+        return obj.get_full_name() or obj.username
+
+    def get_display_name(self, obj):
+        return obj.get_full_name() or obj.username
+
+
+class StaffOptionSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'full_name', 'display_name', 'role', 'is_active')
+
+    def get_full_name(self, obj):
+        return obj.get_full_name() or obj.username
+
+    def get_display_name(self, obj):
         return obj.get_full_name() or obj.username
 
 

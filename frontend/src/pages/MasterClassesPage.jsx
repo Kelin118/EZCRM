@@ -1,5 +1,20 @@
-import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { useState } from 'react';
+
+import api from '../api/axios.js';
+import KanbanBoard from '../components/ui/KanbanBoard.jsx';
+import KanbanCard from '../components/ui/KanbanCard.jsx';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
+import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
+import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
+
+const masterClassStages = [
+  { value: 'lead', label: 'Лид' },
+  { value: 'booked', label: 'Записался' },
+  { value: 'attended', label: 'Пришел' },
+  { value: 'paid', label: 'Оплатил' },
+  { value: 'bought', label: 'Купил абонемент' },
+  { value: 'lost', label: 'Не купил' },
+];
 
 const empty = {
   title: '',
@@ -8,7 +23,7 @@ const empty = {
   manager: '',
   teacher: '',
   starts_at: '',
-  stage: 'planned',
+  stage: 'lead',
   payment_date: '',
   capacity: 0,
   price: 0,
@@ -16,49 +31,137 @@ const empty = {
   participants: [],
 };
 
-const fields = [
-  { name: 'title', label: 'Название' },
-  { name: 'client', label: 'ID клиента', type: 'number' },
-  { name: 'manager', label: 'ID менеджера', type: 'number' },
-  { name: 'teacher', label: 'ID преподавателя', type: 'number' },
+const baseFields = [
+  { name: 'title', label: 'Предмет' },
   { name: 'starts_at', label: 'Дата и время', type: 'datetime-local' },
-  { name: 'stage', label: 'Этап', type: 'select', options: [{ value: 'planned', label: 'Планируется' }, { value: 'completed', label: 'Завершён' }, { value: 'cancelled', label: 'Отменён' }] },
+  { name: 'stage', label: 'Этап', type: 'select', options: masterClassStages },
   { name: 'payment_date', label: 'Дата оплаты', type: 'date' },
   { name: 'capacity', label: 'Мест', type: 'number' },
   { name: 'price', label: 'Цена', type: 'number' },
   { name: 'payment_amount', label: 'Оплачено', type: 'number' },
-  { name: 'description', label: 'Описание', type: 'textarea' },
+  { name: 'description', label: 'Комментарий', type: 'textarea' },
 ];
+
+const stageLabel = (value) => masterClassStages.find((stage) => stage.value === value)?.label || value || '—';
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
+const dash = (value) => value || '—';
+const masterClassColumnId = (item) => {
+  if (item.stage === 'planned') return 'lead';
+  if (item.stage === 'completed') return 'attended';
+  if (item.stage === 'cancelled') return 'lost';
+  return item.stage;
+};
+
+function ViewToggle({ value, onChange }) {
+  return (
+    <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
+      {[
+        ['table', 'Таблица'],
+        ['kanban', 'Канбан'],
+      ].map(([mode, label]) => (
+        <button
+          key={mode}
+          type="button"
+          onClick={() => onChange(mode)}
+          className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${value === mode ? 'bg-brand text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-brand'}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
+  const clientName = item.client_name || (item.client ? `Клиент #${item.client}` : '—');
+
+  return (
+    <KanbanCard draggable={canEdit} {...dragProps}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold text-slate-900">{clientName}</p>
+          <p className="mt-1 text-xs font-medium text-slate-500">Телефон: {dash(item.client_phone)}</p>
+        </div>
+        <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
+      </div>
+      <dl className="mt-3 grid gap-2 text-sm text-slate-600">
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name || item.manager)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата МК</dt><dd className="text-right font-medium">{dateTime(item.starts_at)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(item.title)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Куратор</dt><dd className="text-right font-medium">{dash(item.teacher_name || item.teacher)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма оплаты</dt><dd className="text-right font-semibold text-brand">{money(item.payment_amount)}</dd></div>
+      </dl>
+      {item.description && <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
+      {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
+    </KanbanCard>
+  );
+}
 
 export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '' });
+  const { clientOptions } = useClientOptions();
+  const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
+  const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
+  const [viewMode, setViewMode] = useState('table');
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
+  const fields = [
+    baseFields[0],
+    { name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Выберите клиента' }, ...clientOptions] },
+    { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
+    { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
+    ...baseFields.slice(1),
+  ];
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
+
+  const moveMasterClass = async (item, nextStage) => {
+    if (!canEdit) return;
+    const previousItems = crud.items;
+    crud.setItems((items) => items.map((masterClass) => (masterClass.id === item.id ? { ...masterClass, stage: nextStage } : masterClass)));
+    try {
+      const { data } = await api.patch(`master-classes/${item.id}/`, { stage: nextStage });
+      crud.setItems((items) => items.map((masterClass) => (masterClass.id === item.id ? { ...masterClass, ...data } : masterClass)));
+    } catch (error) {
+      crud.setItems(previousItems);
+      showApiError(error);
+    }
+  };
 
   return (
     <>
       <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
+        <ViewToggle value={viewMode} onChange={setViewMode} />
       </PageHeader>
       <Filters>
-        <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, { value: 'planned', label: 'Планируется' }, { value: 'completed', label: 'Завершён' }, { value: 'cancelled', label: 'Отменён' }]} />
-        <Input label="ID менеджера" value={crud.filters.manager} onChange={(e) => crud.setFilters({ ...crud.filters, manager: e.target.value })} />
+        <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
+        <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
       </Filters>
-      <Table data={crud.items} columns={[
-        { key: 'title', header: 'Название' },
-        { key: 'starts_at', header: 'Дата', render: (row) => (row.starts_at ? new Date(row.starts_at).toLocaleString('ru-RU') : '—') },
-        { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage} /> },
-        { key: 'capacity', header: 'Мест' },
-        { key: 'price', header: 'Цена', render: (row) => money(row.price) },
-        { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
-        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
-      ]} />
+      {viewMode === 'kanban' ? (
+        <KanbanBoard
+          columns={masterClassStages.map((stage) => ({ id: stage.value, title: stage.label }))}
+          items={crud.items}
+          getColumnId={masterClassColumnId}
+          onMove={moveMasterClass}
+          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
+        />
+      ) : (
+        <Table data={crud.items} columns={[
+          { key: 'title', header: 'Предмет' },
+          { key: 'starts_at', header: 'Дата', render: (row) => dateTime(row.starts_at) },
+          { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
+          { key: 'capacity', header: 'Мест' },
+          { key: 'price', header: 'Цена', render: (row) => money(row.price) },
+          { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
+          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        ]} />
+      )}
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>
   );

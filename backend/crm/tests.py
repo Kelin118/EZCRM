@@ -3,7 +3,7 @@ from django.contrib.auth.hashers import check_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase
 
-from .models import Client
+from .models import AuditLog, Client, FinanceTransaction, Task
 
 
 class RolePermissionTests(APITestCase):
@@ -45,6 +45,56 @@ class RolePermissionTests(APITestCase):
             )
             response = self.client.post('/api/import/excel/', {'file': upload}, format='multipart')
             self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_get_audit_logs(self):
+        AuditLog.objects.create(user=self.admin, action='create', entity_type='Client', description='test')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/audit-logs/')
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_manager_cannot_get_audit_logs(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/audit-logs/')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_client_create_creates_audit_log(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/clients/', {'first_name': 'Audit', 'last_name': 'Client'}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(AuditLog.objects.filter(action='create', entity_type='Client', description='Создан клиент').exists())
+
+    def test_finance_create_creates_audit_log(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action='payment',
+                entity_type='FinanceTransaction',
+                description='Добавлена финансовая операция',
+            ).exists()
+        )
+
+    def test_mark_done_task_creates_audit_log(self):
+        task = Task.objects.create(title='Audit task', assigned_to=self.manager)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.patch(f'/api/tasks/{task.id}/mark-done/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(AuditLog.objects.filter(action='update', entity_type='Task', description='Задача выполнена').exists())
 
 
 class UserRegistrationAndEmployeeTests(APITestCase):
@@ -114,6 +164,7 @@ class UserRegistrationAndEmployeeTests(APITestCase):
         self.assertEqual(manager.phone, '+77001112233')
         self.assertTrue(manager.check_password('password123'))
         self.assertNotIn('password', response.data)
+        self.assertTrue(AuditLog.objects.filter(action='create', entity_type='User', description='Создан сотрудник').exists())
 
     def test_admin_can_deactivate_employee(self):
         User = get_user_model()

@@ -16,6 +16,7 @@ const titles = {
   '/finance': 'Финансы',
   '/reports': 'Отчёты',
   '/employees': 'Сотрудники',
+  '/audit-logs': 'Журнал действий',
   '/chat': 'Чат',
   '/settings': 'Настройки',
 };

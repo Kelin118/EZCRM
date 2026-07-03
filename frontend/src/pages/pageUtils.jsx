@@ -35,11 +35,14 @@ const readOnlyFields = new Set([
   'sender',
   'sender_name',
   'client_name',
-  'client_names',
   'created_by',
+  'created_by_name',
   'manager_name',
   'teacher_name',
   'assigned_to_name',
+  'client_parent_name',
+  'client_phone',
+  'subscription_title',
   'used_lessons',
   'lessons_left',
   'lessons_total',
@@ -68,6 +71,23 @@ export function normalizePayload(payload) {
   });
 
   return normalized;
+}
+
+export function getApiErrorMessage(error) {
+  const data = error.response?.data;
+  if (!data) return 'Не удалось выполнить действие.';
+  if (typeof data === 'string') return data;
+  if (data.detail) return data.detail;
+
+  const firstKey = Object.keys(data)[0];
+  const firstValue = data[firstKey];
+  if (Array.isArray(firstValue)) return `${firstKey}: ${firstValue[0]}`;
+  if (firstValue && typeof firstValue === 'object') return `${firstKey}: ${JSON.stringify(firstValue)}`;
+  return firstValue ? `${firstKey}: ${firstValue}` : 'Проверьте заполнение формы.';
+}
+
+export function showApiError(error) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: getApiErrorMessage(error) }));
 }
 
 export function PageHeader({ title, actionLabel, onAction, children }) {
@@ -215,26 +235,36 @@ export function useCrudResource(endpoint, initialFilters = {}) {
 
   const save = async (payload) => {
     setSaving(true);
-    const normalizedPayload = normalizePayload(payload);
-    if (editing?.id) {
-      await api.patch(`${endpoint}${editing.id}/`, normalizedPayload);
-    } else {
-      await api.post(endpoint, normalizedPayload);
+    try {
+      const normalizedPayload = normalizePayload(payload);
+      if (editing?.id) {
+        await api.patch(`${endpoint}${editing.id}/`, normalizedPayload);
+      } else {
+        await api.post(endpoint, normalizedPayload);
+      }
+      setModalOpen(false);
+      setEditing(null);
+      await load();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
-    setModalOpen(false);
-    setEditing(null);
-    await load();
   };
 
   const remove = async (id) => {
     if (!window.confirm('Удалить запись?')) return;
-    await api.delete(`${endpoint}${id}/`);
-    await load();
+    try {
+      await api.delete(`${endpoint}${id}/`);
+      await load();
+    } catch (error) {
+      showApiError(error);
+    }
   };
 
   return {
     items,
+    setItems,
     loading,
     filters,
     setFilters,

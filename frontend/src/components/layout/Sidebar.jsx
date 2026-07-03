@@ -2,6 +2,7 @@ import {
   BarChart3,
   CalendarCheck,
   ClipboardList,
+  ClipboardClock,
   CreditCard,
   Home,
   ListChecks,
@@ -28,6 +29,7 @@ export const navItems = [
   { to: '/finance', label: 'Финансы', icon: CreditCard, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { to: '/reports', label: 'Отчёты', icon: PieChart, roles: [ROLES.ACCOUNTANT] },
   { to: '/employees', label: 'Сотрудники', icon: UserCog, roles: [ROLES.ADMIN] },
+  { to: '/audit-logs', label: 'Журнал действий', icon: ClipboardClock, roles: [ROLES.ADMIN] },
   { to: '/chat', label: 'Чат', icon: MessageSquare, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { to: '/settings', label: 'Настройки', icon: Settings, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
 ];

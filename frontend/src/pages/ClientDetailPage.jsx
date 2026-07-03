@@ -195,9 +195,10 @@ function renderTab(activeTab, data) {
   if (activeTab === 'visits') {
     return <Table data={data.visits} columns={[
       { key: 'visited_at', header: 'Дата', render: (row) => row.visited_at ? new Date(row.visited_at).toLocaleString('ru-RU') : '—' },
-      { key: 'subscription', header: 'Абонемент ID' },
+      { key: 'subscription', header: 'Абонемент', render: (row) => row.subscription_title || '—' },
+      { key: 'teacher', header: 'Учитель', render: (row) => row.teacher_name || '—' },
       { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{visitStatusOptions.find((item) => item.value === row.status)?.label || row.status}</Badge> },
-      { key: 'lesson_deducted', header: 'Списано', render: (row) => row.lesson_deducted ? 'Да' : 'Нет' },
+      { key: 'notes', header: 'Комментарий' },
     ]} />;
   }
   if (activeTab === 'finance') {

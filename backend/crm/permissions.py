@@ -41,6 +41,10 @@ class IsAdminRole(BasePermission):
         return is_authenticated(request.user) and is_admin(request.user)
 
 
+class AuditLogPermission(IsAdminRole):
+    pass
+
+
 class ClientPermission(RolePermission):
     allowed_by_role = {
         MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},

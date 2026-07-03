@@ -1,7 +1,7 @@
 from datetime import datetime, time, timedelta
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -12,8 +12,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .audit import log_action
 from .excel_import import import_excel
 from .models import (
+    AuditLog,
     ChatMessage,
     Client,
     FinanceTransaction,
@@ -28,6 +30,7 @@ from .permissions import (
     ACCOUNTANT,
     MANAGER,
     TEACHER,
+    AuditLogPermission,
     ChatPermission,
     ClientPermission,
     DashboardPermission,
@@ -43,6 +46,7 @@ from .permissions import (
     role,
 )
 from .serializers import (
+    AuditLogSerializer,
     ChatMessageSerializer,
     ClientSerializer,
     FinanceTransactionSerializer,
@@ -90,6 +94,63 @@ def _create_income_transaction(*, client, amount, source, paid_at, comment, crea
 class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
     permission_classes = (IsAuthenticated,)
 
+    audit_entity_type = None
+    audit_create_description = ''
+    audit_update_description = ''
+    audit_delete_description = ''
+
+    def _audit_entity_type(self):
+        return self.audit_entity_type or self.get_queryset().model.__name__
+
+    def _audit_changes(self):
+        return {key: value for key, value in self.request.data.items() if key not in {'password', 'password_confirm'}}
+
+    def _log_instance(self, action, instance, description='', changes=None):
+        log_action(
+            self.request,
+            action,
+            self._audit_entity_type(),
+            entity_id=getattr(instance, 'pk', None),
+            entity_name=str(instance),
+            description=description,
+            changes=changes,
+        )
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        if self.audit_create_description:
+            self._log_instance(AuditLog.Action.CREATE, instance, self.audit_create_description, self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        if self.audit_update_description:
+            self._log_instance(AuditLog.Action.UPDATE, instance, self.audit_update_description, self._audit_changes())
+
+    def perform_destroy(self, instance):
+        entity_id = instance.pk
+        entity_name = str(instance)
+        super().perform_destroy(instance)
+        if self.audit_delete_description:
+            log_action(
+                self.request,
+                AuditLog.Action.DELETE,
+                self._audit_entity_type(),
+                entity_id=entity_id,
+                entity_name=entity_name,
+                description=self.audit_delete_description,
+            )
+
+    def permission_denied(self, request, message=None, code=None):
+        if getattr(self, 'action', None) == 'destroy':
+            log_action(
+                request,
+                AuditLog.Action.DELETE,
+                self._audit_entity_type(),
+                entity_id=self.kwargs.get(self.lookup_url_kwarg or self.lookup_field),
+                description='Попытка удаления',
+            )
+        return super().permission_denied(request, message=message, code=code)
+
 
 class CurrentUserView(APIView):
     permission_classes = (IsAuthenticated,)
@@ -106,10 +167,45 @@ class CurrentUserView(APIView):
         )
 
 
+class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = (IsAuthenticated, AuditLogPermission)
+    serializer_class = AuditLogSerializer
+    queryset = AuditLog.objects.select_related('user').all()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        user = self.request.query_params.get('user')
+        action_value = self.request.query_params.get('action')
+        entity_type = self.request.query_params.get('entity_type')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+        search = self.request.query_params.get('search')
+
+        if user:
+            queryset = queryset.filter(user_id=user)
+        if action_value:
+            queryset = queryset.filter(action=action_value)
+        if entity_type:
+            queryset = queryset.filter(entity_type=entity_type)
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+        if search:
+            queryset = queryset.filter(description__icontains=search) | queryset.filter(
+                entity_name__icontains=search
+            ) | queryset.filter(entity_type__icontains=search)
+        return queryset
+
+
 class ClientViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, ClientPermission)
     queryset = Client.objects.select_related('manager').all()
     serializer_class = ClientSerializer
+    audit_entity_type = 'Client'
+    audit_create_description = 'Создан клиент'
+    audit_update_description = 'Изменён клиент'
+    audit_delete_description = 'Удалён клиент'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -134,6 +230,8 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, SubscriptionPermission)
     queryset = Subscription.objects.select_related('client').all()
     serializer_class = SubscriptionSerializer
+    audit_entity_type = 'Subscription'
+    audit_update_description = 'Изменён абонемент'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -167,12 +265,14 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                 )
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
+            self._log_instance(AuditLog.Action.CREATE, subscription, 'Создан абонемент', self._audit_changes())
 
 
 class VisitViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, VisitPermission)
     queryset = Visit.objects.select_related('client', 'subscription', 'teacher').all()
     serializer_class = VisitSerializer
+    audit_entity_type = 'Visit'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -206,6 +306,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             visit = serializer.save()
             self._deduct_lesson(visit)
+            self._log_instance(AuditLog.Action.VISIT, visit, 'Добавлено посещение', self._audit_changes())
 
     def perform_update(self, serializer):
         with transaction.atomic():
@@ -222,12 +323,15 @@ class VisitViewSet(BaseAuthenticatedViewSet):
                 visit.save(update_fields=('lesson_deducted', 'updated_at'))
 
             self._deduct_lesson(visit)
+            self._log_instance(AuditLog.Action.UPDATE, visit, 'Изменено посещение', self._audit_changes())
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, TrialPermission)
     queryset = Trial.objects.select_related('client', 'manager', 'teacher').all()
     serializer_class = TrialSerializer
+    audit_entity_type = 'Trial'
+    audit_update_description = 'Изменён пробник'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -265,12 +369,15 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 )
                 trial.finance_transaction = finance_transaction
                 trial.save(update_fields=('finance_transaction', 'updated_at'))
+            self._log_instance(AuditLog.Action.CREATE, trial, 'Добавлен пробник', self._audit_changes())
 
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
     queryset = MasterClass.objects.select_related('manager', 'teacher').prefetch_related('participants').all()
     serializer_class = MasterClassSerializer
+    audit_entity_type = 'MasterClass'
+    audit_update_description = 'Изменён МК'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -309,12 +416,16 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 )
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
+            self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
 
 
 class TaskViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, TaskPermission)
     queryset = Task.objects.select_related('assigned_to', 'client').all()
     serializer_class = TaskSerializer
+    audit_entity_type = 'Task'
+    audit_create_description = 'Создана задача'
+    audit_update_description = 'Изменена задача'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -324,7 +435,10 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         due_date = _date_param(self.request, 'due_date')
 
         if status_value:
-            queryset = queryset.filter(status=status_value)
+            if status_value == Task.Status.NEW:
+                queryset = queryset.filter(Q(status=Task.Status.NEW) | Q(status=Task.Status.TODO))
+            else:
+                queryset = queryset.filter(status=status_value)
         if assigned_to:
             queryset = queryset.filter(assigned_to_id=assigned_to)
         if client:
@@ -340,6 +454,7 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         task = self.get_object()
         task.status = Task.Status.DONE
         task.save(update_fields=('status', 'updated_at'))
+        self._log_instance(AuditLog.Action.UPDATE, task, 'Задача выполнена', {'status': Task.Status.DONE})
         return Response(self.get_serializer(task).data)
 
 
@@ -347,6 +462,9 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
     queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by').all()
     serializer_class = FinanceTransactionSerializer
+    audit_entity_type = 'FinanceTransaction'
+    audit_update_description = 'Изменена финансовая операция'
+    audit_delete_description = 'Удалена финансовая операция'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -377,7 +495,13 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         return queryset.order_by('-paid_at', '-created_at')
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        finance_transaction = serializer.save(created_by=self.request.user)
+        self._log_instance(
+            AuditLog.Action.PAYMENT,
+            finance_transaction,
+            'Добавлена финансовая операция',
+            self._audit_changes(),
+        )
 
 
 class ChatMessageViewSet(BaseAuthenticatedViewSet):
@@ -396,6 +520,8 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, SettingsPermission)
     queryset = StudioSettings.objects.all()
     serializer_class = StudioSettingsSerializer
+    audit_entity_type = 'Settings'
+    audit_update_description = 'Изменены настройки студии'
 
     price_fields = {
         'default_price_ab4',
@@ -430,6 +556,21 @@ class ExcelImportView(APIView):
             result = import_excel(uploaded_file, request.user)
         except Exception as exc:
             return Response({'detail': f'Не удалось прочитать Excel-файл: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        created = result.get('created', {})
+        log_action(
+            request,
+            AuditLog.Action.IMPORT,
+            'ExcelImport',
+            entity_name=uploaded_file.name,
+            description=(
+                f"Импорт Excel: clients={created.get('clients', 0)}, "
+                f"subscriptions={created.get('subscriptions', 0)}, "
+                f"trials={created.get('trials', 0)}, "
+                f"master_classes={created.get('master_classes', 0)}, "
+                f"visits={created.get('visits', 0)}, skipped={result.get('skipped', 0)}"
+            ),
+            changes=result,
+        )
         return Response(result, status=status.HTTP_200_OK)
 
 

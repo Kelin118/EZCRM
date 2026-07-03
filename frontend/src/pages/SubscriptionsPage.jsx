@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { useClientOptions } from './lookupUtils.jsx';
 
 const empty = {
   client: '',
@@ -16,8 +17,7 @@ const empty = {
   status: 'active',
 };
 
-const fields = [
-  { name: 'client', label: 'ID клиента', type: 'number' },
+const baseFields = [
   { name: 'title', label: 'Название' },
   { name: 'start_date', label: 'Дата начала', type: 'date' },
   { name: 'end_date', label: 'Дата окончания', type: 'date' },
@@ -57,12 +57,14 @@ function Progress({ row }) {
 
 export default function SubscriptionsPage() {
   const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '' });
+  const { clientOptions } = useClientOptions();
   const user = getStoredUser();
   const canEdit = canManageSubscriptions(user);
   const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const totalPaid = crud.items.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
+  const fields = [{ name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Выберите клиента' }, ...clientOptions] }, ...baseFields];
 
   return (
     <>
@@ -71,7 +73,7 @@ export default function SubscriptionsPage() {
       </PageHeader>
       <Filters>
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'paused', label: 'Пауза' }, { value: 'expired', label: 'Истёк' }, { value: 'cancelled', label: 'Отменён' }]} />
-        <Input label="ID клиента" value={crud.filters.client} onChange={(e) => crud.setFilters({ ...crud.filters, client: e.target.value })} />
+        <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
         <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
       </Filters>

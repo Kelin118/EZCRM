@@ -144,6 +144,12 @@ class Trial(TimeStampedModel):
 
 class MasterClass(TimeStampedModel):
     class Stage(models.TextChoices):
+        LEAD = 'lead', 'Lead'
+        BOOKED = 'booked', 'Booked'
+        ATTENDED = 'attended', 'Attended'
+        PAID = 'paid', 'Paid'
+        BOUGHT = 'bought', 'Bought'
+        LOST = 'lost', 'Lost'
         PLANNED = 'planned', 'Planned'
         COMPLETED = 'completed', 'Completed'
         CANCELLED = 'cancelled', 'Cancelled'
@@ -185,8 +191,11 @@ class MasterClass(TimeStampedModel):
 
 class Task(TimeStampedModel):
     class Status(models.TextChoices):
+        NEW = 'new', 'New'
         TODO = 'todo', 'To do'
         IN_PROGRESS = 'in_progress', 'In progress'
+        TODAY = 'today', 'Today'
+        OVERDUE = 'overdue', 'Overdue'
         DONE = 'done', 'Done'
         CANCELLED = 'cancelled', 'Cancelled'
 
@@ -272,3 +281,41 @@ class StudioSettings(TimeStampedModel):
 
     def __str__(self):
         return self.studio_name
+
+
+class AuditLog(models.Model):
+    class Action(models.TextChoices):
+        CREATE = 'create', 'Create'
+        UPDATE = 'update', 'Update'
+        DELETE = 'delete', 'Delete'
+        LOGIN = 'login', 'Login'
+        LOGOUT = 'logout', 'Logout'
+        IMPORT = 'import', 'Import'
+        PAYMENT = 'payment', 'Payment'
+        VISIT = 'visit', 'Visit'
+        PASSWORD_CHANGE = 'password_change', 'Password change'
+        ACTIVATE = 'activate', 'Activate'
+        DEACTIVATE = 'deactivate', 'Deactivate'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+    )
+    action = models.CharField(max_length=32, choices=Action.choices)
+    entity_type = models.CharField(max_length=100)
+    entity_id = models.CharField(max_length=64, null=True, blank=True)
+    entity_name = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    changes = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return f'{self.created_at:%Y-%m-%d %H:%M} {self.action} {self.entity_type}'

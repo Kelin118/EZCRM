@@ -19,8 +19,14 @@ from .models import (
     ChatMessage,
     Client,
     FinanceTransaction,
+    GroupMembership,
+    Lesson,
     MasterClass,
+    Room,
+    ScheduleSlot,
     StudioSettings,
+    StudyGroup,
+    Subject,
     Subscription,
     Task,
     Trial,
@@ -35,6 +41,7 @@ from .permissions import (
     ClientPermission,
     DashboardPermission,
     ExcelImportPermission,
+    EducationPermission,
     FinancePermission,
     MasterClassPermission,
     ReportsPermission,
@@ -50,8 +57,14 @@ from .serializers import (
     ChatMessageSerializer,
     ClientSerializer,
     FinanceTransactionSerializer,
+    GroupMembershipSerializer,
+    LessonSerializer,
     MasterClassSerializer,
+    RoomSerializer,
+    ScheduleSlotSerializer,
     StudioSettingsSerializer,
+    StudyGroupSerializer,
+    SubjectSerializer,
     SubscriptionSerializer,
     TaskSerializer,
     TrialSerializer,
@@ -91,6 +104,29 @@ def _create_income_transaction(*, client, amount, source, paid_at, comment, crea
     )
 
 
+def _lesson_visited_at(lesson):
+    return timezone.make_aware(datetime.combine(lesson.lesson_date, lesson.start_time))
+
+
+def _restore_subscription_lesson(subscription):
+    if subscription and subscription.remaining_visits < subscription.total_visits:
+        subscription.remaining_visits += 1
+        subscription.save(update_fields=('remaining_visits', 'updated_at'))
+
+
+def _deduct_subscription_lesson(visit):
+    if (
+        visit.status == Visit.Status.ATTENDED
+        and visit.subscription_id
+        and not visit.lesson_deducted
+        and visit.subscription.remaining_visits > 0
+    ):
+        visit.subscription.remaining_visits -= 1
+        visit.subscription.save(update_fields=('remaining_visits', 'updated_at'))
+        visit.lesson_deducted = True
+        visit.save(update_fields=('lesson_deducted', 'updated_at'))
+
+
 class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
     permission_classes = (IsAuthenticated,)
 
@@ -103,7 +139,11 @@ class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
         return self.audit_entity_type or self.get_queryset().model.__name__
 
     def _audit_changes(self):
-        return {key: value for key, value in self.request.data.items() if key not in {'password', 'password_confirm'}}
+        return {
+            key: value
+            for key, value in self.request.data.items()
+            if key not in {'password', 'password_confirm'} and 'password' not in key.lower()
+        }
 
     def _log_instance(self, action, instance, description='', changes=None):
         log_action(
@@ -192,10 +232,344 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         if date_to:
             queryset = queryset.filter(created_at__date__lte=date_to)
         if search:
-            queryset = queryset.filter(description__icontains=search) | queryset.filter(
-                entity_name__icontains=search
-            ) | queryset.filter(entity_type__icontains=search)
+            queryset = queryset.filter(
+                Q(entity_name__icontains=search)
+                | Q(description__icontains=search)
+                | Q(action__icontains=search)
+                | Q(entity_type__icontains=search)
+                | Q(user__username__icontains=search)
+                | Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+            )
         return queryset
+
+
+class EducationBaseViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, EducationPermission)
+
+
+class SubjectViewSet(EducationBaseViewSet):
+    queryset = Subject.objects.all()
+    serializer_class = SubjectSerializer
+    audit_entity_type = 'Subject'
+    audit_create_description = 'Создан предмет'
+    audit_update_description = 'Изменён предмет'
+    audit_delete_description = 'Удалён предмет'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        is_active = self.request.query_params.get('is_active')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(description__icontains=search))
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by('name')
+
+
+class RoomViewSet(EducationBaseViewSet):
+    queryset = Room.objects.all()
+    serializer_class = RoomSerializer
+    audit_entity_type = 'Room'
+    audit_create_description = 'Создан кабинет'
+    audit_update_description = 'Изменён кабинет'
+    audit_delete_description = 'Удалён кабинет'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        is_active = self.request.query_params.get('is_active')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(description__icontains=search))
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by('name')
+
+
+class StudyGroupViewSet(EducationBaseViewSet):
+    queryset = StudyGroup.objects.select_related('subject', 'teacher', 'manager').all()
+    serializer_class = StudyGroupSerializer
+    audit_entity_type = 'StudyGroup'
+    audit_create_description = 'Создана группа'
+    audit_update_description = 'Изменена группа'
+    audit_delete_description = 'Удалена группа'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_value = self.request.query_params.get('status')
+        teacher = self.request.query_params.get('teacher')
+        manager = self.request.query_params.get('manager')
+        subject = self.request.query_params.get('subject')
+        search = self.request.query_params.get('search')
+
+        if role(self.request.user) == TEACHER:
+            queryset = queryset.filter(teacher=self.request.user)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if teacher:
+            queryset = queryset.filter(teacher_id=teacher)
+        if manager:
+            queryset = queryset.filter(manager_id=manager)
+        if subject:
+            queryset = queryset.filter(subject_id=subject)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(description__icontains=search)
+                | Q(subject__name__icontains=search)
+                | Q(teacher__username__icontains=search)
+            )
+        return queryset.order_by('name')
+
+
+class GroupMembershipViewSet(EducationBaseViewSet):
+    queryset = GroupMembership.objects.select_related('group', 'client', 'group__teacher').all()
+    serializer_class = GroupMembershipSerializer
+    audit_entity_type = 'GroupMembership'
+    audit_create_description = 'Ученик добавлен в группу'
+    audit_update_description = 'Изменено участие ученика в группе'
+    audit_delete_description = 'Ученик удалён из группы'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        group = self.request.query_params.get('group')
+        client = self.request.query_params.get('client')
+        status_value = self.request.query_params.get('status')
+
+        if role(self.request.user) == TEACHER:
+            queryset = queryset.filter(group__teacher=self.request.user)
+        if group:
+            queryset = queryset.filter(group_id=group)
+        if client:
+            queryset = queryset.filter(client_id=client)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        return queryset.order_by('group__name', 'client__first_name', 'client__last_name')
+
+
+class ScheduleSlotViewSet(EducationBaseViewSet):
+    queryset = ScheduleSlot.objects.select_related('group', 'subject', 'teacher', 'room').all()
+    serializer_class = ScheduleSlotSerializer
+    audit_entity_type = 'ScheduleSlot'
+    audit_create_description = 'Создан слот расписания'
+    audit_update_description = 'Изменён слот расписания'
+    audit_delete_description = 'Удалён слот расписания'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        group = self.request.query_params.get('group')
+        teacher = self.request.query_params.get('teacher')
+        weekday = self.request.query_params.get('weekday')
+        room = self.request.query_params.get('room')
+        is_active = self.request.query_params.get('is_active')
+
+        if role(self.request.user) == TEACHER:
+            queryset = queryset.filter(teacher=self.request.user)
+        if group:
+            queryset = queryset.filter(group_id=group)
+        if teacher:
+            queryset = queryset.filter(teacher_id=teacher)
+        if weekday not in (None, ''):
+            queryset = queryset.filter(weekday=weekday)
+        if room:
+            queryset = queryset.filter(room_id=room)
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by('weekday', 'start_time')
+
+    @action(detail=True, methods=['post'], url_path='generate-lessons')
+    def generate_lessons(self, request, pk=None):
+        if not (role(request.user) == MANAGER or getattr(request.user, 'is_superuser', False) or role(request.user) == 'admin'):
+            return Response({'detail': 'Недостаточно прав.'}, status=status.HTTP_403_FORBIDDEN)
+
+        slot = self.get_object()
+        date_from = parse_date(request.data.get('date_from') or '')
+        date_to = parse_date(request.data.get('date_to') or '')
+        if not date_from or not date_to or date_from > date_to:
+            return Response({'detail': 'Укажите корректный период.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_count = 0
+        current = date_from
+        while current <= date_to:
+            if current.weekday() == slot.weekday:
+                _, created = Lesson.objects.get_or_create(
+                    schedule_slot=slot,
+                    lesson_date=current,
+                    start_time=slot.start_time,
+                    defaults={
+                        'group': slot.group,
+                        'subject': slot.subject or slot.group.subject,
+                        'teacher': slot.teacher or slot.group.teacher,
+                        'room': slot.room,
+                        'end_time': slot.end_time,
+                    },
+                )
+                if created:
+                    created_count += 1
+            current += timedelta(days=1)
+
+        log_action(
+            request,
+            AuditLog.Action.CREATE,
+            'Lesson',
+            entity_id=slot.id,
+            entity_name=str(slot),
+            description='Сгенерированы уроки из расписания',
+            changes={'created': created_count, 'date_from': str(date_from), 'date_to': str(date_to)},
+        )
+        return Response({'created': created_count}, status=status.HTTP_201_CREATED)
+
+
+class LessonViewSet(EducationBaseViewSet):
+    queryset = Lesson.objects.select_related('group', 'schedule_slot', 'subject', 'teacher', 'room').prefetch_related('visits').all()
+    serializer_class = LessonSerializer
+    audit_entity_type = 'Lesson'
+    audit_create_description = 'Создан урок'
+    audit_update_description = 'Изменён урок'
+    audit_delete_description = 'Удалён урок'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        group = self.request.query_params.get('group')
+        teacher = self.request.query_params.get('teacher')
+        subject = self.request.query_params.get('subject')
+        room = self.request.query_params.get('room')
+        status_value = self.request.query_params.get('status')
+        lesson_date = _date_param(self.request, 'lesson_date')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+        search = self.request.query_params.get('search')
+
+        if role(self.request.user) == TEACHER:
+            queryset = queryset.filter(teacher=self.request.user)
+        if group:
+            queryset = queryset.filter(group_id=group)
+        if teacher:
+            queryset = queryset.filter(teacher_id=teacher)
+        if subject:
+            queryset = queryset.filter(subject_id=subject)
+        if room:
+            queryset = queryset.filter(room_id=room)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if lesson_date:
+            queryset = queryset.filter(lesson_date=lesson_date)
+        if date_from:
+            queryset = queryset.filter(lesson_date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(lesson_date__lte=date_to)
+        if search:
+            queryset = queryset.filter(
+                Q(topic__icontains=search)
+                | Q(comment__icontains=search)
+                | Q(group__name__icontains=search)
+                | Q(subject__name__icontains=search)
+            )
+        return queryset.order_by('-lesson_date', 'start_time')
+
+    def _attendance_payload(self, lesson):
+        memberships = GroupMembership.objects.select_related('client').filter(
+            group=lesson.group,
+            status=GroupMembership.Status.ACTIVE,
+        ).order_by('client__first_name', 'client__last_name')
+        visits = {visit.client_id: visit for visit in lesson.visits.select_related('subscription', 'client')}
+        students = []
+        for membership in memberships:
+            client = membership.client
+            subscription = Subscription.objects.filter(client=client, status=Subscription.Status.ACTIVE).order_by('-start_date').first()
+            visit = visits.get(client.id)
+            students.append(
+                {
+                    'client': client.id,
+                    'client_name': str(client),
+                    'client_phone': client.phone,
+                    'subscription': subscription.id if subscription else None,
+                    'subscription_title': subscription.title if subscription else '',
+                    'lessons_left': subscription.remaining_visits if subscription else None,
+                    'visit': VisitSerializer(visit).data if visit else None,
+                    'status': visit.status if visit else '',
+                    'comment': visit.notes if visit else '',
+                }
+            )
+        return {'lesson': LessonSerializer(lesson).data, 'students': students}
+
+    @action(detail=True, methods=['get', 'post'], url_path='attendance')
+    def attendance(self, request, pk=None):
+        lesson = self.get_object()
+        if not lesson.group_id:
+            return Response({'detail': 'У урока не указана группа.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.method.lower() == 'get':
+            return Response(self._attendance_payload(lesson))
+
+        items = request.data.get('items') or []
+        if not isinstance(items, list):
+            return Response({'detail': 'items должен быть списком.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            for item in items:
+                client_id = item.get('client')
+                status_value = item.get('status') or Visit.Status.PLANNED
+                subscription_id = item.get('subscription') or None
+                notes = item.get('comment') or item.get('notes') or ''
+                previous = Visit.objects.select_related('subscription').filter(lesson=lesson, client_id=client_id).first()
+
+                if previous:
+                    old_subscription = previous.subscription
+                    old_lesson_deducted = previous.lesson_deducted
+                    previous.subscription_id = subscription_id
+                    previous.teacher = lesson.teacher
+                    previous.visited_at = _lesson_visited_at(lesson)
+                    previous.status = status_value
+                    previous.notes = notes
+                    previous.save()
+                    subscription_changed = old_subscription and old_subscription.id != previous.subscription_id
+                    if old_lesson_deducted and (previous.status != Visit.Status.ATTENDED or subscription_changed):
+                        _restore_subscription_lesson(old_subscription)
+                        previous.lesson_deducted = False
+                        previous.save(update_fields=('lesson_deducted', 'updated_at'))
+                    _deduct_subscription_lesson(previous)
+                else:
+                    visit = Visit.objects.create(
+                        lesson=lesson,
+                        client_id=client_id,
+                        subscription_id=subscription_id,
+                        teacher=lesson.teacher,
+                        visited_at=_lesson_visited_at(lesson),
+                        status=status_value,
+                        notes=notes,
+                    )
+                    _deduct_subscription_lesson(visit)
+
+            if items and lesson.status != Lesson.Status.COMPLETED:
+                lesson.status = Lesson.Status.COMPLETED
+                lesson.save(update_fields=('status', 'updated_at'))
+
+        log_action(
+            request,
+            AuditLog.Action.VISIT,
+            'Lesson',
+            entity_id=lesson.id,
+            entity_name=str(lesson),
+            description='Отмечены посещения по уроку',
+            changes={'items': len(items)},
+        )
+        lesson.refresh_from_db()
+        return Response(self._attendance_payload(lesson))
+
+    @action(detail=True, methods=['patch'], url_path='cancel')
+    def cancel(self, request, pk=None):
+        lesson = self.get_object()
+        lesson.status = Lesson.Status.CANCELLED
+        lesson.save(update_fields=('status', 'updated_at'))
+        self._log_instance(AuditLog.Action.UPDATE, lesson, 'Урок отменён', {'status': Lesson.Status.CANCELLED})
+        return Response(self.get_serializer(lesson).data)
 
 
 class ClientViewSet(BaseAuthenticatedViewSet):
@@ -270,7 +644,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
 
 class VisitViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, VisitPermission)
-    queryset = Visit.objects.select_related('client', 'subscription', 'teacher').all()
+    queryset = Visit.objects.select_related('client', 'subscription', 'teacher', 'lesson').all()
     serializer_class = VisitSerializer
     audit_entity_type = 'Visit'
 
@@ -306,7 +680,8 @@ class VisitViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             visit = serializer.save()
             self._deduct_lesson(visit)
-            self._log_instance(AuditLog.Action.VISIT, visit, 'Добавлено посещение', self._audit_changes())
+            description = 'Занятие отмечено как посещённое' if visit.status == Visit.Status.ATTENDED else 'Добавлено посещение'
+            self._log_instance(AuditLog.Action.VISIT, visit, description, self._audit_changes())
 
     def perform_update(self, serializer):
         with transaction.atomic():
@@ -323,7 +698,8 @@ class VisitViewSet(BaseAuthenticatedViewSet):
                 visit.save(update_fields=('lesson_deducted', 'updated_at'))
 
             self._deduct_lesson(visit)
-            self._log_instance(AuditLog.Action.UPDATE, visit, 'Изменено посещение', self._audit_changes())
+            description = 'Занятие отмечено как посещённое' if visit.status == Visit.Status.ATTENDED else 'Изменено посещение'
+            self._log_instance(AuditLog.Action.UPDATE, visit, description, self._audit_changes())
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
@@ -386,6 +762,14 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 trial.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CREATE, trial, 'Добавлен пробник', self._audit_changes())
 
+    def perform_update(self, serializer):
+        previous_status = serializer.instance.status
+        trial = serializer.save()
+        changes = self._audit_changes()
+        if previous_status != trial.status:
+            changes['stage'] = {'from': previous_status, 'to': trial.status}
+        self._log_instance(AuditLog.Action.UPDATE, trial, 'Изменён пробник', changes)
+
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
@@ -432,6 +816,14 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
+
+    def perform_update(self, serializer):
+        previous_stage = serializer.instance.stage
+        master_class = serializer.save()
+        changes = self._audit_changes()
+        if previous_stage != master_class.stage:
+            changes['stage'] = {'from': previous_stage, 'to': master_class.stage}
+        self._log_instance(AuditLog.Action.UPDATE, master_class, 'Изменён МК', changes)
 
 
 class TaskViewSet(BaseAuthenticatedViewSet):
@@ -486,7 +878,7 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         task = self.get_object()
         task.status = Task.Status.DONE
         task.save(update_fields=('status', 'updated_at'))
-        self._log_instance(AuditLog.Action.UPDATE, task, 'Задача выполнена', {'status': Task.Status.DONE})
+        self._log_instance(AuditLog.Action.TASK_DONE, task, 'Задача выполнена', {'status': Task.Status.DONE})
         return Response(self.get_serializer(task).data)
 
 

@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from crm.audit import log_action
 from crm.models import AuditLog
@@ -21,6 +22,26 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+class AuditTokenObtainPairView(TokenObtainPairView):
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        user = None
+        username = request.data.get('username')
+        if response.status_code == status.HTTP_200_OK and username:
+            user = User.objects.filter(username=username).first()
+        if user:
+            log_action(
+                request,
+                AuditLog.Action.LOGIN,
+                'User',
+                entity_id=user.id,
+                entity_name=user.get_full_name() or user.username,
+                description='Вход в систему',
+                changes={'username': user.username},
+            )
+        return response
 
 
 class RegisterView(APIView):
@@ -92,7 +113,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         changes = {
             key: value
             for key, value in self.request.data.items()
-            if key not in {'password', 'password_confirm'}
+            if key not in {'password', 'password_confirm'} and 'password' not in key.lower()
         }
         log_action(
             self.request,
@@ -140,7 +161,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             description='Изменён пароль сотрудника',
         )
         return Response({'detail': 'Пароль обновлён.'}, status=status.HTTP_200_OK)
- 
+
+
 class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = (IsAuthenticated,)
     serializer_class = StaffOptionSerializer

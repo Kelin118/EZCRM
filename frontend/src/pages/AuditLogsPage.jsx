@@ -1,4 +1,4 @@
-import { Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -12,9 +12,11 @@ const actionOptions = [
   { value: 'create', label: 'Создание' },
   { value: 'update', label: 'Изменение' },
   { value: 'delete', label: 'Удаление' },
+  { value: 'login', label: 'Вход' },
   { value: 'import', label: 'Импорт' },
   { value: 'payment', label: 'Оплата' },
   { value: 'visit', label: 'Посещение' },
+  { value: 'task_done', label: 'Задача выполнена' },
   { value: 'password_change', label: 'Смена пароля' },
   { value: 'activate', label: 'Активация' },
   { value: 'deactivate', label: 'Деактивация' },
@@ -34,9 +36,15 @@ const entityOptions = [
   { value: 'ExcelImport', label: 'Excel import' },
 ];
 
+function formatChanges(changes) {
+  if (!changes || Object.keys(changes).length === 0) return '';
+  return JSON.stringify(changes, null, 2);
+}
+
 export default function AuditLogsPage() {
   const [logs, setLogs] = useState([]);
   const [filters, setFilters] = useState({ search: '', action: '', entity_type: '', date_from: '', date_to: '' });
+  const [expandedId, setExpandedId] = useState(null);
 
   useEffect(() => {
     const params = Object.fromEntries(Object.entries(filters).filter(([, value]) => value));
@@ -56,7 +64,7 @@ export default function AuditLogsPage() {
           <Search size={17} />
           <input
             className="min-w-0 flex-1 bg-transparent outline-none"
-            placeholder="Поиск по описанию или объекту"
+            placeholder="Поиск по описанию, объекту или пользователю"
             value={filters.search}
             onChange={(event) => set('search', event.target.value)}
           />
@@ -70,11 +78,39 @@ export default function AuditLogsPage() {
       <Table
         data={logs}
         columns={[
-          { key: 'created_at', header: 'Дата', render: (row) => (row.created_at ? new Date(row.created_at).toLocaleString('ru-RU') : '—') },
+          { key: 'created_at', header: 'Дата', render: (row) => (row.created_at ? new Date(row.created_at).toLocaleString('ru-RU') : '-') },
           { key: 'user_display', header: 'Пользователь' },
-          { key: 'action', header: 'Действие', render: (row) => <Badge value={row.action}>{actionOptions.find((item) => item.value === row.action)?.label || row.action}</Badge> },
+          {
+            key: 'action',
+            header: 'Действие',
+            render: (row) => <Badge value={row.action}>{actionOptions.find((item) => item.value === row.action)?.label || row.action}</Badge>,
+          },
           { key: 'entity_type', header: 'Объект', render: (row) => `${row.entity_type}${row.entity_name ? `: ${row.entity_name}` : ''}` },
-          { key: 'description', header: 'Описание' },
+          {
+            key: 'description',
+            header: 'Описание',
+            render: (row) => {
+              const details = formatChanges(row.changes);
+              return (
+                <div className="max-w-xl whitespace-normal text-left">
+                  <p>{row.description || '-'}</p>
+                  {details && (
+                    <button
+                      type="button"
+                      className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-brand"
+                      onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
+                    >
+                      {expandedId === row.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      Детали
+                    </button>
+                  )}
+                  {expandedId === row.id && details && (
+                    <pre className="mt-2 max-h-44 overflow-auto rounded-2xl bg-slate-50 p-3 text-xs text-slate-600">{details}</pre>
+                  )}
+                </div>
+              );
+            },
+          },
           { key: 'ip_address', header: 'IP' },
         ]}
         empty="Журнал действий пока пуст"

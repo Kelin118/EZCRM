@@ -1,6 +1,8 @@
 import {
   BarChart3,
   CalendarCheck,
+  CalendarDays,
+  Library,
   ClipboardList,
   ClipboardClock,
   CreditCard,
@@ -13,6 +15,7 @@ import {
   Ticket,
   UserCog,
   Users,
+  UsersRound,
 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 
@@ -26,6 +29,9 @@ export const navItems = [
   { to: '/trials', label: 'Пробники', icon: CalendarCheck, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { to: '/master-classes', label: 'МК', icon: Sparkles, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { to: '/tasks', label: 'Задачи', icon: ClipboardList, roles: [ROLES.MANAGER, ROLES.TEACHER] },
+  { to: '/dictionaries', label: 'Справочники', icon: Library, roles: [ROLES.MANAGER] },
+  { to: '/groups', label: 'Группы', icon: UsersRound, roles: [ROLES.MANAGER, ROLES.TEACHER] },
+  { to: '/schedule', label: 'Расписание', icon: CalendarDays, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { to: '/finance', label: 'Финансы', icon: CreditCard, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { to: '/reports', label: 'Отчёты', icon: PieChart, roles: [ROLES.ACCOUNTANT] },
   { to: '/employees', label: 'Сотрудники', icon: UserCog, roles: [ROLES.ADMIN] },

@@ -5,8 +5,14 @@ from .models import (
     ChatMessage,
     Client,
     FinanceTransaction,
+    GroupMembership,
+    Lesson,
     MasterClass,
+    Room,
+    ScheduleSlot,
     StudioSettings,
+    StudyGroup,
+    Subject,
     Subscription,
     Task,
     Trial,
@@ -30,12 +36,13 @@ class AuditLogSerializer(serializers.ModelSerializer):
             'description',
             'changes',
             'ip_address',
+            'user_agent',
             'created_at',
         )
 
     def get_user_display(self, obj):
         if not obj.user:
-            return ''
+            return 'Система'
         return obj.user.get_full_name() or obj.user.username
 
 
@@ -48,6 +55,126 @@ class ClientSerializer(serializers.ModelSerializer):
 
     def get_manager_name(self, obj):
         return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
+
+
+class SubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subject
+        fields = '__all__'
+
+
+class RoomSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Room
+        fields = '__all__'
+
+
+class StudyGroupSerializer(serializers.ModelSerializer):
+    subject_name = serializers.SerializerMethodField()
+    teacher_name = serializers.SerializerMethodField()
+    manager_name = serializers.SerializerMethodField()
+    students_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudyGroup
+        fields = '__all__'
+
+    def get_subject_name(self, obj):
+        return obj.subject.name if obj.subject else ''
+
+    def get_teacher_name(self, obj):
+        return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def get_manager_name(self, obj):
+        return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
+
+    def get_students_count(self, obj):
+        return obj.memberships.filter(status=GroupMembership.Status.ACTIVE).count()
+
+
+class GroupMembershipSerializer(serializers.ModelSerializer):
+    group_name = serializers.SerializerMethodField()
+    client_name = serializers.SerializerMethodField()
+    client_phone = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GroupMembership
+        fields = '__all__'
+
+    def get_group_name(self, obj):
+        return obj.group.name if obj.group else ''
+
+    def get_client_name(self, obj):
+        return str(obj.client) if obj.client else ''
+
+    def get_client_phone(self, obj):
+        return obj.client.phone if obj.client else ''
+
+
+class ScheduleSlotSerializer(serializers.ModelSerializer):
+    group_name = serializers.SerializerMethodField()
+    subject_name = serializers.SerializerMethodField()
+    teacher_name = serializers.SerializerMethodField()
+    room_name = serializers.SerializerMethodField()
+    weekday_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ScheduleSlot
+        fields = '__all__'
+
+    def get_group_name(self, obj):
+        return obj.group.name if obj.group else ''
+
+    def get_subject_name(self, obj):
+        return obj.subject.name if obj.subject else ''
+
+    def get_teacher_name(self, obj):
+        return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def get_room_name(self, obj):
+        return obj.room.name if obj.room else ''
+
+    def get_weekday_display(self, obj):
+        return obj.get_weekday_display()
+
+
+class LessonSerializer(serializers.ModelSerializer):
+    group_name = serializers.SerializerMethodField()
+    subject_name = serializers.SerializerMethodField()
+    teacher_name = serializers.SerializerMethodField()
+    room_name = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    visits_count = serializers.SerializerMethodField()
+    attended_count = serializers.SerializerMethodField()
+    missed_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Lesson
+        fields = '__all__'
+
+    def get_group_name(self, obj):
+        return obj.group.name if obj.group else ''
+
+    def get_subject_name(self, obj):
+        return obj.subject.name if obj.subject else ''
+
+    def get_teacher_name(self, obj):
+        return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def get_room_name(self, obj):
+        return obj.room.name if obj.room else ''
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+    def get_visits_count(self, obj):
+        return obj.visits.count()
+
+    def get_attended_count(self, obj):
+        return obj.visits.filter(status=Visit.Status.ATTENDED).count()
+
+    def get_missed_count(self, obj):
+        return obj.visits.filter(status=Visit.Status.MISSED).count()
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -75,6 +202,7 @@ class VisitSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     subscription_title = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
+    lesson_title = serializers.SerializerMethodField()
 
     class Meta:
         model = Visit
@@ -88,6 +216,9 @@ class VisitSerializer(serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def get_lesson_title(self, obj):
+        return str(obj.lesson) if obj.lesson else ''
 
 
 class TrialSerializer(serializers.ModelSerializer):

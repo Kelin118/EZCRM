@@ -1,11 +1,18 @@
 from django.contrib import admin
 
 from .models import (
+    AuditLog,
     ChatMessage,
     Client,
     FinanceTransaction,
+    GroupMembership,
+    Lesson,
     MasterClass,
+    Room,
+    ScheduleSlot,
     StudioSettings,
+    StudyGroup,
+    Subject,
     Subscription,
     Task,
     Trial,
@@ -25,6 +32,48 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_display = ('client', 'title', 'status', 'start_date', 'end_date', 'remaining_visits', 'price')
     list_filter = ('status',)
     search_fields = ('client__first_name', 'client__last_name', 'title')
+
+
+@admin.register(Subject)
+class SubjectAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'description')
+
+
+@admin.register(Room)
+class RoomAdmin(admin.ModelAdmin):
+    list_display = ('name', 'capacity', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'description')
+
+
+@admin.register(StudyGroup)
+class StudyGroupAdmin(admin.ModelAdmin):
+    list_display = ('name', 'subject', 'teacher', 'manager', 'status', 'start_date', 'end_date')
+    list_filter = ('status', 'subject')
+    search_fields = ('name', 'subject__name', 'teacher__username', 'manager__username')
+
+
+@admin.register(GroupMembership)
+class GroupMembershipAdmin(admin.ModelAdmin):
+    list_display = ('group', 'client', 'status', 'joined_at', 'left_at')
+    list_filter = ('status', 'group')
+    search_fields = ('group__name', 'client__first_name', 'client__last_name', 'client__phone')
+
+
+@admin.register(ScheduleSlot)
+class ScheduleSlotAdmin(admin.ModelAdmin):
+    list_display = ('group', 'subject', 'teacher', 'room', 'weekday', 'start_time', 'end_time', 'is_active')
+    list_filter = ('weekday', 'is_active', 'room')
+    search_fields = ('group__name', 'subject__name', 'teacher__username', 'room__name')
+
+
+@admin.register(Lesson)
+class LessonAdmin(admin.ModelAdmin):
+    list_display = ('lesson_date', 'start_time', 'group', 'subject', 'teacher', 'room', 'status')
+    list_filter = ('status', 'lesson_date', 'room')
+    search_fields = ('group__name', 'subject__name', 'teacher__username', 'topic')
 
 
 @admin.register(Visit)
@@ -72,3 +121,11 @@ class ChatMessageAdmin(admin.ModelAdmin):
 @admin.register(StudioSettings)
 class StudioSettingsAdmin(admin.ModelAdmin):
     list_display = ('studio_name', 'phone', 'email', 'currency', 'default_price_ab4', 'default_price_ab8')
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'user', 'action', 'entity_type', 'entity_name', 'ip_address')
+    list_filter = ('action', 'entity_type', 'created_at')
+    search_fields = ('user__username', 'user__first_name', 'user__last_name', 'entity_name', 'description')
+    readonly_fields = ('created_at',)

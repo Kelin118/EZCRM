@@ -49,6 +49,22 @@ export function useClients() {
   return useLookup('clients/');
 }
 
+export function useSubjects() {
+  return useLookup('subjects/', { is_active: '1' });
+}
+
+export function useRooms() {
+  return useLookup('rooms/', { is_active: '1' });
+}
+
+export function useStudyGroups() {
+  return useLookup('study-groups/');
+}
+
+export function useSubscriptions(params = {}) {
+  return useLookup('subscriptions/', params);
+}
+
 export function useEmployees(roles = []) {
   const params = { active: '1' };
   if (roles.length === 1) params.role = roles[0];
@@ -73,6 +89,18 @@ export function subscriptionLabel(subscription) {
   return [title, lessons, subscription.status].filter(Boolean).join(' · ');
 }
 
+export function subjectLabel(subject) {
+  return subject.name || `Предмет #${subject.id}`;
+}
+
+export function roomLabel(room) {
+  return room.name || `Кабинет #${room.id}`;
+}
+
+export function groupLabel(group) {
+  return group.name || `Группа #${group.id}`;
+}
+
 export function useClientOptions() {
   const { items, loading } = useClients();
   const options = useMemo(() => items.map((client) => ({ value: String(client.id), label: clientLabel(client) })), [items]);
@@ -88,4 +116,22 @@ export function useEmployeeOptions(roles = []) {
     [items, roles.join('|')],
   );
   return { employees: items, employeeOptions: options, loadingEmployees: loading };
+}
+
+export function useSubjectOptions() {
+  const { items, loading } = useSubjects();
+  const options = useMemo(() => items.map((subject) => ({ value: String(subject.id), label: subjectLabel(subject) })), [items]);
+  return { subjects: items, subjectOptions: options, loadingSubjects: loading };
+}
+
+export function useRoomOptions() {
+  const { items, loading } = useRooms();
+  const options = useMemo(() => items.map((room) => ({ value: String(room.id), label: roomLabel(room) })), [items]);
+  return { rooms: items, roomOptions: options, loadingRooms: loading };
+}
+
+export function useStudyGroupOptions() {
+  const { items, loading } = useStudyGroups();
+  const options = useMemo(() => items.map((group) => ({ value: String(group.id), label: groupLabel(group) })), [items]);
+  return { groups: items, groupOptions: options, loadingGroups: loading };
 }

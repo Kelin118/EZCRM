@@ -49,11 +49,13 @@ export function canAccessPath(pathname, user = getStoredUser()) {
   if (role === ROLES.ADMIN || pathname === '/' || pathname.startsWith('/clients/')) return true;
 
   if (role === ROLES.MANAGER) {
-    return ['/clients', '/subscriptions', '/trials', '/master-classes', '/tasks', '/finance', '/chat', '/settings'].includes(pathname);
+    return ['/clients', '/subscriptions', '/trials', '/master-classes', '/tasks', '/dictionaries', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
+      || pathname.startsWith('/lessons/');
   }
 
   if (role === ROLES.TEACHER) {
-    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/chat'].includes(pathname);
+    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/groups', '/schedule', '/chat'].includes(pathname)
+      || pathname.startsWith('/lessons/');
   }
 
   if (role === ROLES.ACCOUNTANT) {

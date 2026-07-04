@@ -9,9 +9,15 @@ from .views import (
     DashboardStatsView,
     ExcelImportView,
     FinanceTransactionViewSet,
+    GroupMembershipViewSet,
+    LessonViewSet,
     MasterClassViewSet,
     ReportsSummaryView,
+    RoomViewSet,
+    ScheduleSlotViewSet,
     StudioSettingsViewSet,
+    StudyGroupViewSet,
+    SubjectViewSet,
     SubscriptionViewSet,
     TaskViewSet,
     TrialViewSet,
@@ -22,6 +28,12 @@ router = DefaultRouter()
 router.register('clients', ClientViewSet, basename='client')
 router.register('subscriptions', SubscriptionViewSet, basename='subscription')
 router.register('visits', VisitViewSet, basename='visit')
+router.register('subjects', SubjectViewSet, basename='subject')
+router.register('rooms', RoomViewSet, basename='room')
+router.register('study-groups', StudyGroupViewSet, basename='study-group')
+router.register('group-memberships', GroupMembershipViewSet, basename='group-membership')
+router.register('schedule-slots', ScheduleSlotViewSet, basename='schedule-slot')
+router.register('lessons', LessonViewSet, basename='lesson')
 router.register('trials', TrialViewSet, basename='trial')
 router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')

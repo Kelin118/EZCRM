@@ -41,8 +41,9 @@ class IsAdminRole(BasePermission):
         return is_authenticated(request.user) and is_admin(request.user)
 
 
-class AuditLogPermission(IsAdminRole):
-    pass
+class AuditLogPermission(BasePermission):
+    def has_permission(self, request, view):
+        return request.method in SAFE_METHODS and is_authenticated(request.user) and is_admin(request.user)
 
 
 class ClientPermission(RolePermission):
@@ -144,3 +145,46 @@ class ChatPermission(RolePermission):
         TEACHER: {'read', 'list', 'retrieve', 'create'},
         ACCOUNTANT: {'read', 'list', 'retrieve', 'create'},
     }
+
+
+class EducationPermission(RolePermission):
+    allowed_by_role = {
+        MANAGER: {
+            'read',
+            'list',
+            'retrieve',
+            'create',
+            'update',
+            'partial_update',
+            'destroy',
+            'generate_lessons',
+            'attendance',
+            'cancel',
+        },
+        TEACHER: {'read', 'list', 'retrieve', 'attendance'},
+        ACCOUNTANT: {'read', 'list', 'retrieve'},
+    }
+
+    def has_object_permission(self, request, view, obj):
+        if is_admin(request.user):
+            return True
+        user_role = role(request.user)
+        action = getattr(view, 'action', None)
+
+        if user_role == MANAGER:
+            return True
+
+        if user_role == ACCOUNTANT:
+            return request.method in SAFE_METHODS
+
+        if user_role == TEACHER:
+            if action not in {'retrieve', 'attendance'} and request.method not in SAFE_METHODS:
+                return False
+            teacher_id = request.user.id
+            if hasattr(obj, 'teacher_id'):
+                return obj.teacher_id == teacher_id
+            if hasattr(obj, 'group') and obj.group:
+                return obj.group.teacher_id == teacher_id
+            if hasattr(obj, 'schedule_slot') and obj.schedule_slot:
+                return obj.schedule_slot.teacher_id == teacher_id
+        return False

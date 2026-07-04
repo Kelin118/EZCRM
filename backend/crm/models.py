@@ -63,6 +63,149 @@ class Subscription(TimeStampedModel):
         return f'{self.client} - {self.title}'
 
 
+class Subject(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Room(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    capacity = models.PositiveIntegerField(null=True, blank=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
+
+
+class StudyGroup(TimeStampedModel):
+    class Status(models.TextChoices):
+        ACTIVE = 'active', 'Активная'
+        PAUSED = 'paused', 'На паузе'
+        ARCHIVED = 'archived', 'Архив'
+
+    name = models.CharField(max_length=150)
+    subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='study_groups')
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='teaching_groups',
+    )
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_groups',
+    )
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    description = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.name
+
+
+class GroupMembership(TimeStampedModel):
+    class Status(models.TextChoices):
+        ACTIVE = 'active', 'Активен'
+        PAUSED = 'paused', 'На паузе'
+        LEFT = 'left', 'Ушёл'
+
+    group = models.ForeignKey(StudyGroup, on_delete=models.CASCADE, related_name='memberships')
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='group_memberships')
+    joined_at = models.DateField(null=True, blank=True)
+    left_at = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    note = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=('group', 'client'),
+                condition=models.Q(status='active'),
+                name='unique_active_group_membership',
+            )
+        ]
+
+    def __str__(self):
+        return f'{self.client} - {self.group}'
+
+
+class ScheduleSlot(TimeStampedModel):
+    class Weekday(models.IntegerChoices):
+        MONDAY = 0, 'Понедельник'
+        TUESDAY = 1, 'Вторник'
+        WEDNESDAY = 2, 'Среда'
+        THURSDAY = 3, 'Четверг'
+        FRIDAY = 4, 'Пятница'
+        SATURDAY = 5, 'Суббота'
+        SUNDAY = 6, 'Воскресенье'
+
+    group = models.ForeignKey(StudyGroup, on_delete=models.CASCADE, related_name='schedule_slots')
+    subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='schedule_slots')
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='schedule_slots',
+    )
+    room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name='schedule_slots')
+    weekday = models.IntegerField(choices=Weekday.choices)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f'{self.group} - {self.get_weekday_display()} {self.start_time:%H:%M}'
+
+
+class Lesson(TimeStampedModel):
+    class Status(models.TextChoices):
+        PLANNED = 'planned', 'Запланирован'
+        COMPLETED = 'completed', 'Проведён'
+        CANCELLED = 'cancelled', 'Отменён'
+
+    group = models.ForeignKey(StudyGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name='lessons')
+    schedule_slot = models.ForeignKey(
+        ScheduleSlot,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='lessons',
+    )
+    subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='lessons')
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='lessons',
+    )
+    room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name='lessons')
+    lesson_date = models.DateField()
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    topic = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNED)
+    comment = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ('-lesson_date', 'start_time')
+
+    def __str__(self):
+        group_name = self.group.name if self.group else 'Lesson'
+        return f'{group_name} - {self.lesson_date:%Y-%m-%d} {self.start_time:%H:%M}'
+
+
 class Visit(TimeStampedModel):
     class Status(models.TextChoices):
         ATTENDED = 'attended', 'Attended'
@@ -88,6 +231,7 @@ class Visit(TimeStampedModel):
         blank=True,
         related_name='teaching_visits',
     )
+    lesson = models.ForeignKey(Lesson, on_delete=models.SET_NULL, null=True, blank=True, related_name='visits')
     visited_at = models.DateTimeField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNED)
     lesson_deducted = models.BooleanField(default=False)
@@ -289,10 +433,10 @@ class AuditLog(models.Model):
         UPDATE = 'update', 'Update'
         DELETE = 'delete', 'Delete'
         LOGIN = 'login', 'Login'
-        LOGOUT = 'logout', 'Logout'
         IMPORT = 'import', 'Import'
         PAYMENT = 'payment', 'Payment'
         VISIT = 'visit', 'Visit'
+        TASK_DONE = 'task_done', 'Task done'
         PASSWORD_CHANGE = 'password_change', 'Password change'
         ACTIVATE = 'activate', 'Activate'
         DEACTIVATE = 'deactivate', 'Deactivate'
@@ -304,9 +448,9 @@ class AuditLog(models.Model):
         blank=True,
         related_name='audit_logs',
     )
-    action = models.CharField(max_length=32, choices=Action.choices)
+    action = models.CharField(max_length=50, choices=Action.choices)
     entity_type = models.CharField(max_length=100)
-    entity_id = models.CharField(max_length=64, null=True, blank=True)
+    entity_id = models.CharField(max_length=100, blank=True, default='')
     entity_name = models.CharField(max_length=255, blank=True)
     description = models.TextField(blank=True)
     changes = models.JSONField(default=dict, blank=True)

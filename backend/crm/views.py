@@ -338,9 +338,20 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
         client = self.request.query_params.get('client')
+        search = self.request.query_params.get('search')
+        scheduled_at_from = _date_param(self.request, 'scheduled_at_from')
+        scheduled_at_to = _date_param(self.request, 'scheduled_at_to')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
 
+        if search:
+            queryset = queryset.filter(
+                Q(client__first_name__icontains=search)
+                | Q(client__last_name__icontains=search)
+                | Q(client__parent_name__icontains=search)
+                | Q(client__phone__icontains=search)
+                | Q(notes__icontains=search)
+            )
         if stage:
             queryset = queryset.filter(status=stage)
         if manager:
@@ -349,6 +360,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(client_id=client)
         if _my_param(self.request):
             queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
+        if scheduled_at_from:
+            queryset = queryset.filter(scheduled_at__date__gte=scheduled_at_from)
+        if scheduled_at_to:
+            queryset = queryset.filter(scheduled_at__date__lte=scheduled_at_to)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:

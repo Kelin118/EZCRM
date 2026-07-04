@@ -11,6 +11,7 @@ import ClientsPage from './pages/ClientsPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import DictionariesPage from './pages/DictionariesPage.jsx';
 import EmployeesPage from './pages/EmployeesPage.jsx';
+import ExportPage from './pages/ExportPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
 import GroupsPage from './pages/GroupsPage.jsx';
 import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
@@ -91,6 +92,7 @@ export default function App() {
         <Route path="master-classes" element={<MasterClassesPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="dictionaries" element={<DictionariesPage />} />
+        <Route path="export" element={<ExportPage />} />
         <Route path="groups" element={<GroupsPage />} />
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="lessons/:id/attendance" element={<LessonAttendancePage />} />

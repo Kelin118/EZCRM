@@ -1,7 +1,7 @@
 export default function Table({ columns, data, empty = 'Нет данных' }) {
   return (
-    <div className="overflow-x-auto rounded-[22px] border border-slate-100 bg-white shadow-card scrollbar-thin">
-      <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+    <div className="w-full max-w-full overflow-x-auto rounded-[22px] border border-slate-100 bg-white shadow-card scrollbar-thin">
+      <table className="min-w-[760px] border-separate border-spacing-0 text-left text-sm">
         <thead className="sticky top-0 z-10 bg-slate-50/95 text-xs uppercase tracking-wide text-slate-500 backdrop-blur">
           <tr>
             {columns.map((column, index) => (
@@ -25,7 +25,7 @@ export default function Table({ columns, data, empty = 'Нет данных' }) 
             data.map((row) => (
               <tr key={row.id} className="group transition hover:bg-brand/[0.03]">
                 {columns.map((column, index) => (
-                  <td key={column.key} className={`whitespace-nowrap border-b border-slate-100 px-5 py-4 text-slate-700 ${index === columns.length - 1 ? 'text-right' : ''}`}>
+                  <td key={column.key} className={`max-w-sm whitespace-nowrap border-b border-slate-100 px-5 py-4 text-slate-700 ${index === columns.length - 1 ? 'text-right' : ''}`}>
                     {column.render ? column.render(row) : row[column.key] || '—'}
                   </td>
                 ))}

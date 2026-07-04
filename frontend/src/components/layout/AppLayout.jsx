@@ -6,6 +6,7 @@ import Topbar from './Topbar.jsx';
 
 export default function AppLayout() {
   const [forbiddenMessage, setForbiddenMessage] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     const onForbidden = (event) => {
@@ -25,15 +26,23 @@ export default function AppLayout() {
 
   return (
     <div className="min-h-screen bg-app">
-      <Sidebar />
-      <div className="lg:pl-72">
-        <Topbar />
+      {sidebarOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-slate-950/40 backdrop-blur-sm lg:hidden"
+          aria-label="Закрыть меню"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <Sidebar open={sidebarOpen} onNavigate={() => setSidebarOpen(false)} />
+      <div className="lg:pl-[280px]">
+        <Topbar onMenuClick={() => setSidebarOpen(true)} />
         {forbiddenMessage && (
           <div className="fixed right-4 top-4 z-50 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700 shadow-card">
             {forbiddenMessage}
           </div>
         )}
-        <main className="mx-auto w-full max-w-[1560px] px-4 py-5 sm:px-5 lg:px-8 lg:py-7">
+        <main className="mx-auto w-full max-w-[1560px] px-3 py-4 sm:px-4 lg:px-8 lg:py-7">
           <Outlet />
         </main>
       </div>

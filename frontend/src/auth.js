@@ -49,7 +49,7 @@ export function canAccessPath(pathname, user = getStoredUser()) {
   if (role === ROLES.ADMIN || pathname === '/' || pathname.startsWith('/clients/')) return true;
 
   if (role === ROLES.MANAGER) {
-    return ['/clients', '/subscriptions', '/trials', '/master-classes', '/tasks', '/dictionaries', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
+    return ['/clients', '/subscriptions', '/trials', '/master-classes', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
       || pathname.startsWith('/lessons/');
   }
 
@@ -59,7 +59,7 @@ export function canAccessPath(pathname, user = getStoredUser()) {
   }
 
   if (role === ROLES.ACCOUNTANT) {
-    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/finance', '/reports', '/chat', '/settings'].includes(pathname);
+    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/finance', '/reports', '/export', '/chat', '/settings'].includes(pathname);
   }
 
   return false;

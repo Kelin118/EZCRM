@@ -139,6 +139,37 @@ class ExcelImportPermission(BasePermission):
         return is_authenticated(request.user) and (is_admin(request.user) or role(request.user) == ACCOUNTANT)
 
 
+class ExportPermission(BasePermission):
+    def has_permission(self, request, view):
+        if not is_authenticated(request.user):
+            return False
+        if is_admin(request.user):
+            return True
+        export_type = getattr(view, 'export_type', '')
+        user_role = role(request.user)
+        if user_role == ACCOUNTANT:
+            return export_type in {'subscriptions', 'finance', 'report-summary'}
+        if user_role == MANAGER:
+            return export_type in {
+                'clients',
+                'subscriptions',
+                'visits',
+                'trials',
+                'master-classes',
+                'groups',
+                'lessons',
+                'report-summary',
+            }
+        if user_role == TEACHER:
+            return export_type in {'visits', 'lessons'}
+        return False
+
+
+class BackupPermission(BasePermission):
+    def has_permission(self, request, view):
+        return is_authenticated(request.user) and is_admin(request.user)
+
+
 class ChatPermission(RolePermission):
     allowed_by_role = {
         MANAGER: {'read', 'list', 'retrieve', 'create'},

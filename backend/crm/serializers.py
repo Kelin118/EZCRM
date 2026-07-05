@@ -1,5 +1,13 @@
 from rest_framework import serializers
 
+from .group_schedule import (
+    group_future_dates,
+    schedule_display,
+    subscription_expected_end_date,
+    subscription_planned_lessons_left,
+    subscription_remaining_lessons,
+    subscription_used_lessons,
+)
 from .models import (
     AuditLog,
     ChatMessage,
@@ -71,9 +79,14 @@ class RoomSerializer(serializers.ModelSerializer):
 
 class StudyGroupSerializer(serializers.ModelSerializer):
     subject_name = serializers.SerializerMethodField()
+    room_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
     students_count = serializers.SerializerMethodField()
+    schedule_display = serializers.SerializerMethodField()
+    is_active = serializers.SerializerMethodField()
+    upcoming_lessons = serializers.SerializerMethodField()
+    student_summaries = serializers.SerializerMethodField()
 
     class Meta:
         model = StudyGroup
@@ -81,6 +94,9 @@ class StudyGroupSerializer(serializers.ModelSerializer):
 
     def get_subject_name(self, obj):
         return obj.subject.name if obj.subject else ''
+
+    def get_room_name(self, obj):
+        return obj.room.name if obj.room else ''
 
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
@@ -90,6 +106,44 @@ class StudyGroupSerializer(serializers.ModelSerializer):
 
     def get_students_count(self, obj):
         return obj.memberships.filter(status=GroupMembership.Status.ACTIVE).count()
+
+    def get_schedule_display(self, obj):
+        return schedule_display(obj) or 'Не указано'
+
+    def get_is_active(self, obj):
+        return obj.status == StudyGroup.Status.ACTIVE
+
+    def get_upcoming_lessons(self, obj):
+        return [
+            {
+                'date': item.isoformat(),
+                'weekday': item.weekday(),
+                'start_time': obj.start_time.strftime('%H:%M') if obj.start_time else '',
+                'end_time': obj.end_time.strftime('%H:%M') if obj.end_time else '',
+            }
+            for item in group_future_dates(obj, 5)
+        ]
+
+    def get_student_summaries(self, obj):
+        summaries = []
+        memberships = obj.memberships.select_related('client').filter(status=GroupMembership.Status.ACTIVE)
+        for membership in memberships:
+            subscription = (
+                Subscription.objects.filter(client=membership.client, status=Subscription.Status.ACTIVE)
+                .order_by('-start_date', '-created_at')
+                .first()
+            )
+            summaries.append(
+                {
+                    'client': membership.client_id,
+                    'client_name': str(membership.client),
+                    'subscription': subscription.id if subscription else None,
+                    'subscription_title': subscription.title if subscription else '',
+                    'remaining_lessons': subscription_remaining_lessons(subscription) if subscription else None,
+                    'expected_end_date': subscription_expected_end_date(subscription) if subscription else None,
+                }
+            )
+        return summaries
 
 
 class GroupMembershipSerializer(serializers.ModelSerializer):
@@ -183,6 +237,9 @@ class SubscriptionSerializer(serializers.ModelSerializer):
     lessons_total = serializers.IntegerField(source='total_visits', read_only=True)
     lessons_left = serializers.IntegerField(source='remaining_visits', read_only=True)
     used_lessons = serializers.SerializerMethodField()
+    remaining_lessons = serializers.SerializerMethodField()
+    planned_lessons_left = serializers.SerializerMethodField()
+    expected_end_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
@@ -195,7 +252,16 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         return obj.client.phone if obj.client else ''
 
     def get_used_lessons(self, obj):
-        return max((obj.total_visits or 0) - (obj.remaining_visits or 0), 0)
+        return subscription_used_lessons(obj)
+
+    def get_remaining_lessons(self, obj):
+        return subscription_remaining_lessons(obj)
+
+    def get_planned_lessons_left(self, obj):
+        return subscription_planned_lessons_left(obj)
+
+    def get_expected_end_date(self, obj):
+        return subscription_expected_end_date(obj)
 
 
 class VisitSerializer(serializers.ModelSerializer):

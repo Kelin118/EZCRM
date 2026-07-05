@@ -13,12 +13,15 @@ from .models import (
     FinanceTransaction,
     GroupMembership,
     Lesson,
+    Room,
     ScheduleSlot,
     StudyGroup,
+    Subject,
     Subscription,
     Task,
     Visit,
 )
+from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
 
 
 class RolePermissionTests(APITestCase):
@@ -436,6 +439,178 @@ class RoleAccessSmokeTests(APITestCase):
                 self.client.force_authenticate(user)
                 response = self.client.post('/api/backup/create/')
                 self.assertEqual(response.status_code, expected)
+
+
+class GroupScheduleTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='admin-group', password='pass', role='admin', roles=['admin'])
+        self.teacher = User.objects.create_user(username='teacher-group', password='pass', role='teacher', roles=['teacher'])
+        self.manager = User.objects.create_user(username='manager-group', password='pass', role='manager', roles=['manager'])
+        self.subject = Subject.objects.create(name='Math')
+        self.room = Room.objects.create(name='101')
+        self.client.force_authenticate(self.admin)
+
+    def group_payload(self, **overrides):
+        payload = {
+            'name': 'Test Tue Thu',
+            'subject': self.subject.id,
+            'room': self.room.id,
+            'teacher': self.teacher.id,
+            'manager': self.manager.id,
+            'schedule_days': ['tuesday', 'thursday'],
+            'start_time': '12:30:00',
+            'end_time': '14:00:00',
+            'status': 'active',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_can_create_group_with_schedule(self):
+        response = self.client.post('/api/study-groups/', self.group_payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        group = StudyGroup.objects.get(name='Test Tue Thu')
+        self.assertEqual(group.schedule_days, ['tuesday', 'thursday'])
+        self.assertEqual(str(group.start_time), '12:30:00')
+        self.assertEqual(str(group.end_time), '14:00:00')
+
+    def test_schedule_display_returns_human_text(self):
+        group = StudyGroup.objects.create(
+            name='Display',
+            subject=self.subject,
+            room=self.room,
+            teacher=self.teacher,
+            schedule_days=['tuesday', 'thursday'],
+            start_time=time(12, 30),
+            end_time=time(14, 0),
+        )
+
+        self.assertEqual(schedule_display(group), 'ВТ, ЧТ  12:30-14:00')
+        self.assertEqual(StudyGroup.objects.get(pk=group.pk).schedule_days, ['tuesday', 'thursday'])
+
+    def test_group_syncs_two_schedule_slots(self):
+        response = self.client.post('/api/study-groups/', self.group_payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        group = StudyGroup.objects.get(name='Test Tue Thu')
+        slots = ScheduleSlot.objects.filter(group=group, is_active=True).order_by('weekday')
+        self.assertEqual(slots.count(), 2)
+        self.assertEqual(list(slots.values_list('weekday', flat=True)), [1, 3])
+
+    def test_updating_schedule_days_does_not_duplicate_slots(self):
+        create_response = self.client.post('/api/study-groups/', self.group_payload(), format='json')
+        group_id = create_response.data['id']
+
+        first_update = self.client.patch(
+            f'/api/study-groups/{group_id}/',
+            {'schedule_days': ['tuesday'], 'start_time': '12:30:00', 'end_time': '14:00:00'},
+            format='json',
+        )
+        second_update = self.client.patch(
+            f'/api/study-groups/{group_id}/',
+            {'schedule_days': ['tuesday', 'thursday'], 'start_time': '12:30:00', 'end_time': '14:00:00'},
+            format='json',
+        )
+
+        self.assertEqual(first_update.status_code, 200)
+        self.assertEqual(second_update.status_code, 200)
+        group = StudyGroup.objects.get(pk=group_id)
+        self.assertEqual(ScheduleSlot.objects.filter(group=group, weekday=1, is_active=True).count(), 1)
+        self.assertEqual(ScheduleSlot.objects.filter(group=group, weekday=3, is_active=True).count(), 1)
+
+    def test_group_schedule_generates_lessons_for_tuesday_and_thursday(self):
+        create_response = self.client.post('/api/study-groups/', self.group_payload(), format='json')
+        group_id = create_response.data['id']
+
+        response = self.client.post(
+            f'/api/study-groups/{group_id}/generate-lessons/',
+            {'date_from': '2026-07-01', 'date_to': '2026-07-31'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        lessons = Lesson.objects.filter(group_id=group_id).order_by('lesson_date')
+        self.assertTrue(lessons.exists())
+        self.assertTrue(all(lesson.lesson_date.weekday() in {1, 3} for lesson in lessons))
+        self.assertEqual(Lesson.objects.values('group', 'lesson_date', 'start_time').distinct().count(), lessons.count())
+
+    def test_remaining_lessons_uses_deducted_visits(self):
+        client = Client.objects.create(first_name='Student')
+        group = StudyGroup.objects.create(
+            name='Subscription group',
+            subject=self.subject,
+            room=self.room,
+            teacher=self.teacher,
+            schedule_days=['tuesday', 'thursday'],
+            start_time=time(12, 30),
+            end_time=time(14, 0),
+        )
+        GroupMembership.objects.create(group=group, client=client, status=GroupMembership.Status.ACTIVE)
+        subscription = Subscription.objects.create(
+            client=client,
+            title='AB-8',
+            start_date=date.today(),
+            total_visits=8,
+            remaining_visits=8,
+            status=Subscription.Status.ACTIVE,
+        )
+        Visit.objects.create(
+            client=client,
+            subscription=subscription,
+            teacher=self.teacher,
+            visited_at=timezone.now(),
+            status=Visit.Status.ATTENDED,
+            lesson_deducted=True,
+        )
+
+        self.assertEqual(subscription_remaining_lessons(subscription), 7)
+        self.assertIsNotNone(subscription_expected_end_date(subscription))
+
+    def test_attended_missed_and_status_change_affect_subscription_balance(self):
+        client = Client.objects.create(first_name='Balance')
+        subscription = Subscription.objects.create(
+            client=client,
+            title='AB-8',
+            start_date=date.today(),
+            total_visits=8,
+            remaining_visits=8,
+            status=Subscription.Status.ACTIVE,
+        )
+        attended = self.client.post(
+            '/api/visits/',
+            {
+                'client': client.id,
+                'subscription': subscription.id,
+                'teacher': self.teacher.id,
+                'visited_at': timezone.now().isoformat(),
+                'status': Visit.Status.ATTENDED,
+            },
+            format='json',
+        )
+        self.assertEqual(attended.status_code, 201)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.remaining_visits, 7)
+
+        missed = self.client.post(
+            '/api/visits/',
+            {
+                'client': client.id,
+                'subscription': subscription.id,
+                'teacher': self.teacher.id,
+                'visited_at': timezone.now().isoformat(),
+                'status': Visit.Status.MISSED,
+            },
+            format='json',
+        )
+        self.assertEqual(missed.status_code, 201)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.remaining_visits, 7)
+
+        patch = self.client.patch(f"/api/visits/{attended.data['id']}/", {'status': Visit.Status.MISSED}, format='json')
+        self.assertEqual(patch.status_code, 200)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.remaining_visits, 8)
 
 
 class CriticalBusinessFlowTests(APITestCase):

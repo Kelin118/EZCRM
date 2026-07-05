@@ -27,6 +27,7 @@ from .export_excel import (
     export_visits,
 )
 from .excel_import import import_excel
+from .group_schedule import sync_group_schedule_slots
 from .models import (
     AuditLog,
     ChatMessage,
@@ -143,6 +144,35 @@ def _deduct_subscription_lesson(visit):
         visit.subscription.save(update_fields=('remaining_visits', 'updated_at'))
         visit.lesson_deducted = True
         visit.save(update_fields=('lesson_deducted', 'updated_at'))
+
+
+def create_lessons_for_slot(slot, date_from, date_to):
+    created_count = 0
+    current = date_from
+    while current <= date_to:
+        if current.weekday() == slot.weekday:
+            lesson = Lesson.objects.filter(
+                group=slot.group,
+                lesson_date=current,
+                start_time=slot.start_time,
+            ).first()
+            if not lesson:
+                Lesson.objects.create(
+                    schedule_slot=slot,
+                    lesson_date=current,
+                    start_time=slot.start_time,
+                    group=slot.group,
+                    subject=slot.subject or slot.group.subject,
+                    teacher=slot.teacher or slot.group.teacher,
+                    room=slot.room,
+                    end_time=slot.end_time,
+                )
+                created_count += 1
+            elif not lesson.schedule_slot_id:
+                lesson.schedule_slot = slot
+                lesson.save(update_fields=('schedule_slot', 'updated_at'))
+        current += timedelta(days=1)
+    return created_count
 
 
 class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
@@ -311,7 +341,7 @@ class RoomViewSet(EducationBaseViewSet):
 
 
 class StudyGroupViewSet(EducationBaseViewSet):
-    queryset = StudyGroup.objects.select_related('subject', 'teacher', 'manager').all()
+    queryset = StudyGroup.objects.select_related('subject', 'room', 'teacher', 'manager').prefetch_related('memberships__client').all()
     serializer_class = StudyGroupSerializer
     audit_entity_type = 'StudyGroup'
     audit_create_description = 'Создана группа'
@@ -344,6 +374,46 @@ class StudyGroupViewSet(EducationBaseViewSet):
                 | Q(teacher__username__icontains=search)
             )
         return queryset.order_by('name')
+
+    def perform_create(self, serializer):
+        group = serializer.save()
+        sync_group_schedule_slots(group)
+        self._log_instance(AuditLog.Action.CREATE, group, self.audit_create_description, self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        old_schedule = {
+            'schedule_days': list(instance.schedule_days or []),
+            'start_time': instance.start_time,
+            'end_time': instance.end_time,
+        }
+        group = serializer.save()
+        sync_group_schedule_slots(group, old_schedule=old_schedule)
+        self._log_instance(AuditLog.Action.UPDATE, group, self.audit_update_description, self._audit_changes())
+
+    @action(detail=True, methods=['post'], url_path='generate-lessons')
+    def generate_lessons(self, request, pk=None):
+        group = self.get_object()
+        sync_group_schedule_slots(group)
+        date_from = parse_date(request.data.get('date_from') or '')
+        date_to = parse_date(request.data.get('date_to') or '')
+        if not date_from or not date_to or date_from > date_to:
+            return Response({'detail': 'Укажите корректный период.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_count = 0
+        for slot in group.schedule_slots.filter(is_active=True):
+            created_count += create_lessons_for_slot(slot, date_from, date_to)
+
+        log_action(
+            request,
+            AuditLog.Action.CREATE,
+            'Lesson',
+            entity_id=group.id,
+            entity_name=str(group),
+            description='Сгенерированы уроки из расписания группы',
+            changes={'created': created_count, 'date_from': str(date_from), 'date_to': str(date_to)},
+        )
+        return Response({'created': created_count}, status=status.HTTP_201_CREATED)
 
 
 class GroupMembershipViewSet(EducationBaseViewSet):
@@ -414,25 +484,7 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
         if not date_from or not date_to or date_from > date_to:
             return Response({'detail': 'Укажите корректный период.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        created_count = 0
-        current = date_from
-        while current <= date_to:
-            if current.weekday() == slot.weekday:
-                _, created = Lesson.objects.get_or_create(
-                    schedule_slot=slot,
-                    lesson_date=current,
-                    start_time=slot.start_time,
-                    defaults={
-                        'group': slot.group,
-                        'subject': slot.subject or slot.group.subject,
-                        'teacher': slot.teacher or slot.group.teacher,
-                        'room': slot.room,
-                        'end_time': slot.end_time,
-                    },
-                )
-                if created:
-                    created_count += 1
-            current += timedelta(days=1)
+        created_count = create_lessons_for_slot(slot, date_from, date_to)
 
         log_action(
             request,

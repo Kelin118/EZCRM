@@ -318,6 +318,7 @@ class TrialSerializer(serializers.ModelSerializer):
     client_phone = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
+    subscription_title = serializers.SerializerMethodField()
 
     class Meta:
         model = Trial
@@ -337,6 +338,9 @@ class TrialSerializer(serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def get_subscription_title(self, obj):
+        return obj.subscription.title if obj.subscription else ''
 
 
 class MasterClassSerializer(serializers.ModelSerializer):

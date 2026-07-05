@@ -257,7 +257,7 @@ class Trial(TimeStampedModel):
         COMPLETED = 'completed', 'Completed'
         CANCELLED = 'cancelled', 'Cancelled'
 
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='trials')
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, blank=True, related_name='trials')
     manager = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -282,6 +282,13 @@ class Trial(TimeStampedModel):
         null=True,
         blank=True,
         related_name='trial_payment',
+    )
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='source_trials',
     )
     bought_subscription = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
@@ -444,6 +451,7 @@ class AuditLog(models.Model):
         PASSWORD_CHANGE = 'password_change', 'Password change'
         ACTIVATE = 'activate', 'Activate'
         DEACTIVATE = 'deactivate', 'Deactivate'
+        TRIAL_CONVERTED_TO_SUBSCRIPTION = 'trial_converted_to_subscription', 'Trial converted to subscription'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

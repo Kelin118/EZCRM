@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Count, Q, Sum
@@ -804,7 +805,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
 
 class TrialViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, TrialPermission)
-    queryset = Trial.objects.select_related('client', 'manager', 'teacher').all()
+    queryset = Trial.objects.select_related('client', 'manager', 'teacher', 'subscription').all()
     serializer_class = TrialSerializer
     audit_entity_type = 'Trial'
     audit_update_description = 'Изменён пробник'
@@ -869,6 +870,87 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         if previous_status != trial.status:
             changes['stage'] = {'from': previous_status, 'to': trial.status}
         self._log_instance(AuditLog.Action.UPDATE, trial, 'Изменён пробник', changes)
+
+    @action(detail=True, methods=['post'], url_path='convert-to-subscription')
+    def convert_to_subscription(self, request, pk=None):
+        trial = self.get_object()
+        if not (is_admin(request.user) or has_role(request.user, MANAGER)):
+            return Response({'detail': 'Нет доступа к этому действию'}, status=status.HTTP_403_FORBIDDEN)
+        if not trial.client_id:
+            return Response({'detail': 'У пробника не указан клиент'}, status=status.HTTP_400_BAD_REQUEST)
+        if trial.subscription_id:
+            return Response({'detail': 'Абонемент по этому пробнику уже создан'}, status=status.HTTP_400_BAD_REQUEST)
+
+        title = request.data.get('subscription_type') or request.data.get('title') or ''
+        start_date = parse_date(request.data.get('start_date') or '')
+        total_visits = int(request.data.get('total_visits') or 0)
+        price = Decimal(str(request.data.get('price') or 0))
+        payment_amount = Decimal(str(request.data.get('payment_amount') or 0))
+        payment_method = request.data.get('payment_method') or ''
+        comment = request.data.get('comment') or 'Оплата абонемента после пробного'
+
+        if not title:
+            return Response({'detail': 'Укажите вид абонемента'}, status=status.HTTP_400_BAD_REQUEST)
+        if not start_date:
+            return Response({'detail': 'Укажите дату начала'}, status=status.HTTP_400_BAD_REQUEST)
+        if total_visits <= 0:
+            return Response({'detail': 'Количество занятий должно быть больше 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            subscription = Subscription.objects.create(
+                client=trial.client,
+                title=title,
+                start_date=start_date,
+                total_visits=total_visits,
+                remaining_visits=total_visits,
+                price=price,
+                paid_amount=payment_amount,
+                purchase_date=start_date,
+                status=Subscription.Status.ACTIVE,
+            )
+            finance_transaction = None
+            if payment_amount > 0:
+                finance_transaction = _create_income_transaction(
+                    client=trial.client,
+                    amount=payment_amount,
+                    source='subscription',
+                    paid_at=_paid_at_from_date(start_date),
+                    comment=comment or 'Оплата абонемента после пробного',
+                    created_by=request.user,
+                    subscription=subscription,
+                )
+                finance_transaction.payment_method = payment_method
+                finance_transaction.save(update_fields=('payment_method', 'updated_at'))
+                subscription.finance_transaction = finance_transaction
+                subscription.save(update_fields=('finance_transaction', 'updated_at'))
+
+            trial.status = Trial.Status.BOUGHT
+            trial.bought_subscription = True
+            trial.subscription = subscription
+            trial.save(update_fields=('status', 'bought_subscription', 'subscription', 'updated_at'))
+
+        log_action(
+            request,
+            AuditLog.Action.TRIAL_CONVERTED_TO_SUBSCRIPTION,
+            'Trial',
+            entity_id=trial.id,
+            entity_name=str(trial),
+            description='Пробник переведен в абонемент',
+            changes={
+                'trial_id': trial.id,
+                'client_id': trial.client_id,
+                'subscription_id': subscription.id,
+                'payment_amount': str(payment_amount),
+            },
+        )
+        return Response(
+            {
+                'trial': TrialSerializer(trial).data,
+                'subscription': SubscriptionSerializer(subscription).data,
+                'finance_transaction': FinanceTransactionSerializer(finance_transaction).data if finance_transaction else None,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):

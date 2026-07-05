@@ -19,6 +19,7 @@ from .models import (
     Subject,
     Subscription,
     Task,
+    Trial,
     Visit,
 )
 from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
@@ -611,6 +612,157 @@ class GroupScheduleTests(APITestCase):
         self.assertEqual(patch.status_code, 200)
         subscription.refresh_from_db()
         self.assertEqual(subscription.remaining_visits, 8)
+
+
+class TrialConversionTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='admin-convert', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='manager-convert', password='pass', role='manager', roles=['manager'])
+        self.teacher = User.objects.create_user(username='teacher-convert', password='pass', role='teacher', roles=['teacher'])
+        self.teacher_manager = User.objects.create_user(
+            username='teacher-manager-convert',
+            password='pass',
+            role='teacher',
+            roles=['teacher', 'manager'],
+        )
+        self.client_obj = Client.objects.create(first_name='Convert', last_name='Client', manager=self.manager)
+
+    def create_trial(self, client='default'):
+        return Trial.objects.create(
+            client=self.client_obj if client == 'default' else client,
+            manager=self.manager,
+            teacher=self.teacher,
+            scheduled_at=timezone.now(),
+            status=Trial.Status.ATTENDED,
+        )
+
+    def payload(self, payment_amount='45000'):
+        return {
+            'subscription_type': 'AB-8',
+            'start_date': date.today().isoformat(),
+            'total_visits': 8,
+            'price': '45000',
+            'payment_amount': payment_amount,
+            'payment_method': 'cash',
+            'comment': 'Купил после пробного',
+        }
+
+    def test_admin_can_convert_trial_to_subscription(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        trial.refresh_from_db()
+        self.assertIsNotNone(trial.subscription_id)
+        self.assertEqual(trial.status, Trial.Status.BOUGHT)
+        self.assertTrue(trial.bought_subscription)
+
+    def test_manager_can_convert_trial_to_subscription(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Subscription.objects.filter(client=self.client_obj).count(), 1)
+
+    def test_teacher_without_manager_cannot_convert(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.teacher)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_trial_without_client_does_not_convert(self):
+        trial = self.create_trial(client=None)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Subscription.objects.count(), 0)
+
+    def test_repeated_conversion_does_not_create_duplicate(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        first = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+        second = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 400)
+        self.assertEqual(Subscription.objects.filter(client=self.client_obj).count(), 1)
+
+    def test_conversion_creates_subscription_with_correct_balance(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(client=self.client_obj)
+        self.assertEqual(subscription.title, 'AB-8')
+        self.assertEqual(subscription.total_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 8)
+        self.assertEqual(subscription.status, Subscription.Status.ACTIVE)
+
+    def test_payment_amount_creates_finance_transaction(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload('45000'), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(client=self.client_obj)
+        self.assertEqual(FinanceTransaction.objects.filter(subscription=subscription, source='subscription').count(), 1)
+
+    def test_zero_payment_does_not_create_finance_transaction(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload('0'), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(FinanceTransaction.objects.count(), 0)
+
+    def test_subscription_appears_in_subscriptions_api(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+        self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        response = self.client.get('/api/subscriptions/')
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id'] for item in response.data]
+        self.assertIn(Subscription.objects.get(client=self.client_obj).id, ids)
+
+    def test_teacher_manager_can_convert(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.teacher_manager)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_conversion_writes_audit_log(self):
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action='trial_converted_to_subscription',
+                entity_type='Trial',
+                entity_id=str(trial.id),
+                description='Пробник переведен в абонемент',
+            ).exists()
+        )
 
 
 class CriticalBusinessFlowTests(APITestCase):

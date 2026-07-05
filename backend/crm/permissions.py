@@ -93,7 +93,7 @@ class VisitPermission(RolePermission):
 
 class TrialPermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'convert_to_subscription'},
         TEACHER: {'read', 'list', 'retrieve'},
         ACCOUNTANT: {'read', 'list', 'retrieve'},
     }

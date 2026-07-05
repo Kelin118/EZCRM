@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
+import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 
@@ -16,6 +17,9 @@ const trialStages = [
 ];
 
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
+const emptyConvertForm = { subscription_type: 'AB-8', start_date: new Date().toISOString().slice(0, 10), total_visits: 8, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
+const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
+
 const baseFields = [
   { name: 'scheduled_at', label: 'Дата пробного', type: 'datetime-local' },
   { name: 'payment_date', label: 'Дата оплаты', type: 'date' },
@@ -25,9 +29,10 @@ const baseFields = [
   { name: 'notes', label: 'Комментарий', type: 'textarea' },
 ];
 
-const stageLabel = (value) => trialStages.find((stage) => stage.value === value)?.label || value || '—';
-const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
-const dash = (value) => value || '—';
+const stageLabel = (value) => trialStages.find((stage) => stage.value === value)?.label || value || '-';
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
+const dash = (value) => value || '-';
+const isBoughtStage = (value) => boughtStages.has(value);
 
 function trialColumnId(item) {
   const stage = item.stage ?? item.status;
@@ -39,7 +44,7 @@ function trialColumnId(item) {
 }
 
 function getStudentName(item) {
-  return item.student_name || item.client_name || '—';
+  return item.student_name || item.client_name || '-';
 }
 
 function getParentName(item) {
@@ -135,6 +140,7 @@ function TrialCard({ canEdit, item, onEdit }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма</dt><dd className="text-right font-semibold text-brand">{money(item.price)}</dd></div>
         {getPaymentMethod(item) && <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплата</dt><dd className="text-right font-medium">{getPaymentMethod(item)}</dd></div>}
       </dl>
+      {item.subscription && <div className="mt-3"><Badge value="active">Абонемент создан</Badge></div>}
       {comment && <p className="mt-3 line-clamp-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{comment}</p>}
       {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
     </article>
@@ -181,6 +187,10 @@ export default function TrialsPage() {
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
   const [viewMode, setViewMode] = useState('kanban');
+  const [convertTrial, setConvertTrial] = useState(null);
+  const [convertForm, setConvertForm] = useState(emptyConvertForm);
+  const [converting, setConverting] = useState(false);
+  const [message, setMessage] = useState('');
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -204,9 +214,24 @@ export default function TrialsPage() {
     crud.setModalOpen(true);
   };
 
+  const openConvertModal = (trial) => {
+    setMessage('');
+    setConvertTrial(trial);
+    setConvertForm({
+      ...emptyConvertForm,
+      price: Number(trial.price || 0),
+      payment_amount: Number(trial.price || 0),
+      start_date: new Date().toISOString().slice(0, 10),
+    });
+  };
+
   const moveTrial = async (item, nextStage) => {
     if (!canEdit) return;
     if (trialColumnId(item) === nextStage) return;
+    if (isBoughtStage(nextStage)) {
+      openConvertModal(item);
+      return;
+    }
     const previousItems = crud.items;
     crud.setItems((items) => items.map((trial) => (trial.id === item.id ? { ...trial, stage: nextStage, status: nextStage } : trial)));
     try {
@@ -215,6 +240,39 @@ export default function TrialsPage() {
     } catch (error) {
       crud.setItems(previousItems);
       showApiError(error);
+    }
+  };
+
+  const saveTrial = async () => {
+    const nextStage = form.stage ?? form.status;
+    if (form.id && isBoughtStage(nextStage) && !form.subscription) {
+      crud.setModalOpen(false);
+      openConvertModal(form);
+      return;
+    }
+    await crud.save(form);
+  };
+
+  const updateConvertForm = (patch) => setConvertForm((current) => ({ ...current, ...patch }));
+
+  const setSubscriptionType = (value) => {
+    const visits = value === 'AB-4' ? 4 : value === 'AB-8' ? 8 : convertForm.total_visits;
+    updateConvertForm({ subscription_type: value, total_visits: visits });
+  };
+
+  const convertToSubscription = async () => {
+    if (!convertTrial) return;
+    setConverting(true);
+    try {
+      const { data } = await api.post(`trials/${convertTrial.id}/convert-to-subscription/`, convertForm);
+      crud.setItems((items) => items.map((trial) => (trial.id === convertTrial.id ? { ...trial, ...data.trial, stage: data.trial.stage ?? data.trial.status } : trial)));
+      setConvertTrial(null);
+      setMessage('Абонемент создан, клиент добавлен в раздел Абонементы.');
+      await crud.reload();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setConverting(false);
     }
   };
 
@@ -237,6 +295,7 @@ export default function TrialsPage() {
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
       </Filters>
+      {message && <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</div>}
       {viewMode === 'kanban' ? (
         <TrialsKanban items={crud.items} canEdit={canEdit} moveTrial={moveTrial} onEdit={editTrial} />
       ) : (
@@ -247,6 +306,7 @@ export default function TrialsPage() {
           { key: 'client', header: 'Клиент', render: (row) => dash(row.client_name) },
           { key: 'manager', header: 'Менеджер', render: (row) => dash(row.manager_name) },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage ?? row.status}>{stageLabel(row.stage ?? row.status)}</Badge> },
+          { key: 'subscription', header: 'Абонемент', render: (row) => row.subscription ? <Badge value="active">Создан</Badge> : '-' },
           { key: 'scheduled_at', header: 'Дата пробного', render: (row) => dateTime(getTrialDate(row)) },
           { key: 'payment_date', header: 'Дата оплаты', render: (row) => dash(row.payment_date) },
           { key: 'price', header: 'Сумма', render: (row) => money(row.price) },
@@ -254,7 +314,55 @@ export default function TrialsPage() {
           { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTrial(row)} onDelete={() => crud.remove(row.id)} /> },
         ]} />
       )}
-      <CrudModal title="Пробник" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      <CrudModal title="Пробник" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveTrial} />
+      <Modal
+        title="Создать абонемент"
+        open={Boolean(convertTrial)}
+        onClose={() => setConvertTrial(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setConvertTrial(null)}>Отмена</Button>
+            <Button onClick={convertToSubscription} disabled={converting}>{converting ? 'Создаем...' : 'Создать абонемент'}</Button>
+          </>
+        }
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Клиент" value={convertTrial?.client_name || ''} onChange={() => {}} />
+          <SelectField
+            label="Вид абонемента"
+            value={convertForm.subscription_type}
+            onChange={setSubscriptionType}
+            options={[
+              { value: 'AB-4', label: 'AB-4' },
+              { value: 'AB-8', label: 'AB-8' },
+              { value: 'Индивидуальный', label: 'Индивидуальный / другой' },
+            ]}
+          />
+          <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => updateConvertForm({ start_date: event.target.value })} />
+          <Input label="Количество занятий" type="number" value={convertForm.total_visits} onChange={(event) => updateConvertForm({ total_visits: Number(event.target.value) })} />
+          <Input label="Цена" type="number" value={convertForm.price} onChange={(event) => updateConvertForm({ price: Number(event.target.value) })} />
+          <Input label="Сумма оплаты" type="number" value={convertForm.payment_amount} onChange={(event) => updateConvertForm({ payment_amount: Number(event.target.value) })} />
+          <SelectField
+            label="Способ оплаты"
+            value={convertForm.payment_method}
+            onChange={(value) => updateConvertForm({ payment_method: value })}
+            options={[
+              { value: 'cash', label: 'cash' },
+              { value: 'card', label: 'card' },
+              { value: 'transfer', label: 'transfer' },
+            ]}
+          />
+          <Input label="Менеджер" value={convertTrial?.manager_name || ''} onChange={() => {}} />
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
+            Комментарий
+            <textarea
+              className="min-h-24 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+              value={convertForm.comment}
+              onChange={(event) => updateConvertForm({ comment: event.target.value })}
+            />
+          </label>
+        </div>
+      </Modal>
     </>
   );
 }

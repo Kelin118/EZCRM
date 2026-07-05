@@ -1,4 +1,4 @@
-import { Edit, KeyRound, Lock, Search, UserCheck, UserPlus } from 'lucide-react';
+import { Edit, KeyRound, Lock, Search, UserCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -7,7 +7,7 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
-import { PageHeader, SelectField } from './pageUtils.jsx';
+import { PageHeader } from './pageUtils.jsx';
 
 const roles = [
   { value: 'admin', label: 'Администратор' },
@@ -21,13 +21,16 @@ const emptyEmployee = {
   full_name: '',
   phone: '',
   email: '',
-  role: 'manager',
+  roles: ['manager'],
   is_active: true,
   password: '',
   password_confirm: '',
 };
 
 const emptyPassword = { password: '', password_confirm: '' };
+
+const roleLabel = (value) => roles.find((item) => item.value === value)?.label || value;
+const getEmployeeRoles = (employee) => (Array.isArray(employee.roles) && employee.roles.length ? employee.roles : [employee.role].filter(Boolean));
 
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState([]);
@@ -65,7 +68,7 @@ export default function EmployeesPage() {
       full_name: employee.full_name || '',
       phone: employee.phone || '',
       email: employee.email || '',
-      role: employee.role || 'manager',
+      roles: getEmployeeRoles(employee),
       is_active: Boolean(employee.is_active),
     });
     setModalOpen(true);
@@ -75,10 +78,16 @@ export default function EmployeesPage() {
     setSaving(true);
     setError('');
     try {
+      const selectedRoles = getEmployeeRoles(editing);
+      if (!selectedRoles.length) {
+        setError('Выберите хотя бы одну роль.');
+        return;
+      }
+      const payload = { ...editing, roles: selectedRoles, role: selectedRoles[0] };
       if (editing.id) {
-        await api.patch(`users/employees/${editing.id}/`, editing);
+        await api.patch(`users/employees/${editing.id}/`, payload);
       } else {
-        await api.post('users/employees/', editing);
+        await api.post('users/employees/', payload);
       }
       setModalOpen(false);
       setEditing(null);
@@ -102,7 +111,7 @@ export default function EmployeesPage() {
 
   const activate = async (employee) => {
     try {
-      await api.patch(`users/employees/${employee.id}/`, { is_active: true });
+      await api.patch(`users/employees/${employee.id}/`, { is_active: true, roles: getEmployeeRoles(employee) });
       await load();
     } catch (requestError) {
       setError(getErrorMessage(requestError));
@@ -132,6 +141,16 @@ export default function EmployeesPage() {
 
   const setEditingField = (name, value) => setEditing((current) => ({ ...current, [name]: value }));
 
+  const toggleRole = (roleValue) => {
+    setEditing((current) => {
+      const currentRoles = getEmployeeRoles(current);
+      const nextRoles = currentRoles.includes(roleValue)
+        ? currentRoles.filter((item) => item !== roleValue)
+        : [...currentRoles, roleValue];
+      return { ...current, roles: nextRoles };
+    });
+  };
+
   return (
     <>
       <PageHeader title="Сотрудники" actionLabel="Добавить сотрудника" onAction={openCreate} />
@@ -153,13 +172,18 @@ export default function EmployeesPage() {
       <Table
         data={filteredEmployees}
         columns={[
-          { key: 'username', header: 'Username' },
           { key: 'full_name', header: 'ФИО' },
-          { key: 'phone', header: 'Телефон' },
-          { key: 'email', header: 'Email' },
-          { key: 'role', header: 'Роль', render: (row) => <Badge value={row.role}>{roles.find((item) => item.value === row.role)?.label || row.role}</Badge> },
-          { key: 'is_active', header: 'Статус', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Активен' : 'Заблокирован'}</Badge> },
-          { key: 'date_joined', header: 'Создан', render: (row) => (row.date_joined ? new Date(row.date_joined).toLocaleDateString('ru-RU') : '—') },
+          { key: 'username', header: 'Username' },
+          {
+            key: 'roles',
+            header: 'Роли',
+            render: (row) => (
+              <div className="flex flex-wrap gap-1.5">
+                {getEmployeeRoles(row).map((roleValue) => <Badge key={roleValue} value={roleValue}>{roleLabel(roleValue)}</Badge>)}
+              </div>
+            ),
+          },
+          { key: 'is_active', header: 'Активен', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Да' : 'Нет'}</Badge> },
           {
             key: 'actions',
             header: '',
@@ -203,7 +227,17 @@ export default function EmployeesPage() {
             <Input label="ФИО" value={editing.full_name} onChange={(event) => setEditingField('full_name', event.target.value)} />
             <Input label="Телефон" value={editing.phone} onChange={(event) => setEditingField('phone', event.target.value)} />
             <Input label="Email" type="email" value={editing.email} onChange={(event) => setEditingField('email', event.target.value)} />
-            <SelectField label="Роль" value={editing.role} onChange={(value) => setEditingField('role', value)} options={roles} />
+            <div className="grid gap-2 md:col-span-2">
+              <p className="text-sm font-semibold text-slate-700">Роли</p>
+              <div className="grid gap-2 md:grid-cols-2">
+                {roles.map((roleItem) => (
+                  <label key={roleItem.value} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" checked={getEmployeeRoles(editing).includes(roleItem.value)} onChange={() => toggleRole(roleItem.value)} />
+                    {roleItem.label}
+                  </label>
+                ))}
+              </div>
+            </div>
             <label className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700">
               <input type="checkbox" checked={editing.is_active} onChange={(event) => setEditingField('is_active', event.target.checked)} />
               Активен

@@ -28,41 +28,55 @@ export function clearStoredAuth() {
 }
 
 export function getRole(user = getStoredUser()) {
-  return user?.role || '';
+  return getUserRoles(user)[0] || '';
 }
 
-export function hasRole(user, roles) {
-  return roles.includes(getRole(user));
+export function getUserRoles(user = getStoredUser()) {
+  if (!user) return [];
+  const values = [];
+  if (user.is_superuser) values.push(ROLES.ADMIN);
+  if (Array.isArray(user.roles)) values.push(...user.roles);
+  else if (typeof user.roles === 'string' && user.roles) values.push(user.roles);
+  if (user.role) values.push(user.role);
+  return [...new Set(values.filter(Boolean))];
+}
+
+export function hasRole(user, roleName) {
+  if (Array.isArray(roleName)) return hasAnyRole(user, roleName);
+  return getUserRoles(user).includes(roleName);
+}
+
+export function hasAnyRole(user, roles) {
+  const roleList = Array.isArray(roles) ? roles : Array.from(arguments).slice(1);
+  const userRoles = getUserRoles(user);
+  return userRoles.includes(ROLES.ADMIN) || roleList.some((roleName) => userRoles.includes(roleName));
 }
 
 export function isAdmin(user = getStoredUser()) {
-  return getRole(user) === ROLES.ADMIN;
+  return hasRole(user, ROLES.ADMIN);
 }
 
 export function canAccessNavItem(item, user = getStoredUser()) {
-  const role = getRole(user);
-  return role === ROLES.ADMIN || !item.roles || item.roles.includes(role);
+  return isAdmin(user) || !item.roles || hasAnyRole(user, item.roles);
 }
 
 export function canAccessPath(pathname, user = getStoredUser()) {
-  const role = getRole(user);
-  if (role === ROLES.ADMIN || pathname === '/' || pathname.startsWith('/clients/')) return true;
+  if (isAdmin(user) || pathname === '/' || pathname.startsWith('/clients/')) return true;
 
-  if (role === ROLES.MANAGER) {
-    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
-      || pathname.startsWith('/lessons/');
+  const allowedPaths = new Set();
+  if (hasRole(user, ROLES.MANAGER)) {
+    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
   }
 
-  if (role === ROLES.TEACHER) {
-    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/groups', '/schedule', '/chat'].includes(pathname)
-      || pathname.startsWith('/lessons/');
+  if (hasRole(user, ROLES.TEACHER)) {
+    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/groups', '/schedule', '/chat'].forEach((path) => allowedPaths.add(path));
   }
 
-  if (role === ROLES.ACCOUNTANT) {
-    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/finance', '/reports', '/export', '/chat', '/settings'].includes(pathname);
+  if (hasRole(user, ROLES.ACCOUNTANT)) {
+    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/finance', '/reports', '/export', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
   }
 
-  return false;
+  return allowedPaths.has(pathname) || pathname.startsWith('/lessons/');
 }
 
 export function canDeleteDangerous(user = getStoredUser()) {
@@ -106,5 +120,5 @@ export function canCreateTasks(user = getStoredUser()) {
 }
 
 export function canDeleteTask(task, user = getStoredUser()) {
-  return isAdmin(user) || (getRole(user) === ROLES.MANAGER && (!task.assigned_to || task.assigned_to === user?.id));
+  return isAdmin(user) || (hasRole(user, ROLES.MANAGER) && (!task.assigned_to || task.assigned_to === user?.id));
 }

@@ -48,7 +48,7 @@ class RegisterView(APIView):
     permission_classes = (AllowAny,)
 
     def post(self, request):
-        if User.objects.filter(Q(role='admin') | Q(is_superuser=True)).exists():
+        if active_admins().exists():
             return Response(
                 {'detail': 'Регистрация закрыта. Обратитесь к администратору.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -64,7 +64,7 @@ class RegisterView(APIView):
             entity_id=user.id,
             entity_name=user.get_full_name() or user.username,
             description='Создан первый администратор',
-            changes={'username': user.username, 'role': user.role},
+            changes={'username': user.username, 'role': user.role, 'roles': user.get_roles()},
         )
         return Response(UserPublicSerializer(user).data, status=status.HTTP_201_CREATED)
 
@@ -95,14 +95,18 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             entity_id=user.id,
             entity_name=user.get_full_name() or user.username,
             description='Создан сотрудник',
-            changes={'username': user.username, 'role': user.role, 'is_active': user.is_active},
+            changes={'username': user.username, 'role': user.role, 'roles': user.get_roles(), 'is_active': user.is_active},
         )
 
     def perform_update(self, serializer):
         was_active = serializer.instance.is_active
+        old_roles = serializer.instance.get_roles()
         user = serializer.save()
-        description = 'Изменён сотрудник'
+        new_roles = user.get_roles()
+        description = 'Изменен сотрудник'
         action_value = AuditLog.Action.UPDATE
+        if old_roles != new_roles:
+            description = 'Изменены роли сотрудника'
         if not was_active and user.is_active:
             description = 'Сотрудник активирован'
             action_value = AuditLog.Action.ACTIVATE
@@ -115,6 +119,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             for key, value in self.request.data.items()
             if key not in {'password', 'password_confirm'} and 'password' not in key.lower()
         }
+        if old_roles != new_roles:
+            changes['old_roles'] = old_roles
+            changes['new_roles'] = new_roles
         log_action(
             self.request,
             action_value,
@@ -127,7 +134,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
-        if user.is_active and (user.role == 'admin' or user.is_superuser) and active_admins().exclude(pk=user.pk).count() == 0:
+        if user.is_active and user.has_role('admin') and active_admins().exclude(pk=user.pk).count() == 0:
             return Response(
                 {'detail': 'Нельзя заблокировать последнего активного администратора.'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -158,9 +165,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             'User',
             entity_id=user.id,
             entity_name=user.get_full_name() or user.username,
-            description='Изменён пароль сотрудника',
+            description='Изменен пароль сотрудника',
         )
-        return Response({'detail': 'Пароль обновлён.'}, status=status.HTTP_200_OK)
+        return Response({'detail': 'Пароль обновлен.'}, status=status.HTTP_200_OK)
 
 
 class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -169,14 +176,19 @@ class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = User.objects.all().order_by('first_name', 'last_name', 'username')
-        role_value = self.request.query_params.get('role')
         active = self.request.query_params.get('active')
 
-        if role_value:
-            queryset = queryset.filter(role=role_value)
         if active in ('1', 'true', 'True', 'yes'):
             queryset = queryset.filter(is_active=True)
         elif active in ('0', 'false', 'False', 'no'):
             queryset = queryset.filter(is_active=False)
 
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = list(self.filter_queryset(self.get_queryset()))
+        role_value = request.query_params.get('role')
+        if role_value:
+            queryset = [user for user in queryset if user.has_role(role_value)]
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)

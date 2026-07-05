@@ -65,6 +65,9 @@ from .permissions import (
     TaskPermission,
     TrialPermission,
     VisitPermission,
+    has_any_role,
+    has_role,
+    is_admin,
     role,
 )
 from .serializers import (
@@ -218,6 +221,8 @@ class CurrentUserView(APIView):
                 'username': user.username,
                 'full_name': user.get_full_name() or user.username,
                 'role': 'admin' if user.is_superuser else role(user),
+                'roles': user.get_roles() if hasattr(user, 'get_roles') else [role(user)],
+                'is_superuser': user.is_superuser,
             }
         )
 
@@ -321,7 +326,7 @@ class StudyGroupViewSet(EducationBaseViewSet):
         subject = self.request.query_params.get('subject')
         search = self.request.query_params.get('search')
 
-        if role(self.request.user) == TEACHER:
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=self.request.user)
         if status_value:
             queryset = queryset.filter(status=status_value)
@@ -355,7 +360,7 @@ class GroupMembershipViewSet(EducationBaseViewSet):
         client = self.request.query_params.get('client')
         status_value = self.request.query_params.get('status')
 
-        if role(self.request.user) == TEACHER:
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(group__teacher=self.request.user)
         if group:
             queryset = queryset.filter(group_id=group)
@@ -382,7 +387,7 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
         room = self.request.query_params.get('room')
         is_active = self.request.query_params.get('is_active')
 
-        if role(self.request.user) == TEACHER:
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=self.request.user)
         if group:
             queryset = queryset.filter(group_id=group)
@@ -400,7 +405,7 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
 
     @action(detail=True, methods=['post'], url_path='generate-lessons')
     def generate_lessons(self, request, pk=None):
-        if not (role(request.user) == MANAGER or getattr(request.user, 'is_superuser', False) or role(request.user) == 'admin'):
+        if not (has_role(request.user, MANAGER) or is_admin(request.user)):
             return Response({'detail': 'Недостаточно прав.'}, status=status.HTTP_403_FORBIDDEN)
 
         slot = self.get_object()
@@ -461,7 +466,7 @@ class LessonViewSet(EducationBaseViewSet):
         date_to = _date_param(self.request, 'date_to')
         search = self.request.query_params.get('search')
 
-        if role(self.request.user) == TEACHER:
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=self.request.user)
         if group:
             queryset = queryset.filter(group_id=group)
@@ -682,7 +687,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
 
-        if role(self.request.user) == TEACHER:
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(Q(teacher=self.request.user) | Q(lesson__teacher=self.request.user))
         if client:
             queryset = queryset.filter(client_id=client)
@@ -906,7 +911,7 @@ class TaskViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(assigned_to_id=assigned_to)
         if client:
             queryset = queryset.filter(client_id=client)
-        if role(self.request.user) == TEACHER or _my_param(self.request):
+        if (has_role(self.request.user, TEACHER) and not has_role(self.request.user, MANAGER)) or _my_param(self.request):
             queryset = queryset.filter(assigned_to=self.request.user)
         if due_date:
             queryset = queryset.filter(due_at__date=due_date)
@@ -950,7 +955,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(payment_method=payment_method)
         if client:
             queryset = queryset.filter(client_id=client)
-        if role(self.request.user) == MANAGER:
+        if has_role(self.request.user, MANAGER) and not has_role(self.request.user, ACCOUNTANT):
             queryset = queryset.filter(
                 transaction_type=FinanceTransaction.Type.INCOME,
                 client__manager=self.request.user,
@@ -998,7 +1003,7 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
     }
 
     def update(self, request, *args, **kwargs):
-        if role(request.user) == ACCOUNTANT:
+        if has_role(request.user, ACCOUNTANT):
             instance = self.get_object()
             data = {field: request.data[field] for field in self.price_fields if field in request.data}
             serializer = self.get_serializer(instance, data=data, partial=True)
@@ -1127,7 +1132,7 @@ class VisitsExportView(BaseExportView):
 
     def get(self, request):
         queryset = Visit.objects.select_related('client', 'subscription', 'teacher', 'lesson').all()
-        if role(request.user) == TEACHER:
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(Q(teacher=request.user) | Q(lesson__teacher=request.user))
         queryset = _filter_period(queryset, 'visited_at__date', request)
         status_value = request.query_params.get('status')
@@ -1210,7 +1215,7 @@ class GroupsExportView(BaseExportView):
 
     def get(self, request):
         queryset = StudyGroup.objects.select_related('subject', 'teacher', 'manager').prefetch_related('memberships').all()
-        if role(request.user) == TEACHER:
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=request.user)
         status_value = request.query_params.get('status')
         teacher = request.query_params.get('teacher')
@@ -1235,7 +1240,7 @@ class LessonsExportView(BaseExportView):
 
     def get(self, request):
         queryset = Lesson.objects.select_related('group', 'subject', 'teacher', 'room').prefetch_related('visits').all()
-        if role(request.user) == TEACHER:
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=request.user)
         queryset = _filter_period(queryset, 'lesson_date', request)
         status_value = request.query_params.get('status')
@@ -1304,8 +1309,8 @@ class DashboardStatsView(APIView):
         date_to = _date_param(request, 'date_to') or today
         date_from = _date_param(request, 'date_from') or (date_to - timedelta(days=29))
         ending_date = today + timedelta(days=7)
-        can_view_finance = role(request.user) != TEACHER
-        is_teacher = role(request.user) == TEACHER
+        is_teacher = has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        can_view_finance = not is_teacher
 
         transactions = FinanceTransaction.objects.filter(paid_at__date__gte=date_from, paid_at__date__lte=date_to)
         clients = Client.objects.all()

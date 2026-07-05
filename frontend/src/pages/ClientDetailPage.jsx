@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
-import { canCreateTasks, canManageSubscriptions, canManageVisits, getRole, getStoredUser, ROLES } from '../auth.js';
+import { canCreateTasks, canManageSubscriptions, canManageVisits, getStoredUser, hasAnyRole, isAdmin, ROLES } from '../auth.js';
 import Badge from '../components/ui/Badge.jsx';
 import Button from '../components/ui/Button.jsx';
 import Table from '../components/ui/Table.jsx';
@@ -22,10 +22,9 @@ const tabs = [
 export default function ClientDetailPage() {
   const { id } = useParams();
   const user = getStoredUser();
-  const role = getRole(user);
   const visibleTabs = useMemo(
-    () => tabs.filter((tab) => !tab.roles || role === ROLES.ADMIN || tab.roles.includes(role)),
-    [role],
+    () => tabs.filter((tab) => !tab.roles || isAdmin(user) || hasAnyRole(user, tab.roles)),
+    [user],
   );
   const [client, setClient] = useState(null);
   const [activeTab, setActiveTab] = useState('subscriptions');

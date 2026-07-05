@@ -222,6 +222,108 @@ class UserRegistrationAndEmployeeTests(APITestCase):
         admin.refresh_from_db()
         self.assertTrue(admin.is_active)
 
+    def test_user_role_helpers_keep_legacy_role_compatibility(self):
+        User = get_user_model()
+        teacher = User.objects.create_user(username='legacy-teacher', password='password123', role='teacher')
+
+        self.assertEqual(teacher.get_roles(), ['teacher'])
+        self.assertTrue(teacher.has_role('teacher'))
+        self.assertFalse(teacher.has_role('manager'))
+
+    def test_user_role_helpers_support_multiple_roles(self):
+        User = get_user_model()
+        employee = User.objects.create_user(
+            username='teacher-manager',
+            password='password123',
+            role='teacher',
+            roles=['teacher', 'manager'],
+        )
+
+        self.assertTrue(employee.has_role('teacher'))
+        self.assertTrue(employee.has_role('manager'))
+        self.assertFalse(employee.has_role('accountant'))
+
+    def test_staff_options_filters_by_roles(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        employee = User.objects.create_user(
+            username='multi-role',
+            password='password123',
+            role='teacher',
+            roles=['teacher', 'manager'],
+            is_active=True,
+        )
+        self.client.force_authenticate(admin)
+
+        teacher_response = self.client.get('/api/users/staff-options/?role=teacher&active=1')
+        manager_response = self.client.get('/api/users/staff-options/?role=manager&active=1')
+
+        self.assertEqual(teacher_response.status_code, 200)
+        self.assertEqual(manager_response.status_code, 200)
+        self.assertIn(employee.id, [item['id'] for item in teacher_response.data])
+        self.assertIn(employee.id, [item['id'] for item in manager_response.data])
+
+    def test_admin_can_create_employee_with_multiple_roles(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            '/api/users/employees/',
+            {
+                'username': 'teacher-manager',
+                'full_name': 'Teacher Manager',
+                'roles': ['teacher', 'manager'],
+                'password': 'password123',
+                'password_confirm': 'password123',
+                'is_active': True,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        employee = User.objects.get(username='teacher-manager')
+        self.assertEqual(employee.role, 'teacher')
+        self.assertEqual(employee.roles, ['teacher', 'manager'])
+        self.assertIn('roles', response.data)
+
+    def test_admin_can_update_employee_roles_and_audit_log_is_written(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        employee = User.objects.create_user(username='employee', password='password123', role='teacher', roles=['teacher'])
+        self.client.force_authenticate(admin)
+
+        response = self.client.patch(
+            f'/api/users/employees/{employee.id}/',
+            {'roles': ['manager', 'accountant']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        employee.refresh_from_db()
+        self.assertEqual(employee.role, 'manager')
+        self.assertEqual(employee.roles, ['manager', 'accountant'])
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action='update',
+                entity_type='User',
+                description='Изменены роли сотрудника',
+                changes__old_roles=['teacher'],
+                changes__new_roles=['manager', 'accountant'],
+            ).exists()
+        )
+
+    def test_cannot_remove_last_active_admin_role(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'], is_active=True)
+        self.client.force_authenticate(admin)
+
+        response = self.client.patch(f'/api/users/employees/{admin.id}/', {'roles': ['manager']}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        admin.refresh_from_db()
+        self.assertTrue(admin.has_role('admin'))
+
 
 class AdminApiSmokeTests(APITestCase):
     def setUp(self):
@@ -311,6 +413,20 @@ class RoleAccessSmokeTests(APITestCase):
                 self.client.force_authenticate(user)
                 response = self.client.get(endpoint)
                 self.assertEqual(response.status_code, expected)
+
+    def test_teacher_manager_gets_manager_access(self):
+        User = get_user_model()
+        teacher_manager = User.objects.create_user(
+            username='teacher-manager-access',
+            password='pass',
+            role='teacher',
+            roles=['teacher', 'manager'],
+        )
+        self.client.force_authenticate(teacher_manager)
+
+        response = self.client.get('/api/finance/')
+
+        self.assertEqual(response.status_code, 200)
 
     @patch('crm.views.create_database_backup')
     def test_backup_is_admin_only(self, mocked_backup):

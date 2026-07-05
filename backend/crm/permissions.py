@@ -11,8 +11,27 @@ def role(user):
     return getattr(user, 'role', None)
 
 
+def roles(user):
+    if hasattr(user, 'get_roles'):
+        return user.get_roles()
+    user_role = role(user)
+    return [user_role] if user_role else []
+
+
+def has_role(user, role_name):
+    if hasattr(user, 'has_role'):
+        return user.has_role(role_name)
+    return getattr(user, 'is_superuser', False) or role(user) == role_name
+
+
+def has_any_role(user, role_names):
+    if hasattr(user, 'has_any_role'):
+        return user.has_any_role(role_names)
+    return getattr(user, 'is_superuser', False) or role(user) in role_names
+
+
 def is_admin(user):
-    return role(user) == ADMIN or getattr(user, 'is_superuser', False)
+    return has_role(user, ADMIN) or getattr(user, 'is_superuser', False)
 
 
 def is_authenticated(user):
@@ -29,7 +48,9 @@ class RolePermission(BasePermission):
             return True
 
         action = getattr(view, 'action', None) or request.method.lower()
-        allowed_actions = self.allowed_by_role.get(role(request.user), set())
+        allowed_actions = set()
+        for user_role in roles(request.user):
+            allowed_actions.update(self.allowed_by_role.get(user_role, set()))
         return action in allowed_actions or (request.method in SAFE_METHODS and 'read' in allowed_actions)
 
     def has_object_permission(self, request, view, obj):
@@ -91,15 +112,14 @@ class TaskPermission(RolePermission):
     def has_object_permission(self, request, view, obj):
         if is_admin(request.user):
             return True
-        user_role = role(request.user)
         action = getattr(view, 'action', None)
 
-        if user_role == MANAGER:
+        if has_role(request.user, MANAGER):
             if action == 'destroy':
                 return obj.assigned_to_id == request.user.id
             return True
 
-        if user_role == TEACHER:
+        if has_role(request.user, TEACHER):
             return obj.assigned_to_id == request.user.id and action in {
                 'retrieve',
                 'update',
@@ -126,17 +146,17 @@ class SettingsPermission(RolePermission):
 
 class DashboardPermission(BasePermission):
     def has_permission(self, request, view):
-        return is_authenticated(request.user) and (is_admin(request.user) or role(request.user) in {MANAGER, TEACHER, ACCOUNTANT})
+        return is_authenticated(request.user) and (is_admin(request.user) or has_any_role(request.user, {MANAGER, TEACHER, ACCOUNTANT}))
 
 
 class ReportsPermission(BasePermission):
     def has_permission(self, request, view):
-        return is_authenticated(request.user) and (is_admin(request.user) or role(request.user) in {MANAGER, ACCOUNTANT})
+        return is_authenticated(request.user) and (is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT}))
 
 
 class ExcelImportPermission(BasePermission):
     def has_permission(self, request, view):
-        return is_authenticated(request.user) and (is_admin(request.user) or role(request.user) == ACCOUNTANT)
+        return is_authenticated(request.user) and (is_admin(request.user) or has_role(request.user, ACCOUNTANT))
 
 
 class ExportPermission(BasePermission):
@@ -146,10 +166,9 @@ class ExportPermission(BasePermission):
         if is_admin(request.user):
             return True
         export_type = getattr(view, 'export_type', '')
-        user_role = role(request.user)
-        if user_role == ACCOUNTANT:
+        if has_role(request.user, ACCOUNTANT):
             return export_type in {'subscriptions', 'finance', 'report-summary'}
-        if user_role == MANAGER:
+        if has_role(request.user, MANAGER):
             return export_type in {
                 'clients',
                 'subscriptions',
@@ -160,7 +179,7 @@ class ExportPermission(BasePermission):
                 'lessons',
                 'report-summary',
             }
-        if user_role == TEACHER:
+        if has_role(request.user, TEACHER):
             return export_type in {'visits', 'lessons'}
         return False
 
@@ -199,16 +218,15 @@ class EducationPermission(RolePermission):
     def has_object_permission(self, request, view, obj):
         if is_admin(request.user):
             return True
-        user_role = role(request.user)
         action = getattr(view, 'action', None)
 
-        if user_role == MANAGER:
+        if has_role(request.user, MANAGER):
             return True
 
-        if user_role == ACCOUNTANT:
+        if has_role(request.user, ACCOUNTANT):
             return request.method in SAFE_METHODS
 
-        if user_role == TEACHER:
+        if has_role(request.user, TEACHER):
             if action not in {'retrieve', 'attendance'} and request.method not in SAFE_METHODS:
                 return False
             teacher_id = request.user.id

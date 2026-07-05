@@ -1,5 +1,4 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Q
 from rest_framework import serializers
 
 
@@ -7,6 +6,12 @@ User = get_user_model()
 
 
 ROLE_CHOICES = {'admin', 'manager', 'teacher', 'accountant'}
+ROLE_LABELS = {
+    'admin': 'Admin',
+    'manager': 'Manager',
+    'teacher': 'Teacher',
+    'accountant': 'Accountant',
+}
 
 
 def split_full_name(full_name):
@@ -16,27 +21,69 @@ def split_full_name(full_name):
     return first_name, last_name
 
 
+def normalize_roles(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise serializers.ValidationError('Роли должны быть списком.')
+
+    roles = []
+    for item in value:
+        role_value = str(item).strip()
+        if not role_value:
+            continue
+        if role_value not in ROLE_CHOICES:
+            raise serializers.ValidationError('Недопустимая роль.')
+        if role_value not in roles:
+            roles.append(role_value)
+
+    if not roles:
+        raise serializers.ValidationError('Выберите хотя бы одну роль.')
+    return roles
+
+
 def active_admins():
-    return User.objects.filter(is_active=True).filter(Q(role='admin') | Q(is_superuser=True))
+    admin_ids = [user.id for user in User.objects.filter(is_active=True) if user.has_role('admin')]
+    return User.objects.filter(id__in=admin_ids)
 
 
 def would_remove_last_active_admin(instance, attrs):
-    if not instance or not instance.is_active or (instance.role != 'admin' and not instance.is_superuser):
+    if not instance or not instance.is_active or not instance.has_role('admin'):
         return False
 
-    next_role = attrs.get('role', instance.role)
+    next_roles = attrs.get('roles', instance.get_roles())
     next_active = attrs.get('is_active', instance.is_active)
-    remains_admin = next_active and (next_role == 'admin' or instance.is_superuser)
+    remains_admin = next_active and (instance.is_superuser or 'admin' in next_roles)
     return not remains_admin and active_admins().exclude(pk=instance.pk).count() == 0
 
 
 class UserPublicSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    roles = serializers.SerializerMethodField()
+    role_display = serializers.SerializerMethodField()
+    roles_display = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'full_name', 'display_name', 'phone', 'email', 'role', 'is_active', 'date_joined')
+        fields = (
+            'id',
+            'username',
+            'email',
+            'full_name',
+            'display_name',
+            'phone',
+            'role',
+            'roles',
+            'role_display',
+            'roles_display',
+            'is_active',
+            'is_staff',
+            'is_superuser',
+            'date_joined',
+        )
         read_only_fields = ('id', 'date_joined')
 
     def get_full_name(self, obj):
@@ -45,20 +92,33 @@ class UserPublicSerializer(serializers.ModelSerializer):
     def get_display_name(self, obj):
         return obj.get_full_name() or obj.username
 
+    def get_roles(self, obj):
+        return obj.get_roles()
+
+    def get_role_display(self, obj):
+        return ROLE_LABELS.get(obj.role, obj.role)
+
+    def get_roles_display(self, obj):
+        return [ROLE_LABELS.get(role, role) for role in obj.get_roles()]
+
 
 class StaffOptionSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    roles = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'full_name', 'display_name', 'role', 'is_active')
+        fields = ('id', 'username', 'full_name', 'display_name', 'role', 'roles', 'is_active')
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username
 
     def get_display_name(self, obj):
         return obj.get_full_name() or obj.username
+
+    def get_roles(self, obj):
+        return obj.get_roles()
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -88,6 +148,7 @@ class RegisterSerializer(serializers.Serializer):
             first_name=first_name,
             last_name=last_name,
             role='admin',
+            roles=['admin'],
             is_staff=True,
             is_superuser=False,
         )
@@ -100,6 +161,7 @@ class EmployeeSerializer(UserPublicSerializer):
     password = serializers.CharField(write_only=True, min_length=8, required=False, allow_blank=True)
     password_confirm = serializers.CharField(write_only=True, min_length=8, required=False, allow_blank=True)
     full_name = serializers.CharField(max_length=255, required=False, allow_blank=True, write_only=True)
+    roles = serializers.JSONField(required=False)
 
     class Meta(UserPublicSerializer.Meta):
         fields = UserPublicSerializer.Meta.fields + ('password', 'password_confirm')
@@ -117,6 +179,9 @@ class EmployeeSerializer(UserPublicSerializer):
             raise serializers.ValidationError('Недопустимая роль.')
         return value
 
+    def validate_roles(self, value):
+        return normalize_roles(value)
+
     def validate(self, attrs):
         password = attrs.get('password')
         password_confirm = attrs.get('password_confirm')
@@ -126,6 +191,15 @@ class EmployeeSerializer(UserPublicSerializer):
         if password or password_confirm:
             if password != password_confirm:
                 raise serializers.ValidationError({'password_confirm': 'Пароли не совпадают.'})
+
+        if 'roles' not in attrs:
+            if self.instance:
+                attrs['roles'] = self.instance.get_roles()
+            elif attrs.get('role'):
+                attrs['roles'] = normalize_roles([attrs['role']])
+            else:
+                raise serializers.ValidationError({'roles': 'Выберите хотя бы одну роль.'})
+        attrs['role'] = attrs['roles'][0]
 
         if would_remove_last_active_admin(self.instance, attrs):
             raise serializers.ValidationError({'is_active': 'Нельзя заблокировать последнего активного администратора.'})
@@ -141,7 +215,7 @@ class EmployeeSerializer(UserPublicSerializer):
         full_name = validated_data.pop('full_name', '')
         first_name, last_name = split_full_name(full_name)
         user = User(**validated_data, first_name=first_name, last_name=last_name)
-        user.is_staff = user.role == 'admin'
+        user.is_staff = user.has_role('admin')
         user.set_password(password)
         user.save()
         return user
@@ -156,7 +230,7 @@ class EmployeeSerializer(UserPublicSerializer):
         for field, value in validated_data.items():
             setattr(instance, field, value)
 
-        instance.is_staff = instance.role == 'admin' or instance.is_superuser
+        instance.is_staff = instance.has_role('admin')
         if password:
             instance.set_password(password)
         instance.save()

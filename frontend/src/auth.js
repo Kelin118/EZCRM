@@ -49,7 +49,7 @@ export function canAccessPath(pathname, user = getStoredUser()) {
   if (role === ROLES.ADMIN || pathname === '/' || pathname.startsWith('/clients/')) return true;
 
   if (role === ROLES.MANAGER) {
-    return ['/clients', '/subscriptions', '/trials', '/master-classes', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
+    return ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/chat', '/settings'].includes(pathname)
       || pathname.startsWith('/lessons/');
   }
 
@@ -82,7 +82,7 @@ export function canManageSales(user = getStoredUser()) {
 }
 
 export function canManageVisits(user = getStoredUser()) {
-  return hasRole(user, [ROLES.ADMIN, ROLES.TEACHER]);
+  return hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.TEACHER]);
 }
 
 export function canManageFinance(user = getStoredUser()) {

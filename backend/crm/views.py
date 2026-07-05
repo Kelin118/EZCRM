@@ -659,19 +659,47 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
 
 class VisitViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, VisitPermission)
-    queryset = Visit.objects.select_related('client', 'subscription', 'teacher', 'lesson').all()
+    queryset = Visit.objects.select_related(
+        'client',
+        'subscription',
+        'teacher',
+        'lesson',
+        'lesson__group',
+        'lesson__subject',
+        'lesson__teacher',
+    ).all()
     serializer_class = VisitSerializer
     audit_entity_type = 'Visit'
 
     def get_queryset(self):
         queryset = super().get_queryset()
         client = self.request.query_params.get('client')
+        group = self.request.query_params.get('group')
+        teacher = self.request.query_params.get('teacher')
+        status_value = self.request.query_params.get('status')
+        subscription = self.request.query_params.get('subscription')
         date = _date_param(self.request, 'date')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
 
+        if role(self.request.user) == TEACHER:
+            queryset = queryset.filter(Q(teacher=self.request.user) | Q(lesson__teacher=self.request.user))
         if client:
             queryset = queryset.filter(client_id=client)
+        if group:
+            queryset = queryset.filter(lesson__group_id=group)
+        if teacher:
+            queryset = queryset.filter(Q(teacher_id=teacher) | Q(lesson__teacher_id=teacher))
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if subscription:
+            queryset = queryset.filter(subscription_id=subscription)
         if date:
             queryset = queryset.filter(visited_at__date=date)
+        if date_from:
+            queryset = queryset.filter(visited_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(visited_at__date__lte=date_to)
         return queryset.order_by('-visited_at', '-created_at')
 
     def _restore_lesson(self, subscription):

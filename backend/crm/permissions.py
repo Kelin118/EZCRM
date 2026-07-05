@@ -64,7 +64,7 @@ class SubscriptionPermission(RolePermission):
 
 class VisitPermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
         TEACHER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
         ACCOUNTANT: {'read', 'list', 'retrieve'},
     }

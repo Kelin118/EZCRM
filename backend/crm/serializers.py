@@ -200,9 +200,13 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
 class VisitSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
+    client_phone = serializers.SerializerMethodField()
+    group_name = serializers.SerializerMethodField()
     subscription_title = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     lesson_title = serializers.SerializerMethodField()
+    lesson_display = serializers.SerializerMethodField()
+    date = serializers.SerializerMethodField()
 
     class Meta:
         model = Visit
@@ -211,14 +215,34 @@ class VisitSerializer(serializers.ModelSerializer):
     def get_client_name(self, obj):
         return str(obj.client)
 
+    def get_client_phone(self, obj):
+        return obj.client.phone if obj.client else ''
+
+    def get_group_name(self, obj):
+        return obj.lesson.group.name if obj.lesson and obj.lesson.group else ''
+
     def get_subscription_title(self, obj):
         return obj.subscription.title if obj.subscription else ''
 
     def get_teacher_name(self, obj):
-        return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+        teacher = obj.teacher or (obj.lesson.teacher if obj.lesson else None)
+        return teacher.get_full_name() or teacher.username if teacher else ''
 
     def get_lesson_title(self, obj):
         return str(obj.lesson) if obj.lesson else ''
+
+    def get_lesson_display(self, obj):
+        if not obj.lesson:
+            return ''
+        parts = [
+            obj.lesson.subject.name if obj.lesson.subject else '',
+            obj.lesson.topic,
+            obj.lesson.start_time.strftime('%H:%M') if obj.lesson.start_time else '',
+        ]
+        return ' · '.join(filter(None, parts)) or str(obj.lesson)
+
+    def get_date(self, obj):
+        return obj.visited_at.date() if obj.visited_at else None
 
 
 class TrialSerializer(serializers.ModelSerializer):

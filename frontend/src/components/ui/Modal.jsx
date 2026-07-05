@@ -2,12 +2,18 @@ import { X } from 'lucide-react';
 
 import Button from './Button.jsx';
 
-export default function Modal({ title, open, onClose, children, footer }) {
+const sizes = {
+  default: 'max-w-2xl',
+  wide: 'max-w-5xl',
+  full: 'max-w-7xl',
+};
+
+export default function Modal({ title, open, onClose, children, footer, size = 'default' }) {
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/35 p-3 backdrop-blur-sm sm:p-4">
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] bg-white shadow-soft">
+      <div className={`flex max-h-[90vh] w-full ${sizes[size] || sizes.default} flex-col overflow-hidden rounded-[24px] bg-white shadow-soft`}>
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
           <Button variant="ghost" className="h-9 w-9 p-0" onClick={onClose} aria-label="Закрыть">

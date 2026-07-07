@@ -20,11 +20,9 @@ const emptyEmployee = {
   username: '',
   full_name: '',
   phone: '',
-  email: '',
   roles: ['manager'],
   is_active: true,
   password: '',
-  password_confirm: '',
 };
 
 const emptyPassword = { password: '', password_confirm: '' };
@@ -67,9 +65,9 @@ export default function EmployeesPage() {
       username: employee.username || '',
       full_name: employee.full_name || '',
       phone: employee.phone || '',
-      email: employee.email || '',
       roles: getEmployeeRoles(employee),
       is_active: Boolean(employee.is_active),
+      password: '',
     });
     setModalOpen(true);
   };
@@ -84,14 +82,31 @@ export default function EmployeesPage() {
         return;
       }
       const payload = { ...editing, roles: selectedRoles, role: selectedRoles[0] };
+      if (!payload.username?.trim()) {
+        setError('Введите логин');
+        return;
+      }
+      if (!editing.id && !payload.password) {
+        setError('Введите пароль');
+        return;
+      }
+      if (payload.password && payload.password.length < 4) {
+        setError('Пароль слишком короткий');
+        return;
+      }
+      if (editing.id && !payload.password) {
+        delete payload.password;
+      }
       if (editing.id) {
         await api.patch(`users/employees/${editing.id}/`, payload);
       } else {
         await api.post('users/employees/', payload);
       }
+      const message = editing.id ? 'Сотрудник сохранен' : 'Сотрудник создан';
       setModalOpen(false);
       setEditing(null);
       await load();
+      window.dispatchEvent(new CustomEvent('api-success', { detail: message }));
     } catch (requestError) {
       setError(getErrorMessage(requestError));
     } finally {
@@ -211,22 +226,26 @@ export default function EmployeesPage() {
       />
 
       <Modal
-        title={editing?.id ? 'Редактировать сотрудника' : 'Добавить сотрудника'}
+        title={editing?.id ? 'Редактировать сотрудника' : 'Новый сотрудник'}
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         footer={
           <>
             <Button variant="secondary" onClick={() => setModalOpen(false)}>Отмена</Button>
-            <Button onClick={saveEmployee} disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить'}</Button>
+            <Button onClick={saveEmployee} disabled={saving}>{saving ? 'Сохраняем...' : (editing?.id ? 'Сохранить' : 'Создать')}</Button>
           </>
         }
       >
         {editing && (
           <div className="grid gap-4 md:grid-cols-2">
-            <Input label="Username" value={editing.username} onChange={(event) => setEditingField('username', event.target.value)} />
             <Input label="ФИО" value={editing.full_name} onChange={(event) => setEditingField('full_name', event.target.value)} />
-            <Input label="Телефон" value={editing.phone} onChange={(event) => setEditingField('phone', event.target.value)} />
-            <Input label="Email" type="email" value={editing.email} onChange={(event) => setEditingField('email', event.target.value)} />
+            <Input label="Логин" value={editing.username} onChange={(event) => setEditingField('username', event.target.value)} />
+            <Input
+              label={editing.id ? 'Новый пароль' : 'Пароль'}
+              type="password"
+              value={editing.password || ''}
+              onChange={(event) => setEditingField('password', event.target.value)}
+            />
             <div className="grid gap-2 md:col-span-2">
               <p className="text-sm font-semibold text-slate-700">Роли</p>
               <div className="grid gap-2 md:grid-cols-2">
@@ -242,12 +261,6 @@ export default function EmployeesPage() {
               <input type="checkbox" checked={editing.is_active} onChange={(event) => setEditingField('is_active', event.target.checked)} />
               Активен
             </label>
-            {!editing.id && (
-              <>
-                <Input label="Пароль" type="password" value={editing.password} onChange={(event) => setEditingField('password', event.target.value)} />
-                <Input label="Повторите пароль" type="password" value={editing.password_confirm} onChange={(event) => setEditingField('password_confirm', event.target.value)} />
-              </>
-            )}
           </div>
         )}
       </Modal>

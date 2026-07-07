@@ -158,8 +158,9 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class EmployeeSerializer(UserPublicSerializer):
-    password = serializers.CharField(write_only=True, min_length=8, required=False, allow_blank=True)
-    password_confirm = serializers.CharField(write_only=True, min_length=8, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
+    password_confirm = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
     full_name = serializers.CharField(max_length=255, required=False, allow_blank=True, write_only=True)
     roles = serializers.JSONField(required=False)
 
@@ -187,16 +188,15 @@ class EmployeeSerializer(UserPublicSerializer):
         password_confirm = attrs.get('password_confirm')
 
         if self.instance is None and not password:
-            raise serializers.ValidationError({'password': 'Пароль обязателен.'})
-        if password or password_confirm:
-            if password != password_confirm:
-                raise serializers.ValidationError({'password_confirm': 'Пароли не совпадают.'})
+            raise serializers.ValidationError({'password': 'Введите пароль'})
+        if password and len(password) < 4:
+            raise serializers.ValidationError({'password': 'Пароль слишком короткий'})
+        if password_confirm and password != password_confirm:
+            raise serializers.ValidationError({'password_confirm': 'Пароли не совпадают.'})
 
         if 'roles' not in attrs:
             if self.instance:
                 attrs['roles'] = self.instance.get_roles()
-            elif attrs.get('role'):
-                attrs['roles'] = normalize_roles([attrs['role']])
             else:
                 raise serializers.ValidationError({'roles': 'Выберите хотя бы одну роль.'})
         attrs['role'] = attrs['roles'][0]
@@ -213,6 +213,7 @@ class EmployeeSerializer(UserPublicSerializer):
         password = validated_data.pop('password')
         validated_data.pop('password_confirm', None)
         full_name = validated_data.pop('full_name', '')
+        validated_data['email'] = validated_data.get('email') or ''
         first_name, last_name = split_full_name(full_name)
         user = User(**validated_data, first_name=first_name, last_name=last_name)
         user.is_staff = user.has_role('admin')
@@ -224,6 +225,8 @@ class EmployeeSerializer(UserPublicSerializer):
         password = validated_data.pop('password', None)
         validated_data.pop('password_confirm', None)
         full_name = validated_data.pop('full_name', None)
+        if 'email' in validated_data:
+            validated_data['email'] = validated_data.get('email') or ''
         if full_name is not None:
             instance.first_name, instance.last_name = split_full_name(full_name)
 
@@ -238,10 +241,16 @@ class EmployeeSerializer(UserPublicSerializer):
 
 
 class PasswordSerializer(serializers.Serializer):
-    password = serializers.CharField(write_only=True, min_length=8)
-    password_confirm = serializers.CharField(write_only=True, min_length=8)
+    password = serializers.CharField(write_only=True, required=True, allow_blank=False, trim_whitespace=False)
+    password_confirm = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
 
     def validate(self, attrs):
-        if attrs['password'] != attrs['password_confirm']:
+        password = attrs.get('password')
+        password_confirm = attrs.get('password_confirm')
+
+        if password and len(password) < 4:
+            raise serializers.ValidationError({'password': 'Пароль слишком короткий'})
+        if password_confirm and password != password_confirm:
             raise serializers.ValidationError({'password_confirm': 'Пароли не совпадают.'})
+
         return attrs

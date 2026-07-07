@@ -168,10 +168,8 @@ class UserRegistrationAndEmployeeTests(APITestCase):
                 'username': 'manager',
                 'full_name': 'Sales Manager',
                 'phone': '+77001112233',
-                'email': 'manager@example.com',
-                'role': 'manager',
-                'password': 'password123',
-                'password_confirm': 'password123',
+                'roles': ['manager'],
+                'password': '1234',
                 'is_active': True,
             },
             format='json',
@@ -181,9 +179,102 @@ class UserRegistrationAndEmployeeTests(APITestCase):
         manager = User.objects.get(username='manager')
         self.assertEqual(manager.role, 'manager')
         self.assertEqual(manager.phone, '+77001112233')
-        self.assertTrue(manager.check_password('password123'))
+        self.assertEqual(manager.email, '')
+        self.assertTrue(manager.check_password('1234'))
         self.assertNotIn('password', response.data)
         self.assertTrue(AuditLog.objects.filter(action='create', entity_type='User', description='Создан сотрудник').exists())
+
+    def test_admin_can_create_employee_without_email_and_with_simple_password(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            '/api/users/employees/',
+            {
+                'username': 'teacher1',
+                'full_name': 'Ivan Ivanov',
+                'roles': ['teacher'],
+                'password': '1234',
+                'is_active': True,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        employee = User.objects.get(username='teacher1')
+        self.assertEqual(employee.email, '')
+        self.assertTrue(employee.check_password('1234'))
+        self.assertNotIn('password', response.data)
+
+    def test_admin_can_create_multiple_employees_without_email(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        self.client.force_authenticate(admin)
+
+        first = self.client.post('/api/users/employees/', {'username': 'employee1', 'password': '1234', 'roles': ['manager']}, format='json')
+        second = self.client.post('/api/users/employees/', {'username': 'employee2', 'password': '1234', 'roles': ['teacher']}, format='json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(User.objects.filter(email='').count(), 3)
+
+    def test_employee_create_requires_username_password_and_roles(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        self.client.force_authenticate(admin)
+
+        without_username = self.client.post('/api/users/employees/', {'password': '1234', 'roles': ['manager']}, format='json')
+        without_password = self.client.post('/api/users/employees/', {'username': 'no-password', 'roles': ['manager']}, format='json')
+        without_roles = self.client.post('/api/users/employees/', {'username': 'no-roles', 'password': '1234'}, format='json')
+
+        self.assertEqual(without_username.status_code, 400)
+        self.assertEqual(without_password.status_code, 400)
+        self.assertEqual(without_roles.status_code, 400)
+
+    def test_empty_password_on_employee_update_does_not_change_password(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        employee = User.objects.create_user(username='teacher', password='oldpass123', role='teacher', roles=['teacher'])
+        old_hash = employee.password
+        self.client.force_authenticate(admin)
+
+        response = self.client.patch(f'/api/users/employees/{employee.id}/', {'password': '', 'roles': ['teacher']}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        employee.refresh_from_db()
+        self.assertEqual(employee.password, old_hash)
+        self.assertTrue(employee.check_password('oldpass123'))
+
+    def test_new_password_on_employee_update_changes_password(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        employee = User.objects.create_user(username='teacher', password='oldpass123', role='teacher', roles=['teacher'])
+        old_hash = employee.password
+        self.client.force_authenticate(admin)
+
+        response = self.client.patch(f'/api/users/employees/{employee.id}/', {'password': '1234', 'roles': ['teacher']}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        employee.refresh_from_db()
+        self.assertNotEqual(employee.password, old_hash)
+        self.assertTrue(employee.check_password('1234'))
+
+    def test_employee_password_is_not_written_to_audit_log(self):
+        User = get_user_model()
+        admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        self.client.force_authenticate(admin)
+
+        response = self.client.post(
+            '/api/users/employees/',
+            {'username': 'audited', 'password': '1234', 'roles': ['manager']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        audit = AuditLog.objects.filter(entity_type='User', entity_name='audited').latest('created_at')
+        self.assertNotIn('password', audit.changes)
+        self.assertNotIn('password_confirm', audit.changes)
 
     def test_admin_can_deactivate_employee(self):
         User = get_user_model()

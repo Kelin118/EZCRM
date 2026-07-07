@@ -197,7 +197,7 @@ export default function TrialsPage() {
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const fields = [
-    { name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Выберите клиента' }, ...clientOptions] },
+    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Преподаватель', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields,

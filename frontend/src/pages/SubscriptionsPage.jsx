@@ -64,7 +64,7 @@ export default function SubscriptionsPage() {
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const totalPaid = crud.items.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
-  const fields = [{ name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Выберите клиента' }, ...clientOptions] }, ...baseFields];
+  const fields = [{ name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' }, ...baseFields];
 
   return (
     <>

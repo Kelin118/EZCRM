@@ -214,7 +214,7 @@ export default function TasksPage() {
   const fields = [
     baseFields[0],
     { name: 'assigned_to', label: 'Ответственный', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...employeeOptions] },
-    { name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Без клиента' }, ...clientOptions] },
+    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
     ...baseFields.slice(1),
   ];
 

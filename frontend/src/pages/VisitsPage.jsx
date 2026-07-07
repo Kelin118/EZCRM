@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser } from '../auth.js';
+import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
@@ -539,7 +540,13 @@ export default function VisitsPage() {
         }
       >
         <div className="grid gap-4 md:grid-cols-2">
-          <SelectField label="Ученик" value={manualForm.client || ''} onChange={(value) => setManualForm({ ...manualForm, client: value, subscription: '' })} options={[{ value: '', label: 'Выберите ученика' }, ...clientOptions]} />
+          <ClientSelectWithCreate
+            label="Ученик"
+            value={manualForm.client || ''}
+            onChange={(value) => setManualForm({ ...manualForm, client: value, subscription: '' })}
+            options={clientOptions}
+            placeholder="Выберите ученика"
+          />
           <SelectField
             label="Абонемент"
             value={manualForm.subscription || ''}

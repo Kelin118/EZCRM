@@ -111,7 +111,7 @@ export default function MasterClassesPage() {
   const setForm = (value) => crud.setEditing(value);
   const fields = [
     baseFields[0],
-    { name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Выберите клиента' }, ...clientOptions] },
+    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields.slice(1),

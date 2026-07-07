@@ -55,11 +55,19 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 
 class ClientSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = '__all__'
+
+    def get_full_name(self, obj):
+        return str(obj)
+
+    def get_display_name(self, obj):
+        return ' · '.join(filter(None, [str(obj), obj.phone]))
 
     def get_manager_name(self, obj):
         return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''

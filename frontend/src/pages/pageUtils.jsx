@@ -2,6 +2,7 @@ import { Edit, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import Badge from '../components/ui/Badge.jsx';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
@@ -187,6 +188,24 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
     >
       <div className="grid gap-4 md:grid-cols-2">
         {fields.map((field) => {
+          if (field.type === 'client') {
+            const placeholderOption = field.options?.find((option) => option.value === '');
+            const clientOptions = field.options?.filter((option) => option.value !== '') || [];
+            return (
+              <ClientSelectWithCreate
+                key={field.name}
+                label={field.label}
+                value={form[field.name] ?? ''}
+                onChange={(value) => setForm({ ...form, [field.name]: value })}
+                options={clientOptions}
+                placeholder={field.placeholder || placeholderOption?.label || 'Выберите клиента'}
+                required={field.required}
+                disabled={field.disabled}
+                error={field.error}
+                onClientCreated={field.onClientCreated}
+              />
+            );
+          }
           if (field.type === 'select') {
             return (
               <SelectField

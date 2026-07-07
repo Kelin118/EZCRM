@@ -2,6 +2,7 @@ import { Users } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import api from '../api/axios.js';
+import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { canDeleteDangerous, getStoredUser, hasRole, ROLES } from '../auth.js';
 import { Actions, Badge, Button, Filters, Input, PageHeader, SelectField, Table, showApiError, useCrudResource } from './pageUtils.jsx';
@@ -299,7 +300,13 @@ export default function GroupsPage() {
 
         {canEdit && (
           <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-slate-50 p-4 md:grid-cols-[1.3fr_0.8fr_1fr_auto]">
-            <SelectField label="Ученик" value={memberForm.client} onChange={(value) => setMemberForm({ ...memberForm, client: value })} options={[{ value: '', label: 'Выберите ученика' }, ...clientOptions]} />
+            <ClientSelectWithCreate
+              label="Ученик"
+              value={memberForm.client}
+              onChange={(value) => setMemberForm({ ...memberForm, client: value })}
+              options={clientOptions}
+              placeholder="Выберите ученика"
+            />
             <SelectField label="Статус" value={memberForm.status} onChange={(value) => setMemberForm({ ...memberForm, status: value })} options={memberStatusOptions} />
             <Input label="Комментарий" value={memberForm.note} onChange={(event) => setMemberForm({ ...memberForm, note: event.target.value })} />
             <div className="flex items-end">

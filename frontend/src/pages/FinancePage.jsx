@@ -36,7 +36,7 @@ export default function FinancePage() {
     baseFields[1],
     baseFields[2],
     baseFields[3],
-    { name: 'client', label: 'Клиент', type: 'select', options: [{ value: '', label: 'Без клиента' }, ...clientOptions] },
+    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
     { name: 'subscription', label: 'Абонемент', type: 'select', options: [{ value: '', label: form.client ? 'Без абонемента' : 'Сначала выберите клиента' }, ...subscriptionOptions] },
     baseFields[4],
     baseFields[5],

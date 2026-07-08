@@ -22,8 +22,28 @@ function normalizePhone(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function normalizeText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function formFullName(form) {
+  return normalizeText(`${form.first_name || ''} ${form.last_name || ''}`);
+}
+
+function clientFullName(client) {
+  return normalizeText(client.full_name || `${client.first_name || ''} ${client.last_name || ''}`);
+}
+
+function isSameClientName(client, form) {
+  return clientFullName(client) === formFullName(form);
+}
+
 function clientName(client) {
   return client.display_name || client.full_name || `${client.first_name || ''} ${client.last_name || ''}`.trim() || client.phone || `Клиент #${client.id}`;
+}
+
+function clientParent(client) {
+  return client.parent_name || 'Родитель не указан';
 }
 
 function dispatchToast(message) {
@@ -68,42 +88,60 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
   const [form, setForm] = useState(() => ({ ...emptyForm, manager: user?.id ? String(user.id) : '' }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [existingClient, setExistingClient] = useState(null);
+  const [existingClients, setExistingClients] = useState([]);
 
   const managerOptions = useMemo(() => [{ value: '', label: 'Не выбран' }, ...employeeOptions], [employeeOptions]);
 
   const close = (force = false) => {
     if (saving && !force) return;
     setError('');
-    setExistingClient(null);
+    setExistingClients([]);
     setForm({ ...emptyForm, manager: user?.id ? String(user.id) : '' });
     onClose();
   };
 
   const update = (patch) => {
     setError('');
-    setExistingClient(null);
+    setExistingClients([]);
     setForm((current) => ({ ...current, ...patch }));
   };
 
   const findExistingByPhone = async () => {
     const phone = form.phone.trim();
-    if (!phone) return null;
+    if (!phone) return [];
 
     const { data } = await api.get('clients/', { params: { search: phone } });
     const items = Array.isArray(data) ? data : data.results || [];
     const normalizedPhone = normalizePhone(phone);
-    return items.find((client) => normalizePhone(client.phone) === normalizedPhone) || null;
+    return items.filter((client) => normalizePhone(client.phone) === normalizedPhone);
   };
 
-  const chooseExisting = () => {
-    if (!existingClient) return;
-    onCreated(existingClient);
+  const chooseExisting = (client) => {
+    if (!client) return;
+    onCreated(client);
     dispatchToast('Клиент выбран');
     close();
   };
 
-  const submit = async () => {
+  const createClient = async () => {
+    const payload = {
+      first_name: form.first_name.trim(),
+      last_name: form.last_name.trim(),
+      parent_name: form.parent_name.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
+      birth_date: form.birth_date || null,
+      notes: form.notes.trim(),
+      manager: form.manager || null,
+      is_active: true,
+    };
+    const { data } = await api.post('clients/', payload);
+    onCreated(data);
+    dispatchToast('Клиент добавлен');
+    close(true);
+  };
+
+  const submit = async (forceCreate = false) => {
     if (!form.first_name.trim()) {
       setError('Укажите имя клиента.');
       return;
@@ -113,34 +151,24 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
     setError('');
 
     try {
-      const found = await findExistingByPhone();
-      if (found) {
-        setExistingClient(found);
-        setError('Клиент с таким телефоном уже существует.');
-        return;
+      if (!forceCreate) {
+        const found = await findExistingByPhone();
+        if (found.length) {
+          setExistingClients(found);
+          setError('С этим номером уже есть клиенты. Если это брат или сестра, можно создать нового клиента с этим же номером.');
+          return;
+        }
       }
 
-      const payload = {
-        first_name: form.first_name.trim(),
-        last_name: form.last_name.trim(),
-        parent_name: form.parent_name.trim(),
-        phone: form.phone.trim(),
-        email: form.email.trim(),
-        birth_date: form.birth_date || null,
-        notes: form.notes.trim(),
-        manager: form.manager || null,
-        is_active: true,
-      };
-      const { data } = await api.post('clients/', payload);
-      onCreated(data);
-      dispatchToast('Клиент добавлен');
-      close(true);
+      await createClient();
     } catch (submitError) {
       setError(getApiErrorMessage(submitError) || 'Не удалось создать клиента');
     } finally {
       setSaving(false);
     }
   };
+
+  const sameNameExists = existingClients.some((client) => isSameClientName(client, form));
 
   return (
     <Modal
@@ -150,17 +178,42 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
       footer={
         <>
           <Button variant="secondary" onClick={close} disabled={saving}>Отмена</Button>
-          <Button onClick={submit} disabled={saving}>{saving ? 'Создаем...' : 'Создать клиента'}</Button>
+          {existingClients.length > 0 ? (
+            <Button onClick={() => submit(true)} disabled={saving}>
+              {saving ? 'Создаем...' : sameNameExists ? 'Всё равно создать нового' : 'Создать как нового ребёнка'}
+            </Button>
+          ) : (
+            <Button onClick={() => submit()} disabled={saving}>{saving ? 'Создаем...' : 'Создать клиента'}</Button>
+          )}
         </>
       }
     >
       {error && (
-        <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+        <div className={`mb-4 rounded-2xl border px-4 py-3 text-sm font-semibold ${
+          existingClients.length ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-red-100 bg-red-50 text-red-700'
+        }`}>
           {error}
-          {existingClient && (
-            <div className="mt-3 flex flex-col gap-2 rounded-xl bg-white/80 p-3 text-slate-700 sm:flex-row sm:items-center sm:justify-between">
-              <span>{clientName(existingClient)}</span>
-              <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={chooseExisting}>Выбрать существующего</Button>
+          {existingClients.length > 0 && (
+            <div className="mt-3 grid gap-2">
+              <div className="text-sm font-bold text-slate-800">С таким номером уже есть клиенты</div>
+              {existingClients.map((client) => (
+                <div key={client.id} className="grid gap-2 rounded-xl bg-white/85 p-3 text-slate-700 sm:grid-cols-[1fr_auto] sm:items-center">
+                  <div className="grid gap-1">
+                    <span className="font-semibold text-slate-900">{clientName(client)}</span>
+                    <span className="text-xs text-slate-500">{clientParent(client)} · {client.phone || 'Телефон не указан'}</span>
+                  </div>
+                  {isSameClientName(client, form) && (
+                    <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => chooseExisting(client)}>
+                      Выбрать существующего
+                    </Button>
+                  )}
+                </div>
+              ))}
+              {!sameNameExists && (
+                <Button className="mt-1 justify-self-start" onClick={() => submit(true)} disabled={saving}>
+                  Создать как нового ребёнка
+                </Button>
+              )}
             </div>
           )}
         </div>

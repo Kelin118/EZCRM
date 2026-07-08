@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -114,6 +115,69 @@ class RolePermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(AuditLog.objects.filter(action='task_done', entity_type='Task', description='Задача выполнена').exists())
+
+
+class ClientPhoneDuplicateTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='client-admin', password='pass', role='admin')
+        self.client.force_authenticate(self.admin)
+
+    def payload(self, first_name='Алихан', last_name='Сатыбалдин'):
+        return {
+            'first_name': first_name,
+            'last_name': last_name,
+            'parent_name': 'Айнур',
+            'phone': '87070000000',
+            'is_active': True,
+        }
+
+    def test_can_create_two_clients_with_same_phone_and_different_names(self):
+        first = self.client.post('/api/clients/', self.payload(), format='json')
+        second = self.client.post('/api/clients/', self.payload('Айлин', 'Сатыбалдина'), format='json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(Client.objects.filter(phone='87070000000').count(), 2)
+
+    def test_search_by_phone_returns_all_clients_with_that_phone(self):
+        Client.objects.create(**self.payload())
+        Client.objects.create(**self.payload('Айлин', 'Сатыбалдина'))
+
+        response = self.client.get('/api/clients/', {'search': '87070000000'})
+
+        self.assertEqual(response.status_code, 200)
+        items = response.data if isinstance(response.data, list) else response.data['results']
+        names = {item['full_name'] for item in items}
+        self.assertIn('Алихан Сатыбалдин', names)
+        self.assertIn('Айлин Сатыбалдина', names)
+
+    def test_display_name_contains_child_parent_and_phone(self):
+        response = self.client.post('/api/clients/', self.payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        display_name = response.data['display_name']
+        self.assertIn('Алихан Сатыбалдин', display_name)
+        self.assertIn('Айнур', display_name)
+        self.assertIn('87070000000', display_name)
+
+    def test_same_phone_same_name_creation_does_not_return_400(self):
+        first = self.client.post('/api/clients/', self.payload(), format='json')
+        second = self.client.post('/api/clients/', self.payload(), format='json')
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+
+    def test_client_phone_has_no_unique_database_constraint(self):
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(cursor, Client._meta.db_table)
+
+        unique_phone_constraints = [
+            name
+            for name, details in constraints.items()
+            if details.get('unique') and details.get('columns') == ['phone']
+        ]
+        self.assertEqual(unique_phone_constraints, [])
 
 
 class UserRegistrationAndEmployeeTests(APITestCase):

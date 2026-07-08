@@ -1,10 +1,11 @@
-import { Building2, CheckCircle2, Coins, Upload } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Building2, CheckCircle2, Edit, Package, Plus, ToggleLeft, Upload, Wrench } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
-import { canEditSettingsPrices, canEditStudioSettings, canImportExcel, getStoredUser } from '../auth.js';
+import { canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
+import Modal from '../components/ui/Modal.jsx';
 import { PageHeader } from './pageUtils.jsx';
 
 const empty = {
@@ -19,19 +20,58 @@ const empty = {
   default_price_master_class: 0,
 };
 
+const emptyCatalogForm = {
+  name: '',
+  price: '',
+  is_active: true,
+};
+
+const catalogSections = [
+  { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
+  { category: 'product', title: 'Товары', addLabel: 'Добавить товар', modalCreate: 'Новый товар', icon: Package },
+  { category: 'extra_service', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Plus },
+];
+
+function money(value) {
+  return Number(value || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+}
+
+function getApiErrorMessage(error) {
+  const data = error.response?.data;
+  if (!data) return 'Не удалось выполнить действие.';
+  if (typeof data === 'string') return data;
+  if (data.detail) return data.detail;
+
+  const firstKey = Object.keys(data)[0];
+  const firstValue = data[firstKey];
+  if (Array.isArray(firstValue)) return `${firstKey}: ${firstValue[0]}`;
+  if (firstValue && typeof firstValue === 'object') return `${firstKey}: ${JSON.stringify(firstValue)}`;
+  return firstValue ? `${firstKey}: ${firstValue}` : 'Проверьте заполнение формы.';
+}
+
 export default function SettingsPage() {
   const user = getStoredUser();
   const canEditStudio = canEditStudioSettings(user);
-  const canEditPrices = canEditSettingsPrices(user);
+  const canEditCatalog = isAdmin(user);
   const canImport = canImportExcel(user);
-  const canSave = canEditStudio || canEditPrices;
   const [settings, setSettings] = useState(empty);
   const [settingsId, setSettingsId] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [catalogItems, setCatalogItems] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogSaving, setCatalogSaving] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogModal, setCatalogModal] = useState({ open: false, category: 'service', item: null });
+  const [catalogForm, setCatalogForm] = useState(emptyCatalogForm);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [importError, setImportError] = useState('');
+
+  const activeSection = useMemo(
+    () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
+    [catalogModal.category],
+  );
 
   useEffect(() => {
     api.get('settings/').then(({ data }) => {
@@ -41,11 +81,22 @@ export default function SettingsPage() {
         setSettingsId(list[0].id);
       }
     });
+    loadCatalogItems();
   }, []);
+
+  const loadCatalogItems = async () => {
+    setCatalogLoading(true);
+    try {
+      const { data } = await api.get('catalog-items/');
+      setCatalogItems(Array.isArray(data) ? data : data.results || []);
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
 
   const save = async (event) => {
     event.preventDefault();
-    if (!canSave) return;
+    if (!canEditStudio) return;
     const { data } = settingsId ? await api.put(`settings/${settingsId}/`, settings) : await api.post('settings/', settings);
     setSettings({ ...empty, ...data });
     setSettingsId(data.id);
@@ -54,6 +105,70 @@ export default function SettingsPage() {
   };
 
   const set = (name, value) => setSettings({ ...settings, [name]: value });
+
+  const openCatalogModal = (category, item = null) => {
+    setCatalogError('');
+    setCatalogModal({ open: true, category, item });
+    setCatalogForm(
+      item
+        ? { name: item.name || '', price: item.price || '', is_active: item.is_active }
+        : { ...emptyCatalogForm },
+    );
+  };
+
+  const closeCatalogModal = (force = false) => {
+    if (catalogSaving && !force) return;
+    setCatalogModal({ open: false, category: 'service', item: null });
+    setCatalogForm(emptyCatalogForm);
+    setCatalogError('');
+  };
+
+  const saveCatalogItem = async () => {
+    const name = catalogForm.name.trim();
+    const price = Number(catalogForm.price);
+
+    if (!name) {
+      setCatalogError('Укажите наименование.');
+      return;
+    }
+    if (catalogForm.price === '' || Number.isNaN(price)) {
+      setCatalogError('Укажите цену.');
+      return;
+    }
+    if (price < 0) {
+      setCatalogError('Цена не может быть меньше 0.');
+      return;
+    }
+
+    setCatalogSaving(true);
+    setCatalogError('');
+    const payload = {
+      name,
+      price,
+      category: catalogModal.category,
+      is_active: catalogForm.is_active,
+    };
+
+    try {
+      if (catalogModal.item?.id) {
+        await api.patch(`catalog-items/${catalogModal.item.id}/`, payload);
+      } else {
+        await api.post('catalog-items/', payload);
+      }
+      closeCatalogModal(true);
+      await loadCatalogItems();
+    } catch (error) {
+      setCatalogError(getApiErrorMessage(error));
+    } finally {
+      setCatalogSaving(false);
+    }
+  };
+
+  const disableCatalogItem = async (item) => {
+    if (!window.confirm(`Отключить позицию "${item.name}"?`)) return;
+    await api.delete(`catalog-items/${item.id}/`);
+    await loadCatalogItems();
+  };
 
   const importExcel = async (event) => {
     event.preventDefault();
@@ -85,7 +200,7 @@ export default function SettingsPage() {
     <>
       <PageHeader title="Настройки" />
 
-      <form onSubmit={save} className="grid max-w-6xl gap-6 xl:grid-cols-[1fr_0.9fr]">
+      <form onSubmit={save} className="max-w-6xl">
         <SettingsCard icon={Building2} title="Информация студии" subtitle="Контакты и базовые параметры CRM">
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="Название студии" value={settings.studio_name} disabled={!canEditStudio} onChange={(e) => set('studio_name', e.target.value)} />
@@ -94,16 +209,7 @@ export default function SettingsPage() {
             <Input label="Валюта" value={settings.currency || ''} disabled={!canEditStudio} onChange={(e) => set('currency', e.target.value)} />
             <Input label="Адрес" className="md:col-span-2" value={settings.address || ''} disabled={!canEditStudio} onChange={(e) => set('address', e.target.value)} />
           </div>
-        </SettingsCard>
-
-        <SettingsCard icon={Coins} title="Цены" subtitle="Значения по умолчанию для продаж">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Input label="Цена AB-4" type="number" value={settings.default_price_ab4 || 0} disabled={!canEditPrices} onChange={(e) => set('default_price_ab4', e.target.value)} />
-            <Input label="Цена AB-8" type="number" value={settings.default_price_ab8 || 0} disabled={!canEditPrices} onChange={(e) => set('default_price_ab8', e.target.value)} />
-            <Input label="Цена пробника" type="number" value={settings.default_price_trial || 0} disabled={!canEditPrices} onChange={(e) => set('default_price_trial', e.target.value)} />
-            <Input label="Цена МК" type="number" value={settings.default_price_master_class || 0} disabled={!canEditPrices} onChange={(e) => set('default_price_master_class', e.target.value)} />
-          </div>
-          {canSave && (
+          {canEditStudio && (
             <div className="mt-5 flex items-center gap-3">
               <Button type="submit">Сохранить</Button>
               {saved && <span className="inline-flex items-center gap-1 text-sm font-semibold text-brand"><CheckCircle2 size={16} />Сохранено</span>}
@@ -111,6 +217,21 @@ export default function SettingsPage() {
           )}
         </SettingsCard>
       </form>
+
+      <div className="mt-6 grid max-w-6xl gap-6">
+        {catalogSections.map((section) => (
+          <CatalogSection
+            key={section.category}
+            section={section}
+            items={catalogItems.filter((item) => item.category === section.category)}
+            loading={catalogLoading}
+            canEdit={canEditCatalog}
+            onAdd={() => openCatalogModal(section.category)}
+            onEdit={(item) => openCatalogModal(section.category, item)}
+            onDisable={disableCatalogItem}
+          />
+        ))}
+      </div>
 
       {canImport && <section className="mt-6 max-w-6xl rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -174,6 +295,35 @@ export default function SettingsPage() {
           </div>
         )}
       </section>}
+
+      <Modal
+        title={catalogModal.item ? `Изменить: ${catalogModal.item.name}` : activeSection.modalCreate}
+        open={catalogModal.open}
+        onClose={closeCatalogModal}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => closeCatalogModal()} disabled={catalogSaving}>Отмена</Button>
+            <Button onClick={saveCatalogItem} disabled={catalogSaving}>{catalogSaving ? 'Сохранение...' : 'Сохранить'}</Button>
+          </>
+        }
+      >
+        {catalogError && <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{catalogError}</div>}
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
+          <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
+          {catalogModal.item && (
+            <label className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700 md:col-span-2">
+              <input
+                type="checkbox"
+                checked={catalogForm.is_active}
+                onChange={(event) => setCatalogForm({ ...catalogForm, is_active: event.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+              />
+              Активен
+            </label>
+          )}
+        </div>
+      </Modal>
     </>
   );
 }
@@ -191,6 +341,80 @@ function SettingsCard({ icon: Icon, title, subtitle, children }) {
         </div>
       </div>
       {children}
+    </section>
+  );
+}
+
+function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDisable }) {
+  const Icon = section.icon;
+
+  return (
+    <section className="rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-brand/10 text-brand">
+            <Icon size={22} />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">{section.title}</h3>
+            <p className="text-sm text-slate-500">Позиции справочника цен для продаж и оплат</p>
+          </div>
+        </div>
+        {canEdit && (
+          <Button onClick={onAdd}>
+            <Plus size={16} />
+            {section.addLabel}
+          </Button>
+        )}
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-100">
+        <table className="min-w-[720px] w-full border-separate border-spacing-0 text-left text-sm">
+          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="border-b border-slate-100 px-4 py-3 font-bold">Наименование</th>
+              <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
+              <th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th>
+              <th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
+            ) : (
+              items.map((item) => (
+                <tr key={item.id} className="transition hover:bg-brand/[0.03]">
+                  <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
+                  <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
+                  <td className="border-b border-slate-100 px-4 py-3">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${item.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {item.is_active ? 'Активен' : 'Отключен'}
+                    </span>
+                  </td>
+                  <td className="border-b border-slate-100 px-4 py-3">
+                    {canEdit && (
+                      <div className="flex justify-end gap-2">
+                        <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onEdit(item)}>
+                          <Edit size={15} />
+                          Изменить
+                        </Button>
+                        {item.is_active && (
+                          <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onDisable(item)}>
+                            <ToggleLeft size={15} />
+                            Отключить
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

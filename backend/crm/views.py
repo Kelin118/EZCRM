@@ -31,6 +31,7 @@ from .excel_import import import_excel
 from .group_schedule import sync_group_schedule_slots
 from .models import (
     AuditLog,
+    CatalogItem,
     ChatMessage,
     Client,
     FinanceTransaction,
@@ -52,6 +53,7 @@ from .permissions import (
     MANAGER,
     TEACHER,
     AuditLogPermission,
+    CatalogItemPermission,
     ChatPermission,
     ClientPermission,
     DashboardPermission,
@@ -74,6 +76,7 @@ from .permissions import (
 )
 from .serializers import (
     AuditLogSerializer,
+    CatalogItemSerializer,
     ChatMessageSerializer,
     ClientSerializer,
     FinanceTransactionSerializer,
@@ -1145,6 +1148,56 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
             self.perform_update(serializer)
             return Response(serializer.data)
         return super().update(request, *args, **kwargs)
+
+
+class CatalogItemViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, CatalogItemPermission)
+    queryset = CatalogItem.objects.all()
+    serializer_class = CatalogItemSerializer
+    audit_entity_type = 'CatalogItem'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        category = self.request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset.order_by('category', 'sort_order', 'name')
+
+    def _catalog_changes(self, instance):
+        return {
+            'name': instance.name,
+            'price': str(instance.price),
+            'category': instance.category,
+            'is_active': instance.is_active,
+        }
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(
+            AuditLog.Action.CATALOG_ITEM_CREATE,
+            instance,
+            'Создана позиция справочника цен',
+            self._catalog_changes(instance),
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(
+            AuditLog.Action.CATALOG_ITEM_UPDATE,
+            instance,
+            'Изменена позиция справочника цен',
+            self._catalog_changes(instance),
+        )
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=('is_active', 'updated_at'))
+        self._log_instance(
+            AuditLog.Action.CATALOG_ITEM_DISABLE,
+            instance,
+            'Отключена позиция справочника цен',
+            self._catalog_changes(instance),
+        )
 
 
 class ExcelImportView(APIView):

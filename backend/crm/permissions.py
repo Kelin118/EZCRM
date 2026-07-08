@@ -144,6 +144,18 @@ class SettingsPermission(RolePermission):
     }
 
 
+class CatalogItemPermission(BasePermission):
+    def has_permission(self, request, view):
+        if not is_authenticated(request.user):
+            return False
+        if request.method in SAFE_METHODS:
+            return is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        return is_admin(request.user)
+
+    def has_object_permission(self, request, view, obj):
+        return self.has_permission(request, view)
+
+
 class DashboardPermission(BasePermission):
     def has_permission(self, request, view):
         return is_authenticated(request.user) and (is_admin(request.user) or has_any_role(request.user, {MANAGER, TEACHER, ACCOUNTANT}))

@@ -438,6 +438,25 @@ class StudioSettings(TimeStampedModel):
         return self.studio_name
 
 
+class CatalogItem(TimeStampedModel):
+    class Category(models.TextChoices):
+        SERVICE = 'service', 'Услуги'
+        PRODUCT = 'product', 'Товары'
+        EXTRA_SERVICE = 'extra_service', 'Доп. услуги'
+
+    name = models.CharField(max_length=150)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    category = models.CharField(max_length=30, choices=Category.choices)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0, blank=True)
+
+    class Meta:
+        ordering = ('category', 'sort_order', 'name')
+
+    def __str__(self):
+        return self.name
+
+
 class AuditLog(models.Model):
     class Action(models.TextChoices):
         CREATE = 'create', 'Create'
@@ -452,6 +471,9 @@ class AuditLog(models.Model):
         ACTIVATE = 'activate', 'Activate'
         DEACTIVATE = 'deactivate', 'Deactivate'
         TRIAL_CONVERTED_TO_SUBSCRIPTION = 'trial_converted_to_subscription', 'Trial converted to subscription'
+        CATALOG_ITEM_CREATE = 'catalog_item_create', 'Catalog item create'
+        CATALOG_ITEM_UPDATE = 'catalog_item_update', 'Catalog item update'
+        CATALOG_ITEM_DISABLE = 'catalog_item_disable', 'Catalog item disable'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

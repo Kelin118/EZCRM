@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AuditLogViewSet,
     BackupCreateView,
+    CatalogItemViewSet,
     ChatMessageViewSet,
     ClientViewSet,
     CurrentUserView,
@@ -50,6 +51,7 @@ router.register('tasks', TaskViewSet, basename='task')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
+router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')
 router.register('audit-logs', AuditLogViewSet, basename='audit-log')
 
 urlpatterns = [

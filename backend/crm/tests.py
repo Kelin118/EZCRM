@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 
 from .models import (
     AuditLog,
+    CatalogItem,
     Client,
     FinanceTransaction,
     GroupMembership,
@@ -178,6 +179,90 @@ class ClientPhoneDuplicateTests(APITestCase):
             if details.get('unique') and details.get('columns') == ['phone']
         ]
         self.assertEqual(unique_phone_constraints, [])
+
+
+class CatalogItemApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='catalog-admin', password='pass', role='admin')
+        self.manager = User.objects.create_user(username='catalog-manager', password='pass', role='manager')
+        self.accountant = User.objects.create_user(username='catalog-accountant', password='pass', role='accountant')
+
+    def create_item(self, category='service', name='AB-8', price='45000.00'):
+        self.client.force_authenticate(self.admin)
+        return self.client.post(
+            '/api/catalog-items/',
+            {'name': name, 'price': price, 'category': category},
+            format='json',
+        )
+
+    def test_admin_can_create_service(self):
+        response = self.create_item(category='service', name='AB-8')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['category'], 'service')
+        self.assertEqual(response.data['category_display'], 'Услуги')
+
+    def test_admin_can_create_product(self):
+        response = self.create_item(category='product', name='Учебник', price='3500.00')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['category'], 'product')
+
+    def test_admin_can_create_extra_service(self):
+        response = self.create_item(category='extra_service', name='Индивидуальное занятие', price='7000.00')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['category'], 'extra_service')
+
+    def test_cannot_create_without_name(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post('/api/catalog-items/', {'price': '1000.00', 'category': 'service'}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_cannot_create_negative_price(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post('/api/catalog-items/', {'name': 'Bad', 'price': '-1.00', 'category': 'service'}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_category_filter_returns_only_services(self):
+        CatalogItem.objects.create(name='AB-8', price='45000.00', category='service')
+        CatalogItem.objects.create(name='Учебник', price='3500.00', category='product')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/catalog-items/', {'category': 'service'})
+
+        self.assertEqual(response.status_code, 200)
+        items = response.data if isinstance(response.data, list) else response.data['results']
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['category'], 'service')
+
+    def test_manager_and_accountant_cannot_edit(self):
+        item = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service')
+
+        for user in (self.manager, self.accountant):
+            with self.subTest(role=user.role):
+                self.client.force_authenticate(user)
+                response = self.client.patch(f'/api/catalog-items/{item.id}/', {'price': '46000.00'}, format='json')
+                self.assertEqual(response.status_code, 403)
+
+    def test_audit_log_created_on_create_update_disable(self):
+        create_response = self.create_item(category='service', name='AB-8')
+        item_id = create_response.data['id']
+
+        update_response = self.client.patch(f'/api/catalog-items/{item_id}/', {'price': '46000.00'}, format='json')
+        disable_response = self.client.delete(f'/api/catalog-items/{item_id}/')
+
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(disable_response.status_code, 204)
+        self.assertTrue(AuditLog.objects.filter(action='catalog_item_create', entity_type='CatalogItem').exists())
+        self.assertTrue(AuditLog.objects.filter(action='catalog_item_update', entity_type='CatalogItem').exists())
+        self.assertTrue(AuditLog.objects.filter(action='catalog_item_disable', entity_type='CatalogItem').exists())
+        self.assertFalse(CatalogItem.objects.get(id=item_id).is_active)
 
 
 class UserRegistrationAndEmployeeTests(APITestCase):

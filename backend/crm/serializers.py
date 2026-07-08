@@ -10,6 +10,7 @@ from .group_schedule import (
 )
 from .models import (
     AuditLog,
+    CatalogItem,
     ChatMessage,
     Client,
     FinanceTransaction,
@@ -444,3 +445,17 @@ class StudioSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudioSettings
         fields = '__all__'
+
+
+class CatalogItemSerializer(serializers.ModelSerializer):
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+
+    class Meta:
+        model = CatalogItem
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def validate_price(self, value):
+        if value < 0:
+            raise serializers.ValidationError('Цена не может быть отрицательной.')
+        return value

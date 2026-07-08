@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     AuditLog,
+    CatalogItem,
     ChatMessage,
     Client,
     FinanceTransaction,
@@ -121,6 +122,13 @@ class ChatMessageAdmin(admin.ModelAdmin):
 @admin.register(StudioSettings)
 class StudioSettingsAdmin(admin.ModelAdmin):
     list_display = ('studio_name', 'phone', 'email', 'currency', 'default_price_ab4', 'default_price_ab8')
+
+
+@admin.register(CatalogItem)
+class CatalogItemAdmin(admin.ModelAdmin):
+    list_display = ('name', 'price', 'category', 'is_active', 'sort_order')
+    list_filter = ('category', 'is_active')
+    search_fields = ('name',)
 
 
 @admin.register(AuditLog)

@@ -502,6 +502,128 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertIn(new_client.id, client_ids)
         self.assertNotIn(inactive_client.id, client_ids)
 
+    def next_weekday(self, weekday):
+        current = date.today()
+        days_ahead = (weekday - current.weekday()) % 7
+        return current + timedelta(days=days_ahead)
+
+    def create_slot_for_weekday(self, weekday=1, group=None):
+        return ScheduleSlot.objects.create(
+            group=group or self.group,
+            teacher=self.teacher,
+            weekday=weekday,
+            start_time=time(14, 30),
+            end_time=time(15, 30),
+            is_active=True,
+        )
+
+    def test_attendance_day_returns_schedule_slot_without_lesson(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(1)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/attendance/day/', {'date': lesson_date.isoformat()})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(item['type'] == 'schedule_slot' and item['schedule_slot_id'] == slot.id for item in response.data['items']))
+
+    def test_attendance_day_does_not_return_slot_on_wrong_weekday(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(2)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/attendance/day/', {'date': lesson_date.isoformat()})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(any(item.get('schedule_slot_id') == slot.id for item in response.data['items']))
+
+    def test_attendance_day_returns_existing_lesson_instead_of_duplicate_slot(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(1)
+        lesson = Lesson.objects.create(
+            group=self.group,
+            schedule_slot=slot,
+            teacher=self.teacher,
+            lesson_date=lesson_date,
+            start_time=slot.start_time,
+            end_time=slot.end_time,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/attendance/day/', {'date': lesson_date.isoformat()})
+
+        self.assertEqual(response.status_code, 200)
+        matching = [item for item in response.data['items'] if item.get('schedule_slot_id') == slot.id]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]['type'], 'lesson')
+        self.assertEqual(matching[0]['lesson_id'], lesson.id)
+
+    def test_ensure_lesson_creates_lesson_for_slot_date(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(1)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/schedule-slots/{slot.id}/ensure-lesson/', {'date': lesson_date.isoformat()}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['created'])
+        lesson = Lesson.objects.get(id=response.data['lesson']['id'])
+        self.assertEqual(lesson.group_id, self.group.id)
+        self.assertEqual(lesson.schedule_slot_id, slot.id)
+        self.assertEqual(lesson.lesson_date, lesson_date)
+
+    def test_ensure_lesson_does_not_create_duplicate(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(1)
+        self.client.force_authenticate(self.admin)
+
+        first = self.client.post(f'/api/schedule-slots/{slot.id}/ensure-lesson/', {'date': lesson_date.isoformat()}, format='json')
+        second = self.client.post(f'/api/schedule-slots/{slot.id}/ensure-lesson/', {'date': lesson_date.isoformat()}, format='json')
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data['created'])
+        self.assertEqual(Lesson.objects.filter(schedule_slot=slot, lesson_date=lesson_date, start_time=slot.start_time).count(), 1)
+
+    def test_ensure_lesson_rejects_wrong_weekday(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(2)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/schedule-slots/{slot.id}/ensure-lesson/', {'date': lesson_date.isoformat()}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Lesson.objects.filter(schedule_slot=slot, lesson_date=lesson_date).exists())
+
+    def test_attendance_day_group_filter(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        other_group = StudyGroup.objects.create(name='Filtered other', teacher=self.teacher)
+        other_slot = self.create_slot_for_weekday(weekday=1, group=other_group)
+        lesson_date = self.next_weekday(1)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/attendance/day/', {'date': lesson_date.isoformat(), 'group': self.group.id})
+
+        self.assertEqual(response.status_code, 200)
+        slot_ids = {item['schedule_slot_id'] for item in response.data['items']}
+        self.assertIn(slot.id, slot_ids)
+        self.assertNotIn(other_slot.id, slot_ids)
+
+    def test_attendance_after_ensure_lesson_returns_group_students(self):
+        slot = self.create_slot_for_weekday(weekday=1)
+        lesson_date = self.next_weekday(1)
+        inactive_client = Client.objects.create(first_name='Inactive', last_name='Ensured')
+        GroupMembership.objects.create(group=self.group, client=inactive_client, status=GroupMembership.Status.LEFT)
+        self.client.force_authenticate(self.admin)
+        ensured = self.client.post(f'/api/schedule-slots/{slot.id}/ensure-lesson/', {'date': lesson_date.isoformat()}, format='json')
+
+        response = self.client.get(f"/api/lessons/{ensured.data['lesson']['id']}/attendance/")
+
+        self.assertEqual(response.status_code, 200)
+        client_ids = {item['client'] for item in response.data['items']}
+        self.assertIn(self.clients[0].id, client_ids)
+        self.assertNotIn(inactive_client.id, client_ids)
+
 
 class UserRegistrationAndEmployeeTests(APITestCase):
     def admin_payload(self, username='first-admin'):

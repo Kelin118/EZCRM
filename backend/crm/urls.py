@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AuditLogViewSet,
+    AttendanceDayView,
     BackupCreateView,
     CatalogItemViewSet,
     ChatMessageViewSet,
@@ -58,6 +59,7 @@ urlpatterns = [
     path('auth/me/', CurrentUserView.as_view(), name='auth-me'),
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),
+    path('attendance/day/', AttendanceDayView.as_view(), name='attendance-day'),
     path('import/excel/', ExcelImportView.as_view(), name='excel-import'),
     path('export/clients/', ClientsExportView.as_view(), name='export-clients'),
     path('export/subscriptions/', SubscriptionsExportView.as_view(), name='export-subscriptions'),

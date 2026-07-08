@@ -222,8 +222,9 @@ class EducationPermission(RolePermission):
             'generate_lessons',
             'attendance',
             'cancel',
+            'ensure_lesson',
         },
-        TEACHER: {'read', 'list', 'retrieve', 'attendance'},
+        TEACHER: {'read', 'list', 'retrieve', 'attendance', 'ensure_lesson'},
         ACCOUNTANT: {'read', 'list', 'retrieve'},
     }
 
@@ -239,7 +240,7 @@ class EducationPermission(RolePermission):
             return request.method in SAFE_METHODS
 
         if has_role(request.user, TEACHER):
-            if action not in {'retrieve', 'attendance'} and request.method not in SAFE_METHODS:
+            if action not in {'retrieve', 'attendance', 'ensure_lesson'} and request.method not in SAFE_METHODS:
                 return False
             teacher_id = request.user.id
             if hasattr(obj, 'teacher_id'):

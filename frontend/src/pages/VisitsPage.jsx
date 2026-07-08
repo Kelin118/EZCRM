@@ -151,14 +151,14 @@ export default function VisitsPage() {
   const loadLessons = async () => {
     setLessonsLoading(true);
     try {
-      const params = { date_from: selectedDate, date_to: selectedDate, ...lessonFilters };
+      const params = { date: selectedDate, ...lessonFilters };
       Object.keys(params).forEach((key) => {
         if (!params[key]) delete params[key];
       });
-      const { data } = await api.get('lessons/', { params });
-      const items = (Array.isArray(data) ? data : data.results || []).sort((left, right) => String(left.start_time || '').localeCompare(String(right.start_time || '')));
+      const { data } = await api.get('attendance/day/', { params });
+      const items = (data.items || []).sort((left, right) => String(left.start_time || '').localeCompare(String(right.start_time || '')));
       setLessons(items);
-      if (selectedLesson && !items.some((lesson) => lesson.id === selectedLesson.id)) {
+      if (selectedLesson && !items.some((lesson) => lesson.lesson_id === selectedLesson.id)) {
         setSelectedLesson(null);
         setAttendanceRows([]);
         setInitialRows([]);
@@ -184,6 +184,22 @@ export default function VisitsPage() {
       showApiError(error);
     } finally {
       setAttendanceLoading(false);
+    }
+  };
+
+  const openDayItem = async (item) => {
+    try {
+      let lesson = item;
+      if (item.type === 'schedule_slot') {
+        const { data } = await api.post(`schedule-slots/${item.schedule_slot_id}/ensure-lesson/`, { date: selectedDate });
+        lesson = data.lesson;
+        await loadLessons();
+      } else if (item.lesson_id) {
+        lesson = { ...item, id: item.lesson_id };
+      }
+      await loadAttendance(lesson);
+    } catch (error) {
+      showApiError(error);
     }
   };
 
@@ -227,7 +243,7 @@ export default function VisitsPage() {
           comment: row.comment || '',
         }));
       const { data } = await api.post(`lessons/${selectedLesson.id}/attendance/`, { items });
-      const rows = normalizeRows(data.students || []);
+      const rows = normalizeRows(data.items || data.students || []);
       setSelectedLesson(data.lesson || selectedLesson);
       setAttendanceRows(rows);
       setInitialRows(rows);
@@ -343,8 +359,8 @@ export default function VisitsPage() {
                           <td className="border-t border-slate-100 px-3 py-2">
                             <button
                               type="button"
-                              onClick={() => loadAttendance(lesson)}
-                              className={`w-full rounded-xl px-3 py-2 text-left font-semibold transition ${selectedLesson?.id === lesson.id ? 'bg-brand text-white' : 'text-slate-700 hover:bg-brand/5 hover:text-brand'}`}
+                              onClick={() => openDayItem(lesson)}
+                              className={`w-full rounded-xl px-3 py-2 text-left font-semibold transition ${selectedLesson?.id === lesson.lesson_id ? 'bg-brand text-white' : 'text-slate-700 hover:bg-brand/5 hover:text-brand'}`}
                             >
                               <span className="block">{lesson.group_name || lessonTitle(lesson)}</span>
                               <span className={`block text-xs ${selectedLesson?.id === lesson.id ? 'text-white/80' : 'text-slate-400'}`}>{lesson.subject_name || 'Без предмета'}</span>

@@ -179,6 +179,36 @@ def create_lessons_for_slot(slot, date_from, date_to):
     return created_count
 
 
+def ensure_lesson_for_slot(slot, lesson_date):
+    lesson = Lesson.objects.filter(
+        schedule_slot=slot,
+        lesson_date=lesson_date,
+        start_time=slot.start_time,
+    ).first()
+    if not lesson:
+        lesson = Lesson.objects.filter(
+            group=slot.group,
+            lesson_date=lesson_date,
+            start_time=slot.start_time,
+        ).first()
+    if lesson:
+        if not lesson.schedule_slot_id:
+            lesson.schedule_slot = slot
+            lesson.save(update_fields=('schedule_slot', 'updated_at'))
+        return lesson, False
+    lesson = Lesson.objects.create(
+        schedule_slot=slot,
+        lesson_date=lesson_date,
+        start_time=slot.start_time,
+        group=slot.group,
+        subject=slot.subject or slot.group.subject,
+        teacher=slot.teacher or slot.group.teacher,
+        room=slot.room,
+        end_time=slot.end_time,
+    )
+    return lesson, True
+
+
 class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
     permission_classes = (IsAuthenticated,)
 
@@ -501,6 +531,28 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
         )
         return Response({'created': created_count}, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['post'], url_path='ensure-lesson')
+    def ensure_lesson(self, request, pk=None):
+        slot = self.get_object()
+        lesson_date = parse_date(request.data.get('date') or '')
+        if not lesson_date:
+            return Response({'detail': 'Укажите дату.'}, status=status.HTTP_400_BAD_REQUEST)
+        if lesson_date.weekday() != slot.weekday:
+            return Response({'detail': 'Дата не соответствует дню недели расписания.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        lesson, created = ensure_lesson_for_slot(slot, lesson_date)
+        if created:
+            log_action(
+                request,
+                AuditLog.Action.CREATE,
+                'Lesson',
+                entity_id=lesson.id,
+                entity_name=str(lesson),
+                description='Урок создан для табеля посещений',
+                changes={'date': str(lesson_date), 'schedule_slot': slot.id},
+            )
+        return Response({'lesson': LessonSerializer(lesson).data, 'created': created})
+
 
 class LessonViewSet(EducationBaseViewSet):
     queryset = Lesson.objects.select_related('group', 'schedule_slot', 'subject', 'teacher', 'room').prefetch_related('visits').all()
@@ -670,6 +722,94 @@ class LessonViewSet(EducationBaseViewSet):
         lesson.save(update_fields=('status', 'updated_at'))
         self._log_instance(AuditLog.Action.UPDATE, lesson, 'Урок отменён', {'status': Lesson.Status.CANCELLED})
         return Response(self.get_serializer(lesson).data)
+
+
+class AttendanceDayView(APIView):
+    permission_classes = (IsAuthenticated, EducationPermission)
+
+    def _weekday_name(self, weekday):
+        names = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+        return names[weekday]
+
+    def _person_name(self, user):
+        return user.get_full_name() or user.username if user else ''
+
+    def _lesson_item(self, lesson):
+        return {
+            'id': lesson.id,
+            'type': 'lesson',
+            'lesson_id': lesson.id,
+            'schedule_slot_id': lesson.schedule_slot_id,
+            'group': lesson.group_id,
+            'group_name': lesson.group.name if lesson.group else '',
+            'subject_name': lesson.subject.name if lesson.subject else '',
+            'teacher_name': self._person_name(lesson.teacher),
+            'room_name': lesson.room.name if lesson.room else '',
+            'start_time': lesson.start_time.strftime('%H:%M') if lesson.start_time else '',
+            'end_time': lesson.end_time.strftime('%H:%M') if lesson.end_time else '',
+            'status': lesson.status,
+        }
+
+    def _slot_item(self, slot, lesson_date):
+        return {
+            'id': f'slot-{slot.id}-{lesson_date}',
+            'type': 'schedule_slot',
+            'lesson_id': None,
+            'schedule_slot_id': slot.id,
+            'group': slot.group_id,
+            'group_name': slot.group.name if slot.group else '',
+            'subject_name': slot.subject.name if slot.subject else (slot.group.subject.name if slot.group and slot.group.subject else ''),
+            'teacher_name': self._person_name(slot.teacher or (slot.group.teacher if slot.group else None)),
+            'room_name': slot.room.name if slot.room else '',
+            'start_time': slot.start_time.strftime('%H:%M') if slot.start_time else '',
+            'end_time': slot.end_time.strftime('%H:%M') if slot.end_time else '',
+            'status': 'planned',
+        }
+
+    def get(self, request):
+        lesson_date = parse_date(request.query_params.get('date') or '')
+        if not lesson_date:
+            return Response({'detail': 'Укажите дату.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        group = request.query_params.get('group')
+        teacher = request.query_params.get('teacher')
+        room = request.query_params.get('room')
+        weekday = lesson_date.weekday()
+
+        lessons = Lesson.objects.select_related('group', 'schedule_slot', 'subject', 'teacher', 'room').filter(lesson_date=lesson_date)
+        slots = ScheduleSlot.objects.select_related('group', 'group__subject', 'group__teacher', 'subject', 'teacher', 'room').filter(weekday=weekday, is_active=True)
+
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
+            lessons = lessons.filter(teacher=request.user)
+            slots = slots.filter(Q(teacher=request.user) | Q(teacher__isnull=True, group__teacher=request.user))
+        if group:
+            lessons = lessons.filter(group_id=group)
+            slots = slots.filter(group_id=group)
+        if teacher:
+            lessons = lessons.filter(teacher_id=teacher)
+            slots = slots.filter(Q(teacher_id=teacher) | Q(teacher__isnull=True, group__teacher_id=teacher))
+        if room:
+            lessons = lessons.filter(room_id=room)
+            slots = slots.filter(room_id=room)
+
+        items = []
+        lesson_keys = set()
+        for lesson in lessons:
+            items.append(self._lesson_item(lesson))
+            if lesson.schedule_slot_id:
+                lesson_keys.add(('slot', lesson.schedule_slot_id))
+            if lesson.group_id and lesson.start_time:
+                lesson_keys.add(('fallback', lesson.group_id, lesson.start_time))
+
+        for slot in slots:
+            slot_key = ('slot', slot.id)
+            fallback_key = ('fallback', slot.group_id, slot.start_time)
+            if slot_key in lesson_keys or fallback_key in lesson_keys:
+                continue
+            items.append(self._slot_item(slot, lesson_date))
+
+        items.sort(key=lambda item: (item.get('start_time') or '', item.get('group_name') or ''))
+        return Response({'date': str(lesson_date), 'weekday': self._weekday_name(weekday), 'items': items})
 
 
 class ClientViewSet(BaseAuthenticatedViewSet):

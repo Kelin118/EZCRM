@@ -1,6 +1,6 @@
-import { CalendarDays, Check, ChevronLeft, ChevronRight, ClipboardCheck, RotateCcw, Save, UserCheck, UserX } from 'lucide-react';
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserX } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser } from '../auth.js';
@@ -8,7 +8,7 @@ import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup, useRoomOptions, useStudyGroupOptions } from './lookupUtils.jsx';
+import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 
 const emptyManualVisit = {
   client: '',
@@ -20,33 +20,26 @@ const emptyManualVisit = {
 };
 
 export const visitStatusOptions = [
-  { value: 'attended', label: 'Пришел' },
-  { value: 'missed', label: 'Не пришел' },
+  { value: 'attended', label: 'Посетил' },
+  { value: 'sick', label: 'Болел' },
+  { value: 'missed', label: 'Пропуск' },
   { value: 'makeup', label: 'Отработка' },
   { value: 'frozen', label: 'Заморозка' },
   { value: 'trial', label: 'Пробное' },
 ];
 
-const lessonStatusOptions = [
-  { value: '', label: 'Все' },
-  { value: 'planned', label: 'Запланирован' },
-  { value: 'completed', label: 'Проведен' },
-  { value: 'cancelled', label: 'Отменен' },
+const journalStatusOptions = [
+  { value: '', label: 'Все статусы' },
+  { value: 'attended', label: 'Посетил' },
+  { value: 'sick', label: 'Болел' },
+  { value: 'missed', label: 'Пропуск' },
+  { value: 'none', label: 'Не отмечено' },
 ];
 
-const tabs = [
-  { value: 'calendar', label: 'Календарь' },
-  { value: 'today', label: 'Сегодня' },
-  { value: 'history', label: 'История' },
+const modeOptions = [
+  { value: 'journal', label: 'Табель' },
+  { value: 'classic', label: 'Классический' },
 ];
-
-const periodOptions = [
-  { value: 'day', label: 'День' },
-  { value: 'week', label: 'Неделя' },
-  { value: 'month', label: 'Месяц' },
-];
-
-const weekdayLabels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 const pad = (value) => String(value).padStart(2, '0');
 const isoDate = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -54,243 +47,81 @@ const parseLocalDate = (value) => {
   const [year, month, day] = String(value).split('-').map(Number);
   return new Date(year, month - 1, day);
 };
-const addDays = (date, count) => {
-  const next = new Date(date);
-  next.setDate(next.getDate() + count);
-  return next;
+const addDays = (value, count) => {
+  const date = parseLocalDate(value);
+  date.setDate(date.getDate() + count);
+  return isoDate(date);
 };
-const startOfWeek = (date) => addDays(date, -((date.getDay() + 6) % 7));
-const endOfWeek = (date) => addDays(startOfWeek(date), 6);
-const startOfMonth = (date) => new Date(date.getFullYear(), date.getMonth(), 1);
-const endOfMonth = (date) => new Date(date.getFullYear(), date.getMonth() + 1, 0);
-const sameDay = (left, right) => isoDate(left) === isoDate(right);
-const dateLabel = (value) => (value ? parseLocalDate(value).toLocaleDateString('ru-RU') : '-');
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
 const timeRange = (lesson) => `${lesson.start_time?.slice(0, 5) || '--:--'}-${lesson.end_time?.slice(0, 5) || '--:--'}`;
 const statusLabel = (value) => visitStatusOptions.find((item) => item.value === value)?.label || value || '-';
-const lessonStatusLabel = (lesson) => lesson.status_display || lessonStatusOptions.find((item) => item.value === lesson.status)?.label || lesson.status || '-';
 
-function periodBounds(anchorDate, view) {
-  if (view === 'day') return { from: anchorDate, to: anchorDate };
-  if (view === 'week') return { from: startOfWeek(anchorDate), to: endOfWeek(anchorDate) };
-  return { from: startOfMonth(anchorDate), to: endOfMonth(anchorDate) };
+function lessonTitle(lesson) {
+  return [lesson.subject_name, lesson.group_name || lesson.topic].filter(Boolean).join(' · ') || 'Занятие';
 }
 
-function periodTitle(anchorDate, view) {
-  const { from, to } = periodBounds(anchorDate, view);
-  if (view === 'day') return from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-  if (view === 'week') return `${from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} - ${to.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}`;
-  return anchorDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+function dispatchToast(message) {
+  window.dispatchEvent(new CustomEvent('api-success', { detail: message }));
 }
 
-function shiftPeriod(anchorDate, view, direction) {
-  if (view === 'day') return addDays(anchorDate, direction);
-  if (view === 'week') return addDays(anchorDate, direction * 7);
-  return new Date(anchorDate.getFullYear(), anchorDate.getMonth() + direction, 1);
-}
-
-function makeMonthDays(anchorDate) {
-  const first = startOfWeek(startOfMonth(anchorDate));
-  const last = endOfWeek(endOfMonth(anchorDate));
-  const days = [];
-  for (let day = first; day <= last; day = addDays(day, 1)) {
-    days.push(new Date(day));
-  }
-  return days;
-}
-
-function lessonsByDate(lessons) {
-  return lessons.reduce((acc, lesson) => {
-    const key = lesson.lesson_date;
-    acc[key] = acc[key] || [];
-    acc[key].push(lesson);
-    return acc;
-  }, {});
-}
-
-function LessonCard({ lesson, compact = false, onOpen }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(lesson)}
-      className="w-full rounded-[18px] border border-slate-100 bg-white p-3 text-left shadow-card transition hover:-translate-y-0.5 hover:border-brand/20 hover:shadow-soft"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-bold text-slate-900">{timeRange(lesson)}</p>
-          <p className="mt-1 text-sm font-semibold text-slate-700">{lesson.group_name || 'Без группы'}</p>
-        </div>
-        <Badge value={lesson.status}>{lessonStatusLabel(lesson)}</Badge>
-      </div>
-      {!compact && (
-        <div className="mt-3 grid gap-1 text-xs text-slate-500">
-          <span>{lesson.subject_name || 'Без предмета'}</span>
-          <span>{lesson.teacher_name || 'Без учителя'}</span>
-          <span>{lesson.room_name || 'Без кабинета'}</span>
-        </div>
-      )}
-      <div className="mt-3 flex items-center justify-between gap-2 text-xs font-semibold text-slate-600">
-        <span>{lesson.attended_count || 0}/{lesson.visits_count || 0} пришли</span>
-        <span className="inline-flex items-center gap-1 text-brand"><ClipboardCheck size={14} />Отметить</span>
-      </div>
-    </button>
-  );
-}
-
-function AttendanceModal({ lessonId, open, onClose, onSaved }) {
-  const [lesson, setLesson] = useState(null);
-  const [students, setStudents] = useState([]);
-  const [initialStudents, setInitialStudents] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const normalizeStudents = (items) => items.map((student) => ({
+function normalizeRows(items) {
+  return items.map((student) => ({
     ...student,
     subscription: student.visit?.subscription || student.subscription || '',
     status: student.status || '',
     comment: student.comment || '',
+    remaining_lessons: student.remaining_lessons ?? student.lessons_left ?? null,
+    dirty: false,
   }));
+}
 
-  const load = async () => {
-    if (!lessonId) return;
-    setLoading(true);
-    try {
-      const { data } = await api.get(`lessons/${lessonId}/attendance/`);
-      const normalized = normalizeStudents(data.students || []);
-      setLesson(data.lesson);
-      setStudents(normalized);
-      setInitialStudents(normalized);
-    } catch (error) {
-      showApiError(error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (open) load();
-  }, [open, lessonId]);
-
-  const setStudent = (clientId, patch) => {
-    setStudents((current) => current.map((student) => (student.client === clientId ? { ...student, ...patch } : student)));
-  };
-
-  const setAllStatuses = (status) => {
-    setStudents((current) => current.map((student) => ({ ...student, status })));
-  };
-
-  const resetChanges = () => {
-    setStudents(initialStudents);
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const items = students
-        .filter((student) => student.status)
-        .map((student) => ({
-          client: student.client,
-          subscription: student.subscription || null,
-          status: student.status,
-          comment: student.comment || '',
-        }));
-      const { data } = await api.post(`lessons/${lessonId}/attendance/`, { items });
-      const normalized = normalizeStudents(data.students || []);
-      setLesson(data.lesson);
-      setStudents(normalized);
-      setInitialStudents(normalized);
-      onSaved?.();
-      onClose();
-    } catch (error) {
-      showApiError(error);
-    } finally {
-      setSaving(false);
-    }
-  };
-
+function rowChanged(row, initial) {
   return (
-    <Modal
-      title="Отметка посещений"
-      open={open}
-      onClose={onClose}
-      size="full"
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Отмена</Button>
-          <Button onClick={save} disabled={saving || loading}><Save size={16} />Сохранить посещения</Button>
-        </>
-      }
+    String(row.status || '') !== String(initial?.status || '')
+    || String(row.comment || '') !== String(initial?.comment || '')
+    || String(row.subscription || '') !== String(initial?.subscription || '')
+  );
+}
+
+function StatusButton({ active, variant, icon: Icon, children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-bold transition sm:flex-none ${
+        active
+          ? variant
+          : 'border-slate-200 bg-white text-slate-600 hover:border-brand/30 hover:bg-brand/5 hover:text-brand'
+      }`}
     >
-      {lesson && (
-        <div className="mb-4 grid gap-3 rounded-[22px] border border-slate-100 bg-slate-50 p-4 md:grid-cols-6">
-          <div><p className="text-xs font-bold uppercase text-slate-400">Группа</p><p className="mt-1 font-semibold text-slate-900">{lesson.group_name || '-'}</p></div>
-          <div><p className="text-xs font-bold uppercase text-slate-400">Дата</p><p className="mt-1 font-semibold text-slate-900">{dateLabel(lesson.lesson_date)}</p></div>
-          <div><p className="text-xs font-bold uppercase text-slate-400">Время</p><p className="mt-1 font-semibold text-slate-900">{timeRange(lesson)}</p></div>
-          <div><p className="text-xs font-bold uppercase text-slate-400">Учитель</p><p className="mt-1 font-semibold text-slate-900">{lesson.teacher_name || '-'}</p></div>
-          <div><p className="text-xs font-bold uppercase text-slate-400">Предмет</p><p className="mt-1 font-semibold text-slate-900">{lesson.subject_name || '-'}</p></div>
-          <div><p className="text-xs font-bold uppercase text-slate-400">Кабинет</p><p className="mt-1 font-semibold text-slate-900">{lesson.room_name || '-'}</p></div>
-        </div>
-      )}
-
-      <div className="mb-4 flex flex-wrap gap-2">
-        <Button variant="secondary" onClick={() => setAllStatuses('attended')}><UserCheck size={16} />Всех отметить "Пришел"</Button>
-        <Button variant="secondary" onClick={() => setAllStatuses('missed')}><UserX size={16} />Всех отметить "Не пришел"</Button>
-        <Button variant="ghost" onClick={resetChanges}><RotateCcw size={16} />Очистить изменения</Button>
-      </div>
-
-      {loading ? (
-        <div className="rounded-[22px] border border-slate-100 bg-white p-8 text-center font-semibold text-slate-500 shadow-card">Загрузка группы...</div>
-      ) : (
-        <Table
-          data={students}
-          empty="В группе нет активных учеников"
-          columns={[
-            { key: 'client_name', header: 'Ученик' },
-            { key: 'client_phone', header: 'Телефон', render: (row) => row.client_phone || '-' },
-            { key: 'subscription_title', header: 'Абонемент', render: (row) => row.subscription_title || 'Без абонемента' },
-            { key: 'lessons_left', header: 'Остаток', render: (row) => row.lessons_left ?? '-' },
-            {
-              key: 'status',
-              header: 'Статус',
-              render: (row) => (
-                <div className="flex min-w-64 flex-wrap items-center gap-2">
-                  <Button variant={row.status === 'attended' ? 'primary' : 'secondary'} className="min-h-9 px-3 py-1.5" onClick={() => setStudent(row.client, { status: 'attended' })}><Check size={15} />Пришел</Button>
-                  <Button variant={row.status === 'missed' ? 'danger' : 'secondary'} className="min-h-9 px-3 py-1.5" onClick={() => setStudent(row.client, { status: 'missed' })}><UserX size={15} />Не пришел</Button>
-                  <SelectField label="" value={row.status || ''} onChange={(value) => setStudent(row.client, { status: value })} options={[{ value: '', label: 'Не отмечен' }, ...visitStatusOptions]} />
-                </div>
-              ),
-            },
-            {
-              key: 'comment',
-              header: 'Комментарий',
-              render: (row) => <Input label="" value={row.comment || ''} onChange={(event) => setStudent(row.client, { comment: event.target.value })} />,
-            },
-          ]}
-        />
-      )}
-    </Modal>
+      <Icon size={16} />
+      {children}
+    </button>
   );
 }
 
 export default function VisitsPage() {
-  const navigate = useNavigate();
-  const [tab, setTab] = useState('calendar');
-  const [periodView, setPeriodView] = useState('week');
-  const [anchorDate, setAnchorDate] = useState(new Date());
-  const [lessonFilters, setLessonFilters] = useState({ group: '', teacher: '', status: '', room: '' });
+  const user = getStoredUser();
+  const canEdit = canManageVisits(user);
+  const canDelete = canDeleteDangerous(user);
+  const [mode, setMode] = useState('journal');
+  const [selectedDate, setSelectedDate] = useState(isoDate(new Date()));
   const [lessons, setLessons] = useState([]);
   const [lessonsLoading, setLessonsLoading] = useState(false);
   const [selectedLesson, setSelectedLesson] = useState(null);
+  const [attendanceRows, setAttendanceRows] = useState([]);
+  const [initialRows, setInitialRows] = useState([]);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [studentSearch, setStudentSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualForm, setManualForm] = useState(emptyManualVisit);
+
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
   const { groupOptions } = useStudyGroupOptions();
   const { employeeOptions } = useEmployeeOptions(['teacher', 'admin']);
-  const { roomOptions } = useRoomOptions();
-  const user = getStoredUser();
-  const canEdit = canManageVisits(user);
-  const canDelete = canDeleteDangerous(user);
-  const [manualOpen, setManualOpen] = useState(false);
-  const [manualForm, setManualForm] = useState(emptyManualVisit);
   const selectedClient = manualForm.client || '';
   const { items: subscriptions, loading: loadingSubscriptions } = useLookup('subscriptions/', { client: selectedClient }, { enabled: Boolean(selectedClient) });
   const subscriptionOptions = useMemo(
@@ -298,24 +129,31 @@ export default function VisitsPage() {
     [subscriptions],
   );
 
-  const bounds = useMemo(() => periodBounds(anchorDate, periodView), [anchorDate, periodView]);
-  const lessonsMap = useMemo(() => lessonsByDate(lessons), [lessons]);
-  const todayIso = isoDate(new Date());
+  const dirtyRows = useMemo(
+    () => attendanceRows.filter((row) => rowChanged(row, initialRows.find((initial) => initial.client === row.client))),
+    [attendanceRows, initialRows],
+  );
+
+  const filteredRows = useMemo(() => {
+    const query = studentSearch.trim().toLowerCase();
+    return attendanceRows.filter((row) => {
+      const matchesSearch = !query || [row.client_name, row.client_phone, row.client_parent_name].some((value) => String(value || '').toLowerCase().includes(query));
+      const matchesStatus = !statusFilter || (statusFilter === 'none' ? !row.status : row.status === statusFilter);
+      return matchesSearch && matchesStatus;
+    });
+  }, [attendanceRows, studentSearch, statusFilter]);
 
   const loadLessons = async () => {
     setLessonsLoading(true);
     try {
-      const params = {
-        date_from: isoDate(bounds.from),
-        date_to: isoDate(bounds.to),
-        ...lessonFilters,
-      };
-      Object.keys(params).forEach((key) => {
-        if (!params[key]) delete params[key];
-      });
-      const { data } = await api.get('lessons/', { params });
-      const items = Array.isArray(data) ? data : data.results || [];
-      setLessons(items.sort((left, right) => `${left.lesson_date} ${left.start_time}`.localeCompare(`${right.lesson_date} ${right.start_time}`)));
+      const { data } = await api.get('lessons/', { params: { date_from: selectedDate, date_to: selectedDate } });
+      const items = (Array.isArray(data) ? data : data.results || []).sort((left, right) => String(left.start_time || '').localeCompare(String(right.start_time || '')));
+      setLessons(items);
+      if (selectedLesson && !items.some((lesson) => lesson.id === selectedLesson.id)) {
+        setSelectedLesson(null);
+        setAttendanceRows([]);
+        setInitialRows([]);
+      }
     } catch (error) {
       showApiError(error);
       setLessons([]);
@@ -324,23 +162,63 @@ export default function VisitsPage() {
     }
   };
 
-  useEffect(() => {
-    if (tab === 'calendar' || tab === 'today') loadLessons();
-  }, [tab, bounds.from.getTime(), bounds.to.getTime(), JSON.stringify(lessonFilters)]);
+  const loadAttendance = async (lesson) => {
+    if (!lesson?.id) return;
+    setAttendanceLoading(true);
+    try {
+      const { data } = await api.get(`lessons/${lesson.id}/attendance/`);
+      const rows = normalizeRows(data.students || []);
+      setSelectedLesson(data.lesson || lesson);
+      setAttendanceRows(rows);
+      setInitialRows(rows);
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setAttendanceLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (tab === 'today') {
-      setPeriodView('day');
-      setAnchorDate(new Date());
-    }
-  }, [tab]);
+    if (mode === 'journal') loadLessons();
+  }, [selectedDate, mode]);
 
-  const openLesson = (lesson) => {
-    if (window.matchMedia('(max-width: 767px)').matches) {
-      navigate(`/lessons/${lesson.id}/attendance`);
-      return;
+  const setRow = (clientId, patch) => {
+    setAttendanceRows((current) => current.map((row) => (row.client === clientId ? { ...row, ...patch } : row)));
+  };
+
+  const setAllStatuses = (status) => {
+    setAttendanceRows((current) => current.map((row) => ({ ...row, status })));
+  };
+
+  const resetChanges = () => {
+    setAttendanceRows(initialRows);
+  };
+
+  const saveAttendance = async () => {
+    if (!selectedLesson || !dirtyRows.length) return;
+    setSavingAttendance(true);
+    try {
+      const items = dirtyRows
+        .filter((row) => row.status)
+        .map((row) => ({
+          client: row.client,
+          subscription: row.subscription || null,
+          status: row.status,
+          comment: row.comment || '',
+        }));
+      const { data } = await api.post(`lessons/${selectedLesson.id}/attendance/`, { items });
+      const rows = normalizeRows(data.students || []);
+      setSelectedLesson(data.lesson || selectedLesson);
+      setAttendanceRows(rows);
+      setInitialRows(rows);
+      dispatchToast('Посещения сохранены.');
+      await loadLessons();
+      await historyCrud.reload();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setSavingAttendance(false);
     }
-    setSelectedLesson(lesson);
   };
 
   const openManualCreate = () => {
@@ -369,11 +247,8 @@ export default function VisitsPage() {
       visited_at: manualForm.visited_at ? `${manualForm.visited_at}T00:00` : null,
     };
     try {
-      if (manualForm.id) {
-        await api.patch(`visits/${manualForm.id}/`, payload);
-      } else {
-        await api.post('visits/', payload);
-      }
+      if (manualForm.id) await api.patch(`visits/${manualForm.id}/`, payload);
+      else await api.post('visits/', payload);
       setManualOpen(false);
       await historyCrud.reload();
     } catch (error) {
@@ -381,210 +256,320 @@ export default function VisitsPage() {
     }
   };
 
-  const renderLessonFilters = () => (
-    <Filters>
-      <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все' }, ...groupOptions]} />
-      <SelectField label="Учитель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все' }, ...employeeOptions]} />
-      <SelectField label="Статус урока" value={lessonFilters.status} onChange={(value) => setLessonFilters({ ...lessonFilters, status: value })} options={lessonStatusOptions} />
-      <SelectField label="Кабинет" value={lessonFilters.room} onChange={(value) => setLessonFilters({ ...lessonFilters, room: value })} options={[{ value: '', label: 'Все' }, ...roomOptions]} />
-    </Filters>
-  );
-
-  const renderCalendar = () => {
-    if (periodView === 'day') {
-      const dayLessons = lessonsMap[isoDate(anchorDate)] || [];
-      return <LessonList lessons={dayLessons} loading={lessonsLoading} empty="Уроков за выбранный день нет" onOpen={openLesson} />;
-    }
-
-    if (periodView === 'week') {
-      const days = Array.from({ length: 7 }, (_, index) => addDays(startOfWeek(anchorDate), index));
-      return (
-        <div className="grid gap-3 lg:grid-cols-7">
-          {days.map((day) => {
-            const items = lessonsMap[isoDate(day)] || [];
-            return (
-              <div key={isoDate(day)} className={`rounded-[22px] border bg-white p-3 shadow-card ${sameDay(day, new Date()) ? 'border-brand/30' : 'border-slate-100'}`}>
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-bold uppercase text-slate-400">{weekdayLabels[(day.getDay() + 6) % 7]}</p>
-                    <p className="font-bold text-slate-900">{day.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}</p>
-                  </div>
-                  <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-500">{items.length}</span>
-                </div>
-                <div className="grid gap-2">
-                  {items.length ? items.map((lesson) => <LessonCard key={lesson.id} lesson={lesson} compact onOpen={openLesson} />) : <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-400">Нет уроков</p>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-
-    return (
-      <div className="grid gap-3 md:grid-cols-7">
-        {weekdayLabels.map((day) => <div key={day} className="hidden text-center text-xs font-bold uppercase text-slate-400 md:block">{day}</div>)}
-        {makeMonthDays(anchorDate).map((day) => {
-          const items = lessonsMap[isoDate(day)] || [];
-          const visibleItems = items.slice(0, 3);
-          const outOfMonth = day.getMonth() !== anchorDate.getMonth();
-          return (
-            <div key={isoDate(day)} className={`rounded-[22px] border bg-white p-3 shadow-card ${outOfMonth ? 'opacity-60' : ''} ${sameDay(day, new Date()) ? 'border-brand/30' : 'border-slate-100'}`}>
-              <div className="mb-3 flex items-center justify-between">
-                <p className="font-bold text-slate-900">{day.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}</p>
-                <span className="md:hidden text-xs font-bold uppercase text-slate-400">{weekdayLabels[(day.getDay() + 6) % 7]}</span>
-              </div>
-              <div className="grid gap-2">
-                {visibleItems.map((lesson) => <LessonCard key={lesson.id} lesson={lesson} compact onOpen={openLesson} />)}
-                {items.length > visibleItems.length && <p className="text-xs font-bold text-brand">+ еще {items.length - visibleItems.length}</p>}
-                {!items.length && <p className="rounded-2xl border border-dashed border-slate-200 p-4 text-center text-xs font-semibold text-slate-400">Нет уроков</p>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
   return (
     <>
-      <PageHeader title="Посещения" actionLabel={tab === 'history' && canEdit ? '+ Добавить вручную' : undefined} onAction={tab === 'history' && canEdit ? openManualCreate : undefined}>
-        <div className="inline-flex flex-wrap rounded-2xl border border-slate-200 bg-white p-1">
-          {tabs.map((item) => (
-            <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${tab === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => setTab(item.value)}>
+      <PageHeader title="Журнал учёта посещений" actionLabel={mode === 'classic' && canEdit ? '+ Добавить' : undefined} onAction={mode === 'classic' && canEdit ? openManualCreate : undefined}>
+        <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
+          {modeOptions.map((item) => (
+            <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => setMode(item.value)}>
               {item.label}
             </button>
           ))}
         </div>
       </PageHeader>
 
-      {tab === 'calendar' && (
+      {mode === 'journal' ? (
         <>
-          <div className="mb-5 flex flex-col gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card lg:flex-row lg:items-center lg:justify-between">
-            <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
-              {periodOptions.map((item) => (
-                <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${periodView === item.value ? 'bg-brand text-white' : 'text-slate-600'}`} onClick={() => setPeriodView(item.value)}>
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="secondary" onClick={() => setAnchorDate(shiftPeriod(anchorDate, periodView, -1))}><ChevronLeft size={16} />Назад</Button>
-              <Button variant="accent" onClick={() => setAnchorDate(new Date())}><CalendarDays size={16} />Сегодня</Button>
-              <Button variant="secondary" onClick={() => setAnchorDate(shiftPeriod(anchorDate, periodView, 1))}>Вперед<ChevronRight size={16} /></Button>
-            </div>
-            <p className="text-lg font-bold text-slate-900">{periodTitle(anchorDate, periodView)}</p>
+          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card lg:grid-cols-[1fr_220px_180px_auto] lg:items-end">
+            <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
+            <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
+            <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            <Button variant="secondary" onClick={openManualCreate} disabled={!canEdit}>
+              <Plus size={16} />
+              Добавить
+            </Button>
           </div>
-          {renderLessonFilters()}
-          {lessonsLoading && <div className="mb-4 rounded-[22px] border border-slate-100 bg-white p-4 text-sm font-semibold text-slate-500 shadow-card">Загрузка уроков...</div>}
-          {renderCalendar()}
+
+          <div className="grid max-w-full gap-6 xl:grid-cols-[360px_1fr]">
+            <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+              <div className="mb-4 flex items-center justify-between gap-2">
+                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, -1))} aria-label="Предыдущий день">
+                  <ChevronLeft size={16} />
+                </Button>
+                <div className="text-center">
+                  <p className="text-xs font-bold uppercase text-slate-400">Дата</p>
+                  <p className="font-bold text-slate-900">{parseLocalDate(selectedDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                </div>
+                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, 1))} aria-label="Следующий день">
+                  <ChevronRight size={16} />
+                </Button>
+              </div>
+              <Button variant="accent" className="mb-4 w-full" onClick={() => setSelectedDate(isoDate(new Date()))}>
+                <CalendarDays size={16} />
+                Сегодня
+              </Button>
+
+              <div className="overflow-hidden rounded-2xl border border-slate-100">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="px-3 py-3">№</th>
+                      <th className="px-3 py-3">Время</th>
+                      <th className="px-3 py-3">Занятие</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lessonsLoading ? (
+                      <tr><td colSpan={3} className="px-3 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+                    ) : lessons.length === 0 ? (
+                      <tr><td colSpan={3} className="px-3 py-8 text-center font-semibold text-slate-500">На эту дату занятий нет.</td></tr>
+                    ) : (
+                      lessons.map((lesson, index) => (
+                        <tr key={lesson.id}>
+                          <td className="border-t border-slate-100 px-3 py-2 text-slate-500">{index + 1}</td>
+                          <td className="border-t border-slate-100 px-3 py-2 font-bold text-slate-900">{lesson.start_time?.slice(0, 5) || '--:--'}</td>
+                          <td className="border-t border-slate-100 px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => loadAttendance(lesson)}
+                              className={`w-full rounded-xl px-3 py-2 text-left font-semibold transition ${selectedLesson?.id === lesson.id ? 'bg-brand text-white' : 'text-slate-700 hover:bg-brand/5 hover:text-brand'}`}
+                            >
+                              <span className="block">{lesson.group_name || lessonTitle(lesson)}</span>
+                              <span className={`block text-xs ${selectedLesson?.id === lesson.id ? 'text-white/80' : 'text-slate-400'}`}>{lesson.subject_name || 'Без предмета'}</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="min-w-0 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+              {!selectedLesson ? (
+                <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-center">
+                  <div>
+                    <Search className="mx-auto text-slate-300" size={42} />
+                    <p className="mt-3 text-lg font-bold text-slate-800">Выберите занятие</p>
+                  </div>
+                </div>
+              ) : (
+                <AttendanceJournal
+                  lesson={selectedLesson}
+                  rows={filteredRows}
+                  allRows={attendanceRows}
+                  loading={attendanceLoading}
+                  dirtyCount={dirtyRows.length}
+                  saving={savingAttendance}
+                  canEdit={canEdit}
+                  onSetRow={setRow}
+                  onSetAll={setAllStatuses}
+                  onReset={resetChanges}
+                  onSave={saveAttendance}
+                />
+              )}
+            </section>
+          </div>
         </>
+      ) : (
+        <ClassicVisits
+          crud={historyCrud}
+          clientOptions={clientOptions}
+          groupOptions={groupOptions}
+          employeeOptions={employeeOptions}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          onEdit={openManualEdit}
+        />
       )}
 
-      {tab === 'today' && (
-        <>
-          {renderLessonFilters()}
-          <LessonList lessons={lessons.filter((lesson) => lesson.lesson_date === todayIso)} loading={lessonsLoading} empty="На сегодня уроков нет" onOpen={openLesson} />
-        </>
-      )}
-
-      {tab === 'history' && (
-        <>
-          <Filters>
-            <Input label="Дата от" type="date" value={historyCrud.filters.date_from} onChange={(event) => historyCrud.setFilters({ ...historyCrud.filters, date_from: event.target.value })} />
-            <Input label="Дата до" type="date" value={historyCrud.filters.date_to} onChange={(event) => historyCrud.setFilters({ ...historyCrud.filters, date_to: event.target.value })} />
-            <SelectField label="Ученик" value={historyCrud.filters.client} onChange={(value) => historyCrud.setFilters({ ...historyCrud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
-            <SelectField label="Группа" value={historyCrud.filters.group} onChange={(value) => historyCrud.setFilters({ ...historyCrud.filters, group: value })} options={[{ value: '', label: 'Все' }, ...groupOptions]} />
-            <SelectField label="Учитель" value={historyCrud.filters.teacher} onChange={(value) => historyCrud.setFilters({ ...historyCrud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...employeeOptions]} />
-            <SelectField label="Статус" value={historyCrud.filters.status} onChange={(value) => historyCrud.setFilters({ ...historyCrud.filters, status: value })} options={[{ value: '', label: 'Все' }, ...visitStatusOptions]} />
-            <Input label="Абонемент" value={historyCrud.filters.subscription} onChange={(event) => historyCrud.setFilters({ ...historyCrud.filters, subscription: event.target.value })} />
-          </Filters>
-          <Table
-            data={historyCrud.items}
-            columns={[
-              { key: 'date', header: 'Дата', render: (row) => dateTime(row.visited_at) },
-              { key: 'client', header: 'Ученик', render: (row) => <Link className="text-brand hover:underline" to={`/clients/${row.client}`}>{row.client_name || 'Клиент'}</Link> },
-              { key: 'client_phone', header: 'Телефон', render: (row) => row.client_phone || '-' },
-              { key: 'group_name', header: 'Группа', render: (row) => row.group_name || '-' },
-              { key: 'lesson_display', header: 'Урок', render: (row) => row.lesson_display || row.lesson_title || '-' },
-              { key: 'teacher_name', header: 'Учитель', render: (row) => row.teacher_name || '-' },
-              { key: 'subscription_title', header: 'Абонемент', render: (row) => row.subscription_title || '-' },
-              { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{statusLabel(row.status)}</Badge> },
-              { key: 'lesson_deducted', header: 'Списано', render: (row) => <Badge value={row.lesson_deducted ? 'attended' : 'cancelled'}>{row.lesson_deducted ? 'Да' : 'Нет'}</Badge> },
-              { key: 'notes', header: 'Комментарий', render: (row) => row.notes || '-' },
-              { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => openManualEdit(row)} onDelete={() => historyCrud.remove(row.id)} /> },
-            ]}
-          />
-        </>
-      )}
-
-      <AttendanceModal
-        lessonId={selectedLesson?.id}
-        open={Boolean(selectedLesson)}
-        onClose={() => setSelectedLesson(null)}
-        onSaved={() => {
-          loadLessons();
-          historyCrud.reload();
-        }}
-      />
-
-      <Modal
-        title="Посещение"
+      <ManualVisitModal
         open={manualOpen}
+        form={manualForm}
+        setForm={setManualForm}
         onClose={() => setManualOpen(false)}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setManualOpen(false)}>Отмена</Button>
-            <Button onClick={saveManualVisit}>Сохранить</Button>
-          </>
-        }
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <ClientSelectWithCreate
-            label="Ученик"
-            value={manualForm.client || ''}
-            onChange={(value) => setManualForm({ ...manualForm, client: value, subscription: '' })}
-            options={clientOptions}
-            placeholder="Выберите ученика"
-          />
-          <SelectField
-            label="Абонемент"
-            value={manualForm.subscription || ''}
-            onChange={(value) => setManualForm({ ...manualForm, subscription: value })}
-            options={[
-              { value: '', label: selectedClient ? (loadingSubscriptions ? 'Загрузка абонементов...' : 'Без абонемента') : 'Сначала выберите ученика' },
-              ...subscriptionOptions,
-            ]}
-          />
-          <SelectField label="Учитель" value={manualForm.teacher || ''} onChange={(value) => setManualForm({ ...manualForm, teacher: value })} options={[{ value: '', label: 'Не выбран' }, ...employeeOptions]} />
-          <Input label="Дата занятия" type="date" value={manualForm.visited_at || ''} onChange={(event) => setManualForm({ ...manualForm, visited_at: event.target.value })} />
-          <SelectField label="Статус" value={manualForm.status || 'attended'} onChange={(value) => setManualForm({ ...manualForm, status: value })} options={visitStatusOptions} />
-          <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
-            Комментарий
-            <textarea
-              className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
-              value={manualForm.notes || ''}
-              onChange={(event) => setManualForm({ ...manualForm, notes: event.target.value })}
-            />
-          </label>
-        </div>
-      </Modal>
+        onSave={saveManualVisit}
+        clientOptions={clientOptions}
+        employeeOptions={employeeOptions}
+        subscriptionOptions={subscriptionOptions}
+        loadingSubscriptions={loadingSubscriptions}
+        selectedClient={selectedClient}
+      />
     </>
   );
 }
 
-function LessonList({ lessons, loading, empty, onOpen }) {
-  if (loading) {
-    return <div className="rounded-[22px] border border-slate-100 bg-white p-8 text-center font-semibold text-slate-500 shadow-card">Загрузка уроков...</div>;
-  }
-
-  if (!lessons.length) {
-    return <div className="rounded-[22px] border border-dashed border-slate-200 bg-white p-8 text-center font-semibold text-slate-500 shadow-card">{empty}</div>;
-  }
+function AttendanceJournal({ lesson, rows, allRows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave }) {
+  const header = [lesson.group_name, lesson.subject_name, timeRange(lesson), lesson.teacher_name].filter(Boolean).join(' / ');
 
   return (
-    <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-      {lessons.map((lesson) => <LessonCard key={lesson.id} lesson={lesson} onOpen={onOpen} />)}
+    <div>
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h3 className="text-xl font-bold text-slate-900">{header || lessonTitle(lesson)}</h3>
+          <p className="mt-1 text-sm text-slate-500">Всего учеников: {allRows.length}</p>
+        </div>
+        <Button onClick={onSave} disabled={!canEdit || saving || !dirtyCount}>
+          <Save size={16} />
+          {saving ? 'Сохранение...' : `Сохранить табель${dirtyCount ? ` (${dirtyCount})` : ''}`}
+        </Button>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Button variant="secondary" onClick={() => onSetAll('attended')} disabled={!canEdit}><UserCheck size={16} />Всех отметить Посетил</Button>
+        <Button variant="secondary" onClick={() => onSetAll('missed')} disabled={!canEdit}><UserX size={16} />Всех отметить Пропуск</Button>
+        <Button variant="ghost" onClick={onReset} disabled={!dirtyCount}><RotateCcw size={16} />Очистить изменения</Button>
+      </div>
+
+      {loading ? (
+        <div className="rounded-2xl border border-slate-100 bg-slate-50 p-8 text-center font-semibold text-slate-500">Загрузка учеников...</div>
+      ) : (
+        <>
+          <div className="hidden overflow-x-auto rounded-2xl border border-slate-100 md:block">
+            <table className="min-w-[920px] w-full border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="border-b border-slate-100 px-4 py-3">№</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Ученик</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Абонемент</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Осталось занятий</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Посетил</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Болел</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Пропуск</th>
+                  <th className="border-b border-slate-100 px-4 py-3">Комментарий</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr><td colSpan={8} className="px-4 py-10 text-center font-semibold text-slate-500">Ученики не найдены</td></tr>
+                ) : rows.map((row, index) => (
+                  <tr key={row.client} className={row.dirty ? 'bg-amber-50/40' : ''}>
+                    <td className="border-b border-slate-100 px-4 py-3 text-slate-500">{index + 1}</td>
+                    <td className="border-b border-slate-100 px-4 py-3">
+                      <p className="font-bold text-slate-900">{row.client_name}</p>
+                      <p className="text-xs text-slate-500">{[row.client_parent_name, row.client_phone].filter(Boolean).join(' · ')}</p>
+                    </td>
+                    <td className="border-b border-slate-100 px-4 py-3">{row.subscription_title || 'Без абонемента'}</td>
+                    <td className="border-b border-slate-100 px-4 py-3 font-bold text-slate-900">{row.remaining_lessons ?? '-'}</td>
+                    <StatusCell active={row.status === 'attended'} disabled={!canEdit} onClick={() => onSetRow(row.client, { status: 'attended' })}>Посетил</StatusCell>
+                    <StatusCell active={row.status === 'sick'} disabled={!canEdit} onClick={() => onSetRow(row.client, { status: 'sick' })}>Болел</StatusCell>
+                    <StatusCell active={row.status === 'missed'} disabled={!canEdit} onClick={() => onSetRow(row.client, { status: 'missed' })}>Пропуск</StatusCell>
+                    <td className="border-b border-slate-100 px-4 py-3">
+                      <Input label="" value={row.comment || ''} disabled={!canEdit} onChange={(event) => onSetRow(row.client, { comment: event.target.value })} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid gap-3 md:hidden">
+            {rows.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center font-semibold text-slate-500">Ученики не найдены</div>
+            ) : rows.map((row) => (
+              <div key={row.client} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+                <p className="font-bold text-slate-900">{row.client_name}</p>
+                <p className="mt-1 text-xs text-slate-500">{row.subscription_title || 'Без абонемента'} / Осталось: {row.remaining_lessons ?? '-'}</p>
+                <div className="mt-3 flex gap-2">
+                  <StatusButton active={row.status === 'attended'} variant="border-brand bg-brand text-white" icon={UserCheck} onClick={() => onSetRow(row.client, { status: 'attended' })}>Посетил</StatusButton>
+                  <StatusButton active={row.status === 'sick'} variant="border-amber-500 bg-amber-500 text-white" icon={Thermometer} onClick={() => onSetRow(row.client, { status: 'sick' })}>Болел</StatusButton>
+                  <StatusButton active={row.status === 'missed'} variant="border-red-600 bg-red-600 text-white" icon={UserX} onClick={() => onSetRow(row.client, { status: 'missed' })}>Пропуск</StatusButton>
+                </div>
+                <div className="mt-3">
+                  <Input label="Комментарий" value={row.comment || ''} disabled={!canEdit} onChange={(event) => onSetRow(row.client, { comment: event.target.value })} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
+  );
+}
+
+function StatusCell({ active, disabled, onClick, children }) {
+  return (
+    <td className="border-b border-slate-100 px-4 py-3">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className={`min-h-10 w-full rounded-xl border px-3 py-2 text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+          active ? 'border-brand bg-brand text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-brand/30 hover:bg-brand/5 hover:text-brand'
+        }`}
+      >
+        {active && <Check className="mr-1 inline" size={15} />}
+        {children}
+      </button>
+    </td>
+  );
+}
+
+function ClassicVisits({ crud, clientOptions, groupOptions, employeeOptions, canEdit, canDelete, onEdit }) {
+  return (
+    <>
+      <Filters>
+        <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(event) => crud.setFilters({ ...crud.filters, date_from: event.target.value })} />
+        <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(event) => crud.setFilters({ ...crud.filters, date_to: event.target.value })} />
+        <SelectField label="Ученик" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
+        <SelectField label="Группа" value={crud.filters.group} onChange={(value) => crud.setFilters({ ...crud.filters, group: value })} options={[{ value: '', label: 'Все' }, ...groupOptions]} />
+        <SelectField label="Учитель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...employeeOptions]} />
+        <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, ...visitStatusOptions]} />
+        <Input label="Абонемент" value={crud.filters.subscription} onChange={(event) => crud.setFilters({ ...crud.filters, subscription: event.target.value })} />
+      </Filters>
+      <Table
+        data={crud.items}
+        columns={[
+          { key: 'date', header: 'Дата', render: (row) => dateTime(row.visited_at) },
+          { key: 'client', header: 'Ученик', render: (row) => <Link className="text-brand hover:underline" to={`/clients/${row.client}`}>{row.client_name || 'Клиент'}</Link> },
+          { key: 'client_phone', header: 'Телефон', render: (row) => row.client_phone || '-' },
+          { key: 'group_name', header: 'Группа', render: (row) => row.group_name || '-' },
+          { key: 'lesson_display', header: 'Урок', render: (row) => row.lesson_display || row.lesson_title || '-' },
+          { key: 'teacher_name', header: 'Учитель', render: (row) => row.teacher_name || '-' },
+          { key: 'subscription_title', header: 'Абонемент', render: (row) => row.subscription_title || '-' },
+          { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{statusLabel(row.status)}</Badge> },
+          { key: 'lesson_deducted', header: 'Списано', render: (row) => <Badge value={row.lesson_deducted ? 'attended' : 'cancelled'}>{row.lesson_deducted ? 'Да' : 'Нет'}</Badge> },
+          { key: 'notes', header: 'Комментарий', render: (row) => row.notes || '-' },
+          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => onEdit(row)} onDelete={() => crud.remove(row.id)} /> },
+        ]}
+      />
+    </>
+  );
+}
+
+function ManualVisitModal({ open, form, setForm, onClose, onSave, clientOptions, employeeOptions, subscriptionOptions, loadingSubscriptions, selectedClient }) {
+  return (
+    <Modal
+      title="Посещение"
+      open={open}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Отмена</Button>
+          <Button onClick={onSave}>Сохранить</Button>
+        </>
+      }
+    >
+      <div className="grid gap-4 md:grid-cols-2">
+        <ClientSelectWithCreate
+          label="Ученик"
+          value={form.client || ''}
+          onChange={(value) => setForm({ ...form, client: value, subscription: '' })}
+          options={clientOptions}
+          placeholder="Выберите ученика"
+        />
+        <SelectField
+          label="Абонемент"
+          value={form.subscription || ''}
+          onChange={(value) => setForm({ ...form, subscription: value })}
+          options={[
+            { value: '', label: selectedClient ? (loadingSubscriptions ? 'Загрузка абонементов...' : 'Без абонемента') : 'Сначала выберите ученика' },
+            ...subscriptionOptions,
+          ]}
+        />
+        <SelectField label="Учитель" value={form.teacher || ''} onChange={(value) => setForm({ ...form, teacher: value })} options={[{ value: '', label: 'Не выбран' }, ...employeeOptions]} />
+        <Input label="Дата занятия" type="date" value={form.visited_at || ''} onChange={(event) => setForm({ ...form, visited_at: event.target.value })} />
+        <SelectField label="Статус" value={form.status || 'attended'} onChange={(value) => setForm({ ...form, status: value })} options={visitStatusOptions} />
+        <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
+          Комментарий
+          <textarea
+            className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+            value={form.notes || ''}
+            onChange={(event) => setForm({ ...form, notes: event.target.value })}
+          />
+        </label>
+      </div>
+    </Modal>
   );
 }

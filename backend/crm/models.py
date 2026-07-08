@@ -213,6 +213,7 @@ class Lesson(TimeStampedModel):
 class Visit(TimeStampedModel):
     class Status(models.TextChoices):
         ATTENDED = 'attended', 'Attended'
+        SICK = 'sick', 'Sick'
         MISSED = 'missed', 'Missed'
         MAKEUP = 'makeup', 'Makeup'
         FROZEN = 'frozen', 'Frozen'

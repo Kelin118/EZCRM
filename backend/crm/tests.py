@@ -265,6 +265,144 @@ class CatalogItemApiTests(APITestCase):
         self.assertFalse(CatalogItem.objects.get(id=item_id).is_active)
 
 
+class LessonAttendanceJournalTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='attendance-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='attendance-manager', password='pass', role='manager', roles=['manager'])
+        self.teacher = User.objects.create_user(username='attendance-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.other_teacher = User.objects.create_user(username='attendance-other-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.teacher_manager = User.objects.create_user(
+            username='attendance-teacher-manager',
+            password='pass',
+            role='teacher',
+            roles=['teacher', 'manager'],
+        )
+        self.group = StudyGroup.objects.create(name='Math 5', teacher=self.teacher, manager=self.manager)
+        self.lesson = Lesson.objects.create(
+            group=self.group,
+            teacher=self.teacher,
+            lesson_date=date.today(),
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+        )
+        self.clients = [
+            Client.objects.create(first_name='Student', last_name='One', parent_name='Parent One', phone='87070000001'),
+            Client.objects.create(first_name='Student', last_name='Two', parent_name='Parent Two', phone='87070000002'),
+            Client.objects.create(first_name='Student', last_name='Three', parent_name='Parent Three', phone='87070000003'),
+        ]
+        for client in self.clients:
+            GroupMembership.objects.create(group=self.group, client=client, status=GroupMembership.Status.ACTIVE)
+            Subscription.objects.create(
+                client=client,
+                title='AB-8',
+                start_date=date.today(),
+                total_visits=8,
+                remaining_visits=8,
+                status=Subscription.Status.ACTIVE,
+            )
+
+    def post_attendance(self, client, status_value, user=None):
+        self.client.force_authenticate(user or self.admin)
+        return self.client.post(
+            f'/api/lessons/{self.lesson.id}/attendance/',
+            {'items': [{'client': client.id, 'status': status_value, 'comment': ''}]},
+            format='json',
+        )
+
+    def remaining(self, client):
+        return Subscription.objects.get(client=client).remaining_visits
+
+    def test_get_attendance_returns_all_group_students_without_visits(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(f'/api/lessons/{self.lesson.id}/attendance/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data['students']), 3)
+        self.assertTrue(all(student['status'] is None for student in response.data['students']))
+        self.assertTrue(all('remaining_lessons' in student for student in response.data['students']))
+
+    def test_attended_creates_visit_and_deducts_lesson(self):
+        response = self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
+
+        self.assertEqual(response.status_code, 200)
+        visit = Visit.objects.get(lesson=self.lesson, client=self.clients[0])
+        self.assertTrue(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 7)
+
+    def test_sick_creates_visit_without_deduction(self):
+        response = self.post_attendance(self.clients[0], Visit.Status.SICK)
+
+        self.assertEqual(response.status_code, 200)
+        visit = Visit.objects.get(lesson=self.lesson, client=self.clients[0])
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+
+    def test_missed_creates_visit_without_deduction(self):
+        response = self.post_attendance(self.clients[0], Visit.Status.MISSED)
+
+        self.assertEqual(response.status_code, 200)
+        visit = Visit.objects.get(lesson=self.lesson, client=self.clients[0])
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+
+    def test_attended_to_sick_restores_lesson(self):
+        self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
+        response = self.post_attendance(self.clients[0], Visit.Status.SICK)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+        self.assertFalse(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+
+    def test_attended_to_missed_restores_lesson(self):
+        self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
+        response = self.post_attendance(self.clients[0], Visit.Status.MISSED)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+        self.assertFalse(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+
+    def test_missed_to_attended_deducts_lesson(self):
+        self.post_attendance(self.clients[0], Visit.Status.MISSED)
+        response = self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remaining(self.clients[0]), 7)
+        self.assertTrue(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+
+    def test_teacher_can_mark_only_own_lessons(self):
+        own = self.post_attendance(self.clients[0], Visit.Status.ATTENDED, user=self.teacher)
+
+        other_group = StudyGroup.objects.create(name='Other', teacher=self.other_teacher)
+        other_lesson = Lesson.objects.create(group=other_group, teacher=self.other_teacher, lesson_date=date.today(), start_time=time(11, 0), end_time=time(12, 0))
+        GroupMembership.objects.create(group=other_group, client=self.clients[1], status=GroupMembership.Status.ACTIVE)
+        self.client.force_authenticate(self.teacher)
+        forbidden = self.client.post(
+            f'/api/lessons/{other_lesson.id}/attendance/',
+            {'items': [{'client': self.clients[1].id, 'status': Visit.Status.ATTENDED}]},
+            format='json',
+        )
+
+        self.assertEqual(own.status_code, 200)
+        self.assertIn(forbidden.status_code, (403, 404))
+
+    def test_manager_and_admin_can_mark_groups(self):
+        manager_response = self.post_attendance(self.clients[0], Visit.Status.MISSED, user=self.manager)
+        admin_response = self.post_attendance(self.clients[1], Visit.Status.ATTENDED, user=self.admin)
+
+        self.assertEqual(manager_response.status_code, 200)
+        self.assertEqual(admin_response.status_code, 200)
+
+    def test_teacher_manager_works_as_manager(self):
+        self.lesson.teacher = self.other_teacher
+        self.lesson.save(update_fields=('teacher', 'updated_at'))
+
+        response = self.post_attendance(self.clients[0], Visit.Status.MISSED, user=self.teacher_manager)
+
+        self.assertEqual(response.status_code, 200)
+
+
 class UserRegistrationAndEmployeeTests(APITestCase):
     def admin_payload(self, username='first-admin'):
         return {

@@ -565,12 +565,15 @@ class LessonViewSet(EducationBaseViewSet):
                     'client': client.id,
                     'client_name': str(client),
                     'client_phone': client.phone,
+                    'client_parent_name': client.parent_name,
                     'subscription': subscription.id if subscription else None,
                     'subscription_title': subscription.title if subscription else '',
+                    'remaining_lessons': subscription.remaining_visits if subscription else None,
                     'lessons_left': subscription.remaining_visits if subscription else None,
                     'visit': VisitSerializer(visit).data if visit else None,
-                    'status': visit.status if visit else '',
+                    'status': visit.status if visit else None,
                     'comment': visit.notes if visit else '',
+                    'lesson_deducted': visit.lesson_deducted if visit else False,
                 }
             )
         return {'lesson': LessonSerializer(lesson).data, 'students': students}
@@ -592,24 +595,36 @@ class LessonViewSet(EducationBaseViewSet):
             for item in items:
                 client_id = item.get('client')
                 status_value = item.get('status') or Visit.Status.PLANNED
+                if status_value not in Visit.Status.values:
+                    return Response({'detail': f'Invalid status: {status_value}'}, status=status.HTTP_400_BAD_REQUEST)
                 subscription_id = item.get('subscription') or None
+                if not subscription_id:
+                    subscription = (
+                        Subscription.objects.filter(client_id=client_id, status=Subscription.Status.ACTIVE)
+                        .order_by('-start_date')
+                        .first()
+                    )
+                    subscription_id = subscription.id if subscription else None
                 notes = item.get('comment') or item.get('notes') or ''
                 previous = Visit.objects.select_related('subscription').filter(lesson=lesson, client_id=client_id).first()
 
                 if previous:
                     old_subscription = previous.subscription
                     old_lesson_deducted = previous.lesson_deducted
+                    old_subscription_id = previous.subscription_id
                     previous.subscription_id = subscription_id
                     previous.teacher = lesson.teacher
                     previous.visited_at = _lesson_visited_at(lesson)
                     previous.status = status_value
                     previous.notes = notes
                     previous.save()
-                    subscription_changed = old_subscription and old_subscription.id != previous.subscription_id
+                    subscription_changed = old_subscription_id != previous.subscription_id
                     if old_lesson_deducted and (previous.status != Visit.Status.ATTENDED or subscription_changed):
                         _restore_subscription_lesson(old_subscription)
                         previous.lesson_deducted = False
                         previous.save(update_fields=('lesson_deducted', 'updated_at'))
+                    if subscription_changed:
+                        previous.refresh_from_db()
                     _deduct_subscription_lesson(previous)
                 else:
                     visit = Visit.objects.create(

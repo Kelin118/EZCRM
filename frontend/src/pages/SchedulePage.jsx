@@ -1,5 +1,5 @@
 import { CalendarDays, CheckSquare, XCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -52,9 +52,11 @@ const emptyLesson = {
 };
 
 export default function SchedulePage() {
+  const [searchParams] = useSearchParams();
+  const initialGroup = searchParams.get('group') || '';
   const [tab, setTab] = useState('slots');
-  const slotCrud = useCrudResource('schedule-slots/', { group: '', teacher: '', weekday: '', room: '', is_active: '' });
-  const lessonCrud = useCrudResource('lessons/', { date_from: '', date_to: '', group: '', teacher: '', status: '' });
+  const slotCrud = useCrudResource('schedule-slots/', { group: initialGroup, teacher: '', weekday: '', room: '', is_active: '' });
+  const lessonCrud = useCrudResource('lessons/', { date_from: '', date_to: '', group: initialGroup, teacher: '', status: '' });
   const { groupOptions } = useStudyGroupOptions();
   const { subjectOptions } = useSubjectOptions();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -196,8 +198,8 @@ export default function SchedulePage() {
                 header: '',
                 render: (row) => (
                   <div className="flex justify-end gap-2">
-                    <Link to={`/lessons/${row.id}/attendance`}>
-                      <Button variant="secondary"><CheckSquare size={16} />РћС‚РјРµС‚РёС‚СЊ</Button>
+                    <Link to={`/visits?lesson=${row.id}`}>
+                      <Button variant="secondary"><CheckSquare size={16} />Отметить посещения</Button>
                     </Link>
                     {canEdit && <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={() => cancelLesson(row)} aria-label="РћС‚РјРµРЅРёС‚СЊ"><XCircle size={16} /></Button>}
                     <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { lessonCrud.setEditing(row); lessonCrud.setModalOpen(true); }} onDelete={() => lessonCrud.remove(row.id)} />
@@ -226,3 +228,4 @@ export default function SchedulePage() {
     </>
   );
 }
+

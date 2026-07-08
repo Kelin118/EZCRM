@@ -1,5 +1,6 @@
-import { Users } from 'lucide-react';
+import { CalendarDays, ClipboardCheck, Users } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
@@ -208,6 +209,16 @@ export default function GroupsPage() {
             header: '',
             render: (row) => (
               <div className="flex justify-end gap-2">
+                <Link to={`/schedule?group=${row.id}`}>
+                  <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" aria-label="Расписание">
+                    <CalendarDays size={16} />
+                  </Button>
+                </Link>
+                <Link to={`/visits?group=${row.id}`}>
+                  <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" aria-label="Посещения">
+                    <ClipboardCheck size={16} />
+                  </Button>
+                </Link>
                 <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={() => setSelectedGroup(row)} aria-label="Ученики">
                   <Users size={16} />
                 </Button>

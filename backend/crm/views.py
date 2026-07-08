@@ -555,12 +555,12 @@ class LessonViewSet(EducationBaseViewSet):
             status=GroupMembership.Status.ACTIVE,
         ).order_by('client__first_name', 'client__last_name')
         visits = {visit.client_id: visit for visit in lesson.visits.select_related('subscription', 'client')}
-        students = []
+        items = []
         for membership in memberships:
             client = membership.client
             subscription = Subscription.objects.filter(client=client, status=Subscription.Status.ACTIVE).order_by('-start_date').first()
             visit = visits.get(client.id)
-            students.append(
+            items.append(
                 {
                     'client': client.id,
                     'client_name': str(client),
@@ -576,7 +576,7 @@ class LessonViewSet(EducationBaseViewSet):
                     'lesson_deducted': visit.lesson_deducted if visit else False,
                 }
             )
-        return {'lesson': LessonSerializer(lesson).data, 'students': students}
+        return {'lesson': LessonSerializer(lesson).data, 'items': items, 'students': items}
 
     @action(detail=True, methods=['get', 'post'], url_path='attendance')
     def attendance(self, request, pk=None):
@@ -594,6 +594,15 @@ class LessonViewSet(EducationBaseViewSet):
         with transaction.atomic():
             for item in items:
                 client_id = item.get('client')
+                if not GroupMembership.objects.filter(
+                    group=lesson.group,
+                    client_id=client_id,
+                    status=GroupMembership.Status.ACTIVE,
+                ).exists():
+                    return Response(
+                        {'detail': 'Ученик не состоит в группе выбранного урока.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 status_value = item.get('status') or Visit.Status.PLANNED
                 if status_value not in Visit.Status.values:
                     return Response({'detail': f'Invalid status: {status_value}'}, status=status.HTTP_400_BAD_REQUEST)

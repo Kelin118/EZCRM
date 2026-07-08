@@ -402,6 +402,106 @@ class LessonAttendanceJournalTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_group_create_with_schedule_creates_schedule_slots(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/study-groups/',
+            {
+                'name': 'Tue Thu group',
+                'teacher': self.teacher.id,
+                'schedule_days': ['tuesday', 'thursday'],
+                'start_time': '12:30:00',
+                'end_time': '14:00:00',
+                'status': StudyGroup.Status.ACTIVE,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        group = StudyGroup.objects.get(id=response.data['id'])
+        self.assertEqual(ScheduleSlot.objects.filter(group=group, is_active=True).count(), 2)
+
+    def test_schedule_slot_generation_creates_lesson_with_group_links(self):
+        slot = ScheduleSlot.objects.create(
+            group=self.group,
+            teacher=self.teacher,
+            subject=self.group.subject,
+            room=self.group.room,
+            weekday=date.today().weekday(),
+            start_time=time(12, 30),
+            end_time=time(14, 0),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/schedule-slots/{slot.id}/generate-lessons/',
+            {'date_from': date.today().isoformat(), 'date_to': date.today().isoformat()},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        lesson = Lesson.objects.get(schedule_slot=slot)
+        self.assertEqual(lesson.group_id, self.group.id)
+        self.assertEqual(lesson.teacher_id, slot.teacher_id)
+        self.assertEqual(lesson.start_time, slot.start_time)
+        self.assertEqual(lesson.end_time, slot.end_time)
+
+    def test_lessons_group_filter_returns_group_lessons(self):
+        other_group = StudyGroup.objects.create(name='Other lessons', teacher=self.teacher)
+        Lesson.objects.create(group=other_group, teacher=self.teacher, lesson_date=date.today(), start_time=time(9, 0), end_time=time(10, 0))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(
+            '/api/lessons/',
+            {'date_from': date.today().isoformat(), 'date_to': date.today().isoformat(), 'group': self.group.id},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item['id'] for item in response.data}
+        self.assertIn(self.lesson.id, ids)
+        self.assertFalse(Lesson.objects.filter(id__in=ids, group=other_group).exists())
+
+    def test_attendance_returns_students_only_from_lesson_group(self):
+        other_group = StudyGroup.objects.create(name='Other group', teacher=self.teacher)
+        other_client = Client.objects.create(first_name='Other', last_name='Student')
+        GroupMembership.objects.create(group=other_group, client=other_client, status=GroupMembership.Status.ACTIVE)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(f'/api/lessons/{self.lesson.id}/attendance/')
+
+        self.assertEqual(response.status_code, 200)
+        client_ids = {item['client'] for item in response.data['items']}
+        self.assertIn(self.clients[0].id, client_ids)
+        self.assertNotIn(other_client.id, client_ids)
+
+    def test_post_attendance_rejects_student_outside_lesson_group(self):
+        other_client = Client.objects.create(first_name='Outside', last_name='Student')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/lessons/{self.lesson.id}/attendance/',
+            {'items': [{'client': other_client.id, 'status': Visit.Status.ATTENDED}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Visit.objects.filter(lesson=self.lesson, client=other_client).exists())
+
+    def test_new_active_member_appears_and_inactive_member_is_hidden(self):
+        new_client = Client.objects.create(first_name='New', last_name='Member')
+        inactive_client = Client.objects.create(first_name='Inactive', last_name='Member')
+        GroupMembership.objects.create(group=self.group, client=new_client, status=GroupMembership.Status.ACTIVE)
+        GroupMembership.objects.create(group=self.group, client=inactive_client, status=GroupMembership.Status.LEFT)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get(f'/api/lessons/{self.lesson.id}/attendance/')
+
+        self.assertEqual(response.status_code, 200)
+        client_ids = {item['client'] for item in response.data['items']}
+        self.assertIn(new_client.id, client_ids)
+        self.assertNotIn(inactive_client.id, client_ids)
+
 
 class UserRegistrationAndEmployeeTests(APITestCase):
     def admin_payload(self, username='first-admin'):

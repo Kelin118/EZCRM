@@ -1,6 +1,6 @@
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserX } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser } from '../auth.js';
@@ -101,6 +101,9 @@ function StatusButton({ active, variant, icon: Icon, children, onClick }) {
 }
 
 export default function VisitsPage() {
+  const [searchParams] = useSearchParams();
+  const initialGroup = searchParams.get('group') || '';
+  const initialLesson = searchParams.get('lesson') || '';
   const user = getStoredUser();
   const canEdit = canManageVisits(user);
   const canDelete = canDeleteDangerous(user);
@@ -115,6 +118,7 @@ export default function VisitsPage() {
   const [savingAttendance, setSavingAttendance] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [lessonFilters, setLessonFilters] = useState({ group: initialGroup, teacher: '' });
   const [manualOpen, setManualOpen] = useState(false);
   const [manualForm, setManualForm] = useState(emptyManualVisit);
 
@@ -122,6 +126,7 @@ export default function VisitsPage() {
   const { clientOptions } = useClientOptions();
   const { groupOptions } = useStudyGroupOptions();
   const { employeeOptions } = useEmployeeOptions(['teacher', 'admin']);
+  const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
   const selectedClient = manualForm.client || '';
   const { items: subscriptions, loading: loadingSubscriptions } = useLookup('subscriptions/', { client: selectedClient }, { enabled: Boolean(selectedClient) });
   const subscriptionOptions = useMemo(
@@ -146,7 +151,11 @@ export default function VisitsPage() {
   const loadLessons = async () => {
     setLessonsLoading(true);
     try {
-      const { data } = await api.get('lessons/', { params: { date_from: selectedDate, date_to: selectedDate } });
+      const params = { date_from: selectedDate, date_to: selectedDate, ...lessonFilters };
+      Object.keys(params).forEach((key) => {
+        if (!params[key]) delete params[key];
+      });
+      const { data } = await api.get('lessons/', { params });
       const items = (Array.isArray(data) ? data : data.results || []).sort((left, right) => String(left.start_time || '').localeCompare(String(right.start_time || '')));
       setLessons(items);
       if (selectedLesson && !items.some((lesson) => lesson.id === selectedLesson.id)) {
@@ -167,7 +176,7 @@ export default function VisitsPage() {
     setAttendanceLoading(true);
     try {
       const { data } = await api.get(`lessons/${lesson.id}/attendance/`);
-      const rows = normalizeRows(data.students || []);
+      const rows = normalizeRows(data.items || data.students || []);
       setSelectedLesson(data.lesson || lesson);
       setAttendanceRows(rows);
       setInitialRows(rows);
@@ -180,7 +189,18 @@ export default function VisitsPage() {
 
   useEffect(() => {
     if (mode === 'journal') loadLessons();
-  }, [selectedDate, mode]);
+  }, [selectedDate, mode, JSON.stringify(lessonFilters)]);
+
+  useEffect(() => {
+    if (!initialLesson) return;
+    api.get(`lessons/${initialLesson}/`)
+      .then(({ data }) => {
+        setSelectedDate(data.lesson_date);
+        if (data.group) setLessonFilters((current) => ({ ...current, group: String(data.group) }));
+        return loadAttendance(data);
+      })
+      .catch(showApiError);
+  }, [initialLesson]);
 
   const setRow = (clientId, patch) => {
     setAttendanceRows((current) => current.map((row) => (row.client === clientId ? { ...row, ...patch } : row)));
@@ -270,9 +290,11 @@ export default function VisitsPage() {
 
       {mode === 'journal' ? (
         <>
-          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card lg:grid-cols-[1fr_220px_180px_auto] lg:items-end">
+          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card lg:grid-cols-[1fr_180px_220px_220px_180px_auto] lg:items-end">
             <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
             <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
+            <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
+            <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
             <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
             <Button variant="secondary" onClick={openManualCreate} disabled={!canEdit}>
               <Plus size={16} />
@@ -312,7 +334,7 @@ export default function VisitsPage() {
                     {lessonsLoading ? (
                       <tr><td colSpan={3} className="px-3 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
                     ) : lessons.length === 0 ? (
-                      <tr><td colSpan={3} className="px-3 py-8 text-center font-semibold text-slate-500">На эту дату занятий нет.</td></tr>
+                      <tr><td colSpan={3} className="px-3 py-8 text-center font-semibold text-slate-500">На эту дату занятий нет. Создайте расписание или сгенерируйте уроки.</td></tr>
                     ) : (
                       lessons.map((lesson, index) => (
                         <tr key={lesson.id}>

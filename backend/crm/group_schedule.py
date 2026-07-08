@@ -101,7 +101,7 @@ def subscription_planned_lessons_left(subscription):
 
 def sync_group_schedule_slots(group, old_schedule=None):
     days = normalize_schedule_days(group.schedule_days)
-    if not days or not group.start_time or not group.end_time or not group.teacher_id or not group.subject_id or not group.room_id:
+    if not days or not group.start_time or not group.end_time:
         return
 
     desired_weekdays = {DAY_TO_WEEKDAY[day] for day in days}

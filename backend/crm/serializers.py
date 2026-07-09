@@ -259,10 +259,13 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     remaining_lessons = serializers.SerializerMethodField()
     planned_lessons_left = serializers.SerializerMethodField()
     expected_end_date = serializers.SerializerMethodField()
+    service_name = serializers.CharField(source='service.name', read_only=True, default='')
+    service_price = serializers.DecimalField(source='service.price', max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = Subscription
         fields = '__all__'
+        extra_kwargs = {'title': {'required': False}}
 
     def get_client_name(self, obj):
         return str(obj.client)
@@ -281,6 +284,24 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_expected_end_date(self, obj):
         return subscription_expected_end_date(obj)
+
+    def validate_service(self, service):
+        if service and (service.category != CatalogItem.Category.SERVICE or not service.is_active):
+            raise serializers.ValidationError('Выберите активную услугу.')
+        return service
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        service = attrs.get('service')
+        if service:
+            attrs['title'] = service.name
+            if 'price' not in self.initial_data:
+                attrs['price'] = service.price
+            if service.lessons_count and not self.initial_data.get('total_visits'):
+                attrs['total_visits'] = service.lessons_count
+                if self.instance is None:
+                    attrs['remaining_visits'] = service.lessons_count
+        return attrs
 
 
 class VisitSerializer(BranchNameMixin, serializers.ModelSerializer):

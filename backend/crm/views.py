@@ -1215,10 +1215,21 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         if trial.subscription_id:
             return Response({'detail': 'Абонемент по этому пробнику уже создан'}, status=status.HTTP_400_BAD_REQUEST)
 
-        title = request.data.get('subscription_type') or request.data.get('title') or ''
+        service = None
+        service_id = request.data.get('service')
+        if service_id:
+            service = CatalogItem.objects.filter(
+                pk=service_id,
+                category=CatalogItem.Category.SERVICE,
+                is_active=True,
+            ).first()
+            if not service:
+                return Response({'detail': 'Выберите активную услугу.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        title = (service.name if service else None) or request.data.get('subscription_type') or request.data.get('title') or ''
         start_date = parse_date(request.data.get('start_date') or '')
-        total_visits = int(request.data.get('total_visits') or 0)
-        price = Decimal(str(request.data.get('price') or 0))
+        total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
+        price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
         payment_amount = Decimal(str(request.data.get('payment_amount') or 0))
         payment_method = request.data.get('payment_method') or ''
         comment = request.data.get('comment') or 'Оплата абонемента после пробного'
@@ -1233,6 +1244,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             subscription = Subscription.objects.create(
                 branch=trial.branch or trial.client.branch,
+                service=service,
                 client=trial.client,
                 title=title,
                 start_date=start_date,
@@ -1491,8 +1503,13 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
         category = self.request.query_params.get('category')
+        is_active = self.request.query_params.get('is_active')
         if category:
             queryset = queryset.filter(category=category)
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
         return queryset.order_by('category', 'sort_order', 'name')
 
     def _catalog_changes(self, instance):
@@ -1501,6 +1518,7 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
             'price': str(instance.price),
             'category': instance.category,
             'is_active': instance.is_active,
+            'lessons_count': instance.lessons_count,
         }
 
     def perform_create(self, serializer):

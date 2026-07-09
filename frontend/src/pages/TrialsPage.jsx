@@ -6,7 +6,7 @@ import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
+import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
 const trialStages = [
@@ -18,7 +18,7 @@ const trialStages = [
 ];
 
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
-const emptyConvertForm = { subscription_type: 'AB-8', start_date: new Date().toISOString().slice(0, 10), total_visits: 8, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
+const emptyConvertForm = { service: '', subscription_type: '', start_date: new Date().toISOString().slice(0, 10), total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -185,6 +185,7 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 export default function TrialsPage() {
   const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions } = useBranches();
+  const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -258,9 +259,15 @@ export default function TrialsPage() {
 
   const updateConvertForm = (patch) => setConvertForm((current) => ({ ...current, ...patch }));
 
-  const setSubscriptionType = (value) => {
-    const visits = value === 'AB-4' ? 4 : value === 'AB-8' ? 8 : convertForm.total_visits;
-    updateConvertForm({ subscription_type: value, total_visits: visits });
+  const setSubscriptionService = (value) => {
+    const service = services.find((item) => String(item.id) === String(value));
+    updateConvertForm({
+      service: value,
+      subscription_type: service?.name || '',
+      total_visits: service?.lessons_count || 0,
+      price: Number(service?.price || 0),
+      payment_amount: Number(service?.price || 0),
+    });
   };
 
   const convertToSubscription = async () => {
@@ -332,13 +339,12 @@ export default function TrialsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Клиент" value={convertTrial?.client_name || ''} onChange={() => {}} />
           <SelectField
-            label="Вид абонемента"
-            value={convertForm.subscription_type}
-            onChange={setSubscriptionType}
+            label="Услуга"
+            value={convertForm.service}
+            onChange={setSubscriptionService}
             options={[
-              { value: 'AB-4', label: 'AB-4' },
-              { value: 'AB-8', label: 'AB-8' },
-              { value: 'Индивидуальный', label: 'Индивидуальный / другой' },
+              { value: '', label: services.length ? 'Выберите услугу' : 'Нет добавленных услуг' },
+              ...services.map((service) => ({ value: String(service.id), label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸` })),
             ]}
           />
           <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => updateConvertForm({ start_date: event.target.value })} />

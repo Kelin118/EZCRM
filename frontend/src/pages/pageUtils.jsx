@@ -212,7 +212,7 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
                 key={field.name}
                 label={field.label}
                 value={form[field.name] ?? ''}
-                onChange={(value) => setForm({ ...form, [field.name]: value })}
+                onChange={(value) => field.onChange ? field.onChange(value, form, setForm) : setForm({ ...form, [field.name]: value })}
                 options={field.options}
               />
             );

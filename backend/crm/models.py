@@ -57,6 +57,14 @@ class Subscription(TimeStampedModel):
         CANCELLED = 'cancelled', 'Cancelled'
 
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='subscriptions')
+    service = models.ForeignKey(
+        'CatalogItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='subscriptions',
+        limit_choices_to={'category': 'service'},
+    )
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='subscriptions')
     title = models.CharField(max_length=120)
     start_date = models.DateField()
@@ -516,6 +524,7 @@ class CatalogItem(TimeStampedModel):
 
     name = models.CharField(max_length=150)
     price = models.DecimalField(max_digits=10, decimal_places=2)
+    lessons_count = models.PositiveIntegerField(null=True, blank=True)
     category = models.CharField(max_length=30, choices=Category.choices)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)

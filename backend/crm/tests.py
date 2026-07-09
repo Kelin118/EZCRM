@@ -257,6 +257,70 @@ class CatalogItemApiTests(APITestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['category'], 'service')
 
+    def test_active_filter_excludes_disabled_services(self):
+        active = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', is_active=True)
+        CatalogItem.objects.create(name='Old', price='1000.00', category='service', is_active=False)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/catalog-items/', {'category': 'service', 'is_active': 'true'})
+
+        self.assertEqual([item['id'] for item in response.data], [active.id])
+
+    def test_subscription_from_service_copies_snapshot(self):
+        service = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category='service', lessons_count=8,
+        )
+        student = Client.objects.create(first_name='Service', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'start_date': date.today().isoformat()},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        service.refresh_from_db()
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        self.assertEqual(subscription.service, service)
+        self.assertEqual(subscription.title, service.name)
+        self.assertEqual(subscription.price, service.price)
+        self.assertEqual(subscription.total_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 8)
+        service.price = 50000
+        service.save(update_fields=('price', 'updated_at'))
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.price, 45000)
+
+    def test_product_cannot_be_used_as_subscription_service(self):
+        product = CatalogItem.objects.create(name='Book', price='3500.00', category='product')
+        student = Client.objects.create(first_name='Product', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': product.id, 'start_date': date.today().isoformat()},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_legacy_subscription_without_service_still_works(self):
+        student = Client.objects.create(first_name='Legacy', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': student.id, 'title': 'Legacy AB',
+                'start_date': date.today().isoformat(), 'total_visits': 4,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(Subscription.objects.get(pk=response.data['id']).service)
+
     def test_manager_and_accountant_cannot_edit(self):
         item = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service')
 
@@ -1410,6 +1474,31 @@ class TrialConversionTests(APITestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Subscription.objects.filter(client=self.client_obj).count(), 1)
+
+    def test_conversion_accepts_service_and_copies_catalog_values(self):
+        service = CatalogItem.objects.create(
+            name='AB-4', price='24000.00', category=CatalogItem.Category.SERVICE, lessons_count=4,
+        )
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+        payload = {
+            'service': service.id,
+            'start_date': date.today().isoformat(),
+            'payment_amount': '20000',
+            'payment_method': 'cash',
+        }
+
+        response = self.client.post(f'/api/trials/{trial.id}/convert-to-subscription/', payload, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        service.refresh_from_db()
+        subscription = Subscription.objects.get(pk=response.data['subscription']['id'])
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
+        self.assertEqual(subscription.service, service)
+        self.assertEqual(subscription.title, 'AB-4')
+        self.assertEqual(subscription.price, service.price)
+        self.assertEqual(subscription.total_visits, 4)
+        self.assertEqual(transaction.amount, 20000)
 
     def test_teacher_without_manager_cannot_convert(self):
         trial = self.create_trial()

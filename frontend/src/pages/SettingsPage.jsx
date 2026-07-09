@@ -23,6 +23,7 @@ const empty = {
 const emptyCatalogForm = {
   name: '',
   price: '',
+  lessons_count: '',
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
@@ -135,7 +136,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name || '', price: item.price || '', is_active: item.is_active }
+        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', is_active: item.is_active }
         : { ...emptyCatalogForm },
     );
   };
@@ -171,6 +172,7 @@ export default function SettingsPage() {
       price,
       category: catalogModal.category,
       is_active: catalogForm.is_active,
+      lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
     };
 
     try {
@@ -371,6 +373,9 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
           <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
+          {catalogModal.category === 'service' && (
+            <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
+          )}
           {catalogModal.item && (
             <label className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700 md:col-span-2">
               <input

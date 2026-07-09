@@ -502,6 +502,80 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertIn(new_client.id, client_ids)
         self.assertNotIn(inactive_client.id, client_ids)
 
+    def add_student(self, client, user=None, status_value=Visit.Status.ATTENDED):
+        self.client.force_authenticate(user or self.admin)
+        return self.client.post(
+            f'/api/lessons/{self.lesson.id}/add-student/',
+            {'client': client.id, 'status': status_value, 'comment': 'Added from journal'},
+            format='json',
+        )
+
+    def test_add_student_creates_membership_visit_and_automatic_links(self):
+        client = Client.objects.create(first_name='Added', last_name='Student')
+        subscription = Subscription.objects.create(
+            client=client, title='Auto subscription', start_date=date.today(),
+            total_visits=4, remaining_visits=4, status=Subscription.Status.ACTIVE,
+        )
+
+        response = self.add_student(client)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(GroupMembership.objects.filter(group=self.group, client=client, status='active').exists())
+        visit = Visit.objects.get(lesson=self.lesson, client=client)
+        self.assertEqual(visit.teacher, self.lesson.teacher)
+        self.assertEqual(visit.visited_at.date(), self.lesson.lesson_date)
+        self.assertEqual(visit.subscription, subscription)
+        self.assertEqual(subscription.__class__.objects.get(pk=subscription.pk).remaining_visits, 3)
+
+    def test_add_student_without_subscription_does_not_fail(self):
+        client = Client.objects.create(first_name='No', last_name='Subscription')
+
+        response = self.add_student(client)
+
+        self.assertEqual(response.status_code, 201)
+        visit = Visit.objects.get(lesson=self.lesson, client=client)
+        self.assertIsNone(visit.subscription)
+        self.assertFalse(visit.lesson_deducted)
+
+    def test_add_student_reuses_membership_and_visit(self):
+        client = self.clients[0]
+
+        first = self.add_student(client)
+        second = self.add_student(client, status_value=Visit.Status.SICK)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client, status='active').count(), 1)
+        self.assertEqual(Visit.objects.filter(lesson=self.lesson, client=client).count(), 1)
+        self.assertTrue(second.data['already_in_group'])
+        self.assertEqual(second.data['item']['status'], Visit.Status.SICK)
+
+    def test_add_student_reactivates_inactive_membership(self):
+        client = Client.objects.create(first_name='Returning', last_name='Student')
+        membership = GroupMembership.objects.create(group=self.group, client=client, status=GroupMembership.Status.LEFT)
+
+        response = self.add_student(client)
+
+        self.assertEqual(response.status_code, 201)
+        membership.refresh_from_db()
+        self.assertEqual(membership.status, GroupMembership.Status.ACTIVE)
+        self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client).count(), 1)
+
+    def test_plain_teacher_cannot_add_student(self):
+        client = Client.objects.create(first_name='Forbidden', last_name='Student')
+
+        response = self.add_student(client, user=self.teacher)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(GroupMembership.objects.filter(group=self.group, client=client).exists())
+
+    def test_manager_admin_and_teacher_manager_can_add_student(self):
+        for index, user in enumerate((self.manager, self.admin, self.teacher_manager)):
+            client = Client.objects.create(first_name='Allowed', last_name=str(index))
+            response = self.add_student(client, user=user, status_value=Visit.Status.MISSED)
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(GroupMembership.objects.filter(group=self.group, client=client, status='active').exists())
+
     def next_weekday(self, weekday):
         current = date.today()
         days_ahead = (weekday - current.weekday()) % 7

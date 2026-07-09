@@ -715,6 +715,97 @@ class LessonViewSet(EducationBaseViewSet):
         lesson.refresh_from_db()
         return Response(self._attendance_payload(lesson))
 
+    @action(detail=True, methods=['post'], url_path='add-student')
+    def add_student(self, request, pk=None):
+        lesson = self.get_object()
+        if not (is_admin(request.user) or has_role(request.user, MANAGER)):
+            return Response({'detail': 'Добавлять учеников в группу может только администратор или менеджер.'}, status=status.HTTP_403_FORBIDDEN)
+        if not lesson.group_id:
+            return Response({'detail': 'У занятия не указана группа.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        client_id = request.data.get('client')
+        try:
+            client = Client.objects.get(pk=client_id)
+        except (Client.DoesNotExist, TypeError, ValueError):
+            return Response({'detail': 'Выберите ученика.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        status_value = request.data.get('status') or Visit.Status.PLANNED
+        allowed_statuses = {Visit.Status.ATTENDED, Visit.Status.SICK, Visit.Status.MISSED, Visit.Status.PLANNED}
+        if status_value not in allowed_statuses:
+            return Response({'detail': 'Недопустимый статус посещения.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        notes = request.data.get('comment') or request.data.get('notes') or ''
+        with transaction.atomic():
+            memberships = GroupMembership.objects.select_for_update().filter(group=lesson.group, client=client)
+            active_membership = memberships.filter(status=GroupMembership.Status.ACTIVE).first()
+            membership_created = False
+            if not active_membership:
+                inactive_membership = memberships.order_by('-created_at').first()
+                if inactive_membership:
+                    inactive_membership.status = GroupMembership.Status.ACTIVE
+                    inactive_membership.left_at = None
+                    inactive_membership.save(update_fields=('status', 'left_at', 'updated_at'))
+                else:
+                    GroupMembership.objects.create(
+                        group=lesson.group,
+                        client=client,
+                        status=GroupMembership.Status.ACTIVE,
+                    )
+                    membership_created = True
+
+            subscription = (
+                Subscription.objects.filter(client=client, status=Subscription.Status.ACTIVE)
+                .order_by('-start_date', '-created_at')
+                .first()
+            )
+            visit = Visit.objects.select_for_update().filter(lesson=lesson, client=client).first()
+            if visit:
+                old_subscription = visit.subscription
+                old_subscription_id = visit.subscription_id
+                was_deducted = visit.lesson_deducted
+                visit.subscription = subscription
+                visit.teacher = lesson.teacher
+                visit.visited_at = _lesson_visited_at(lesson)
+                visit.status = status_value
+                visit.notes = notes
+                visit.save()
+                subscription_changed = old_subscription_id != visit.subscription_id
+                if was_deducted and (status_value != Visit.Status.ATTENDED or subscription_changed):
+                    _restore_subscription_lesson(old_subscription)
+                    visit.lesson_deducted = False
+                    visit.save(update_fields=('lesson_deducted', 'updated_at'))
+                _deduct_subscription_lesson(visit)
+                visit_created = False
+            else:
+                visit = Visit.objects.create(
+                    lesson=lesson,
+                    client=client,
+                    subscription=subscription,
+                    teacher=lesson.teacher,
+                    visited_at=_lesson_visited_at(lesson),
+                    status=status_value,
+                    notes=notes,
+                )
+                _deduct_subscription_lesson(visit)
+                visit_created = True
+
+            if status_value != Visit.Status.PLANNED and lesson.status != Lesson.Status.COMPLETED:
+                lesson.status = Lesson.Status.COMPLETED
+                lesson.save(update_fields=('status', 'updated_at'))
+
+        payload = self._attendance_payload(lesson)
+        row = next(item for item in payload['items'] if item['client'] == client.id)
+        return Response(
+            {
+                'item': row,
+                'membership_created': membership_created,
+                'visit_created': visit_created,
+                'already_in_group': active_membership is not None,
+                'message': 'Ученик уже есть в этой группе' if active_membership else '',
+            },
+            status=status.HTTP_201_CREATED if visit_created else status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=['patch'], url_path='cancel')
     def cancel(self, request, pk=None):
         lesson = self.get_object()

@@ -221,6 +221,7 @@ class EducationPermission(RolePermission):
             'destroy',
             'generate_lessons',
             'attendance',
+            'add_student',
             'cancel',
             'ensure_lesson',
         },

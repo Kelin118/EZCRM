@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
-import { canDeleteDangerous, canManageVisits, getStoredUser } from '../auth.js';
+import { canDeleteDangerous, canManageVisits, getStoredUser, hasAnyRole, ROLES } from '../auth.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
@@ -17,6 +17,12 @@ const emptyManualVisit = {
   visited_at: '',
   status: 'attended',
   notes: '',
+};
+
+const emptyStudentVisit = {
+  client: '',
+  status: 'attended',
+  comment: '',
 };
 
 export const visitStatusOptions = [
@@ -106,6 +112,7 @@ export default function VisitsPage() {
   const initialLesson = searchParams.get('lesson') || '';
   const user = getStoredUser();
   const canEdit = canManageVisits(user);
+  const canAddStudent = hasAnyRole(user, [ROLES.ADMIN, ROLES.MANAGER]);
   const canDelete = canDeleteDangerous(user);
   const [mode, setMode] = useState('journal');
   const [selectedDate, setSelectedDate] = useState(isoDate(new Date()));
@@ -121,6 +128,9 @@ export default function VisitsPage() {
   const [lessonFilters, setLessonFilters] = useState({ group: initialGroup, teacher: '' });
   const [manualOpen, setManualOpen] = useState(false);
   const [manualForm, setManualForm] = useState(emptyManualVisit);
+  const [studentModalOpen, setStudentModalOpen] = useState(false);
+  const [studentForm, setStudentForm] = useState(emptyStudentVisit);
+  const [addingStudent, setAddingStudent] = useState(false);
 
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
@@ -171,15 +181,20 @@ export default function VisitsPage() {
     }
   };
 
-  const loadAttendance = async (lesson) => {
+  const loadAttendance = async (lesson, preserveChanges = false) => {
     if (!lesson?.id) return;
     setAttendanceLoading(true);
     try {
       const { data } = await api.get(`lessons/${lesson.id}/attendance/`);
-      const rows = normalizeRows(data.items || data.students || []);
+      const serverRows = normalizeRows(data.items || data.students || []);
+      let rows = serverRows;
+      if (preserveChanges) {
+        const changedByClient = new Map(dirtyRows.map((row) => [row.client, row]));
+        rows = rows.map((row) => changedByClient.has(row.client) ? changedByClient.get(row.client) : row);
+      }
       setSelectedLesson(data.lesson || lesson);
       setAttendanceRows(rows);
-      setInitialRows(rows);
+      setInitialRows(serverRows);
     } catch (error) {
       showApiError(error);
     } finally {
@@ -292,6 +307,32 @@ export default function VisitsPage() {
     }
   };
 
+  const openStudentModal = () => {
+    if (!selectedLesson || !canAddStudent) return;
+    setStudentForm(emptyStudentVisit);
+    setStudentModalOpen(true);
+  };
+
+  const addStudentToLesson = async () => {
+    if (!selectedLesson || !studentForm.client) return;
+    setAddingStudent(true);
+    try {
+      const { data } = await api.post(`lessons/${selectedLesson.id}/add-student/`, {
+        client: studentForm.client,
+        status: studentForm.status,
+        comment: studentForm.comment || '',
+      });
+      setStudentModalOpen(false);
+      await loadAttendance(selectedLesson, true);
+      dispatchToast(data.message || 'Ученик добавлен в занятие.');
+      await historyCrud.reload();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setAddingStudent(false);
+    }
+  };
+
   return (
     <>
       <PageHeader title="Журнал учёта посещений" actionLabel={mode === 'classic' && canEdit ? '+ Добавить' : undefined} onAction={mode === 'classic' && canEdit ? openManualCreate : undefined}>
@@ -306,20 +347,13 @@ export default function VisitsPage() {
 
       {mode === 'journal' ? (
         <>
-          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card lg:grid-cols-[1fr_180px_220px_220px_180px_auto] lg:items-end">
-            <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
-            <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
-            <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
-            <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
-            <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-            <Button variant="secondary" onClick={openManualCreate} disabled={!canEdit}>
-              <Plus size={16} />
-              Добавить
-            </Button>
-          </div>
-
           <div className="grid max-w-full gap-6 xl:grid-cols-[360px_1fr]">
             <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+              <div className="mb-4 grid gap-3">
+                <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+                <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
+                <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
+              </div>
               <div className="mb-4 flex items-center justify-between gap-2">
                 <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, -1))} aria-label="Предыдущий день">
                   <ChevronLeft size={16} />
@@ -395,6 +429,12 @@ export default function VisitsPage() {
                   onSetAll={setAllStatuses}
                   onReset={resetChanges}
                   onSave={saveAttendance}
+                  onAddStudent={openStudentModal}
+                  canAddStudent={canAddStudent}
+                  studentSearch={studentSearch}
+                  onStudentSearch={setStudentSearch}
+                  statusFilter={statusFilter}
+                  onStatusFilter={setStatusFilter}
                 />
               )}
             </section>
@@ -424,11 +464,24 @@ export default function VisitsPage() {
         loadingSubscriptions={loadingSubscriptions}
         selectedClient={selectedClient}
       />
+      <AddStudentModal
+        open={studentModalOpen}
+        form={studentForm}
+        setForm={setStudentForm}
+        onClose={() => setStudentModalOpen(false)}
+        onSave={addStudentToLesson}
+        clientOptions={clientOptions}
+        lesson={selectedLesson}
+        saving={addingStudent}
+      />
     </>
   );
 }
 
-function AttendanceJournal({ lesson, rows, allRows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave }) {
+function AttendanceJournal({
+  lesson, rows, allRows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave,
+  onAddStudent, canAddStudent, studentSearch, onStudentSearch, statusFilter, onStatusFilter,
+}) {
   const header = [lesson.group_name, lesson.subject_name, timeRange(lesson), lesson.teacher_name].filter(Boolean).join(' / ');
 
   return (
@@ -448,6 +501,14 @@ function AttendanceJournal({ lesson, rows, allRows, loading, dirtyCount, saving,
         <Button variant="secondary" onClick={() => onSetAll('attended')} disabled={!canEdit}><UserCheck size={16} />Всех отметить Посетил</Button>
         <Button variant="secondary" onClick={() => onSetAll('missed')} disabled={!canEdit}><UserX size={16} />Всех отметить Пропуск</Button>
         <Button variant="ghost" onClick={onReset} disabled={!dirtyCount}><RotateCcw size={16} />Очистить изменения</Button>
+        {canAddStudent && (
+          <Button variant="secondary" onClick={onAddStudent}><Plus size={16} />Добавить ученика</Button>
+        )}
+      </div>
+
+      <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px]">
+        <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => onStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
+        <SelectField label="Статус" value={statusFilter} onChange={onStatusFilter} options={journalStatusOptions} />
       </div>
 
       {loading ? (
@@ -563,6 +624,63 @@ function ClassicVisits({ crud, clientOptions, groupOptions, employeeOptions, can
         ]}
       />
     </>
+  );
+}
+
+function AddStudentModal({ open, form, setForm, onClose, onSave, clientOptions, lesson, saving }) {
+  if (!lesson) return null;
+  const lessonDate = lesson.lesson_date
+    ? parseLocalDate(lesson.lesson_date).toLocaleDateString('ru-RU')
+    : '';
+  const description = [
+    lesson.subject_name,
+    lesson.group_name,
+    lessonDate,
+    timeRange(lesson),
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <Modal
+      title="Добавить ученика в занятие"
+      open={open}
+      onClose={onClose}
+      footer={(
+        <>
+          <Button variant="secondary" onClick={onClose}>Отмена</Button>
+          <Button onClick={onSave} disabled={!form.client || saving}>
+            {saving ? 'Добавление...' : 'Добавить ученика'}
+          </Button>
+        </>
+      )}
+    >
+      <div className="grid gap-4">
+        <div className="rounded-2xl border border-brand/10 bg-brand/5 px-4 py-3">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Занятие</p>
+          <p className="mt-1 font-semibold text-slate-900">{description}</p>
+        </div>
+        <ClientSelectWithCreate
+          label="Ученик"
+          value={form.client}
+          onChange={(value) => setForm({ ...form, client: value })}
+          options={clientOptions}
+          placeholder="Выберите ученика"
+        />
+        <SelectField
+          label="Статус"
+          value={form.status}
+          onChange={(value) => setForm({ ...form, status: value })}
+          options={visitStatusOptions.filter((item) => ['attended', 'sick', 'missed'].includes(item.value))}
+        />
+        <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+          Комментарий
+          <textarea
+            className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+            value={form.comment}
+            onChange={(event) => setForm({ ...form, comment: event.target.value })}
+          />
+        </label>
+      </div>
+    </Modal>
   );
 }
 

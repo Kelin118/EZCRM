@@ -8,7 +8,7 @@ import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
+import { useClientOptions, useEmployeeOptions, useStudyGroupOptions } from './lookupUtils.jsx';
 
 const emptyManualVisit = {
   client: '',
@@ -137,13 +137,6 @@ export default function VisitsPage() {
   const { groupOptions } = useStudyGroupOptions();
   const { employeeOptions } = useEmployeeOptions(['teacher', 'admin']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
-  const selectedClient = manualForm.client || '';
-  const { items: subscriptions, loading: loadingSubscriptions } = useLookup('subscriptions/', { client: selectedClient }, { enabled: Boolean(selectedClient) });
-  const subscriptionOptions = useMemo(
-    () => subscriptions.map((subscription) => ({ value: String(subscription.id), label: subscriptionLabel(subscription) })),
-    [subscriptions],
-  );
-
   const dirtyRows = useMemo(
     () => attendanceRows.filter((row) => rowChanged(row, initialRows.find((initial) => initial.client === row.client))),
     [attendanceRows, initialRows],
@@ -272,11 +265,6 @@ export default function VisitsPage() {
     }
   };
 
-  const openManualCreate = () => {
-    setManualForm(emptyManualVisit);
-    setManualOpen(true);
-  };
-
   const openManualEdit = (row) => {
     setManualForm({
       ...row,
@@ -291,15 +279,13 @@ export default function VisitsPage() {
 
   const saveManualVisit = async () => {
     const payload = {
-      ...manualForm,
       client: manualForm.client || null,
-      subscription: manualForm.subscription || null,
-      teacher: manualForm.teacher || null,
-      visited_at: manualForm.visited_at ? `${manualForm.visited_at}T00:00` : null,
+      status: manualForm.status,
+      notes: manualForm.notes || '',
     };
     try {
-      if (manualForm.id) await api.patch(`visits/${manualForm.id}/`, payload);
-      else await api.post('visits/', payload);
+      if (!manualForm.id) return;
+      await api.patch(`visits/${manualForm.id}/`, payload);
       setManualOpen(false);
       await historyCrud.reload();
     } catch (error) {
@@ -335,7 +321,7 @@ export default function VisitsPage() {
 
   return (
     <>
-      <PageHeader title="Журнал учёта посещений" actionLabel={mode === 'classic' && canEdit ? '+ Добавить' : undefined} onAction={mode === 'classic' && canEdit ? openManualCreate : undefined}>
+      <PageHeader title="Журнал учёта посещений">
         <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
           {modeOptions.map((item) => (
             <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => setMode(item.value)}>
@@ -373,7 +359,6 @@ export default function VisitsPage() {
                 <CalendarDays size={16} />
                 Сегодня
               </Button>
-
               <div className="overflow-hidden rounded-2xl border border-slate-100">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -458,10 +443,6 @@ export default function VisitsPage() {
         onClose={() => setManualOpen(false)}
         onSave={saveManualVisit}
         clientOptions={clientOptions}
-        employeeOptions={employeeOptions}
-        subscriptionOptions={subscriptionOptions}
-        loadingSubscriptions={loadingSubscriptions}
-        selectedClient={selectedClient}
       />
       <AddStudentModal
         open={studentModalOpen}
@@ -491,7 +472,10 @@ function AttendanceJournal({
           <p className="mt-1 text-sm text-slate-500">Всего учеников: {allRows.length}</p>
         </div>
         {canAddStudent && (
-          <Button variant="secondary" onClick={onAddStudent}><Plus size={16} />Добавить ученика</Button>
+          <Button variant="secondary" onClick={onAddStudent}>
+            <Plus size={16} />
+            Добавить ученика
+          </Button>
         )}
       </div>
 
@@ -678,10 +662,10 @@ function AddStudentModal({ open, form, setForm, onClose, onSave, clientOptions, 
   );
 }
 
-function ManualVisitModal({ open, form, setForm, onClose, onSave, clientOptions, employeeOptions, subscriptionOptions, loadingSubscriptions, selectedClient }) {
+function ManualVisitModal({ open, form, setForm, onClose, onSave, clientOptions }) {
   return (
     <Modal
-      title="Посещение"
+      title="Редактировать посещение"
       open={open}
       onClose={onClose}
       footer={
@@ -691,27 +675,16 @@ function ManualVisitModal({ open, form, setForm, onClose, onSave, clientOptions,
         </>
       }
     >
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4">
         <ClientSelectWithCreate
           label="Ученик"
           value={form.client || ''}
-          onChange={(value) => setForm({ ...form, client: value, subscription: '' })}
+          onChange={(value) => setForm({ ...form, client: value })}
           options={clientOptions}
           placeholder="Выберите ученика"
         />
-        <SelectField
-          label="Абонемент"
-          value={form.subscription || ''}
-          onChange={(value) => setForm({ ...form, subscription: value })}
-          options={[
-            { value: '', label: selectedClient ? (loadingSubscriptions ? 'Загрузка абонементов...' : 'Без абонемента') : 'Сначала выберите ученика' },
-            ...subscriptionOptions,
-          ]}
-        />
-        <SelectField label="Учитель" value={form.teacher || ''} onChange={(value) => setForm({ ...form, teacher: value })} options={[{ value: '', label: 'Не выбран' }, ...employeeOptions]} />
-        <Input label="Дата занятия" type="date" value={form.visited_at || ''} onChange={(event) => setForm({ ...form, visited_at: event.target.value })} />
         <SelectField label="Статус" value={form.status || 'attended'} onChange={(value) => setForm({ ...form, status: value })} options={visitStatusOptions} />
-        <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
+        <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
           Комментарий
           <textarea
             className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"

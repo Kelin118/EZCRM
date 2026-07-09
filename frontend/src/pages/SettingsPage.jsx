@@ -7,6 +7,7 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { PageHeader } from './pageUtils.jsx';
+import { formatScheduleDays, weekdayOptions } from '../utils/subscriptionDates.js';
 
 const empty = {
   studio_name: 'EDUCRM',
@@ -25,6 +26,7 @@ const emptyCatalogForm = {
   price: '',
   lessons_count: '',
   validity_days: '',
+  schedule_days: [],
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
@@ -137,7 +139,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', validity_days: item.validity_days || '', is_active: item.is_active }
+        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', validity_days: item.validity_days || '', schedule_days: Array.isArray(item.schedule_days) ? item.schedule_days : [], is_active: item.is_active }
         : { ...emptyCatalogForm },
     );
   };
@@ -147,6 +149,14 @@ export default function SettingsPage() {
     setCatalogModal({ open: false, category: 'service', item: null });
     setCatalogForm(emptyCatalogForm);
     setCatalogError('');
+  };
+
+  const toggleCatalogScheduleDay = (day) => {
+    const current = Array.isArray(catalogForm.schedule_days) ? catalogForm.schedule_days : [];
+    setCatalogForm({
+      ...catalogForm,
+      schedule_days: current.includes(day) ? current.filter((item) => item !== day) : [...current, day],
+    });
   };
 
   const saveCatalogItem = async () => {
@@ -175,6 +185,7 @@ export default function SettingsPage() {
       is_active: catalogForm.is_active,
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
       validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
+      schedule_days: catalogModal.category === 'service' ? catalogForm.schedule_days : [],
     };
 
     try {
@@ -379,6 +390,17 @@ export default function SettingsPage() {
             <>
               <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
               <Input label="Срок действия, дней" type="number" min="1" value={catalogForm.validity_days} onChange={(event) => setCatalogForm({ ...catalogForm, validity_days: event.target.value })} />
+              <div className="grid gap-2 md:col-span-2">
+                <p className="text-sm font-semibold text-slate-700">Дни недели</p>
+                <div className="flex flex-wrap gap-2">
+                  {weekdayOptions.map((day) => (
+                    <label key={day.value} className={`flex min-h-10 items-center rounded-2xl border px-4 py-2 text-sm font-bold ${catalogForm.schedule_days?.includes(day.value) ? 'border-brand bg-brand text-white' : 'border-slate-200 bg-white text-slate-700'}`}>
+                      <input className="sr-only" type="checkbox" checked={catalogForm.schedule_days?.includes(day.value) || false} onChange={() => toggleCatalogScheduleDay(day.value)} />
+                      {day.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
             </>
           )}
           {catalogModal.item && (
@@ -448,6 +470,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
                 <>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Занятий</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Срок действия</th>
+                  <th className="border-b border-slate-100 px-4 py-3 font-bold">Дни недели</th>
                 </>
               )}
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th>
@@ -456,9 +479,9 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={section.category === 'service' ? 6 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 7 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={section.category === 'service' ? 6 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 7 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
@@ -468,6 +491,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
                     <>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.lessons_count || '—'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.validity_days ? `${item.validity_days} дн.` : '—'}</td>
+                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{formatScheduleDays(item.schedule_days) || '—'}</td>
                     </>
                   )}
                   <td className="border-b border-slate-100 px-4 py-3">

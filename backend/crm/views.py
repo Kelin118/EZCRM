@@ -852,6 +852,7 @@ class LessonViewSet(EducationBaseViewSet):
                     lessons_count=total_visits,
                     validity_days=service.validity_days,
                     group=lesson.group,
+                    service_schedule_days=service.schedule_days,
                 )
                 created_subscription = Subscription.objects.create(
                     branch=lesson.branch or lesson.group.branch or client.branch,
@@ -1331,6 +1332,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 lessons_count=total_visits,
                 validity_days=service.validity_days,
                 group=membership.group if membership else None,
+                service_schedule_days=service.schedule_days,
             )
 
         with transaction.atomic():
@@ -1613,6 +1615,7 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
             'is_active': instance.is_active,
             'lessons_count': instance.lessons_count,
             'validity_days': instance.validity_days,
+            'schedule_days': list(instance.schedule_days or []),
         }
 
     def perform_create(self, serializer):

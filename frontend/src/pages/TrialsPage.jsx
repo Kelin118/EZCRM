@@ -8,6 +8,7 @@ import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 
 const trialStages = [
   { value: 'lead', label: 'Лид' },
@@ -19,13 +20,6 @@ const trialStages = [
 
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
 const todayIso = () => new Date().toISOString().slice(0, 10);
-const addDaysIso = (dateValue, days) => {
-  if (!dateValue || !days) return '';
-  const date = new Date(`${dateValue}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return '';
-  date.setDate(date.getDate() + Number(days) - 1);
-  return date.toISOString().slice(0, 10);
-};
 
 const emptyConvertForm = { service: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
@@ -278,7 +272,7 @@ export default function TrialsPage() {
       price: Number(service?.price || 0),
       payment_amount: Number(service?.price || 0),
       start_date: startDate,
-      end_date: addDaysIso(startDate, service?.validity_days),
+      end_date: calculateEndDateFromService(startDate, service),
     });
   };
 
@@ -286,7 +280,7 @@ export default function TrialsPage() {
     const service = services.find((item) => String(item.id) === String(convertForm.service));
     updateConvertForm({
       start_date: value,
-      end_date: addDaysIso(value, service?.validity_days) || convertForm.end_date,
+      end_date: calculateEndDateFromService(value, service) || convertForm.end_date,
     });
   };
 

@@ -10,6 +10,7 @@ import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 
 const emptyManualVisit = {
   client: '',
@@ -67,7 +68,6 @@ const addDays = (value, count) => {
   date.setDate(date.getDate() + count);
   return isoDate(date);
 };
-const addValidityDays = (value, days) => (value && days ? addDays(value, Number(days) - 1) : '');
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
 const timeRange = (lesson) => `${lesson.start_time?.slice(0, 5) || '--:--'}-${lesson.end_time?.slice(0, 5) || '--:--'}`;
 const statusLabel = (value) => visitStatusOptions.find((item) => item.value === value)?.label || value || '-';
@@ -339,7 +339,7 @@ export default function VisitsPage() {
       ...studentForm,
       service: value,
       start_date: startDate,
-      end_date: addValidityDays(startDate, service?.validity_days),
+      end_date: calculateEndDateFromService(startDate, service),
       total_visits: service?.lessons_count || 0,
       remaining_visits: service?.lessons_count || 0,
       price: Number(service?.price || 0),
@@ -352,7 +352,7 @@ export default function VisitsPage() {
     setStudentForm({
       ...studentForm,
       start_date: value,
-      end_date: addValidityDays(value, service?.validity_days) || studentForm.end_date,
+      end_date: calculateEndDateFromService(value, service) || studentForm.end_date,
     });
   };
 

@@ -47,6 +47,29 @@ class SubscriptionDateHelperTests(APITestCase):
 
         self.assertEqual(end_date, date(2026, 8, 4))
 
+    def test_service_schedule_days_are_used_without_group(self):
+        end_date = calculate_subscription_end_date(
+            date(2026, 7, 9),
+            lessons_count=8,
+            validity_days=30,
+            service_schedule_days=['tuesday', 'thursday'],
+        )
+
+        self.assertEqual(end_date, date(2026, 8, 4))
+
+    def test_group_schedule_has_priority_over_service_days(self):
+        group = StudyGroup.objects.create(name='Mon Wed', schedule_days=['monday', 'wednesday'])
+
+        end_date = calculate_subscription_end_date(
+            date(2026, 7, 9),
+            lessons_count=4,
+            validity_days=30,
+            group=group,
+            service_schedule_days=['tuesday', 'thursday'],
+        )
+
+        self.assertEqual(end_date, date(2026, 7, 22))
+
 
 class RolePermissionTests(APITestCase):
     def setUp(self):
@@ -249,6 +272,7 @@ class CatalogItemApiTests(APITestCase):
                 'category': 'service',
                 'lessons_count': 8,
                 'validity_days': 30,
+                'schedule_days': ['tuesday', 'thursday'],
             },
             format='json',
         )
@@ -256,7 +280,36 @@ class CatalogItemApiTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['lessons_count'], 8)
         self.assertEqual(response.data['validity_days'], 30)
-        self.assertEqual(response.data['category_display'], 'Услуги')
+        self.assertEqual(response.data['schedule_days'], ['tuesday', 'thursday'])
+
+    def test_catalog_item_rejects_invalid_schedule_day(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {
+                'name': 'Bad days',
+                'price': '1000.00',
+                'category': 'service',
+                'schedule_days': ['tuesday', 'noday'],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_product_accepts_empty_schedule_days(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {'name': 'Book', 'price': '3500.00', 'category': 'product', 'schedule_days': []},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['schedule_days'], [])
+        self.assertEqual(response.data['category_display'], 'Товары')
 
     def test_admin_can_create_product(self):
         response = self.create_item(category='product', name='Учебник', price='3500.00')
@@ -355,6 +408,28 @@ class CatalogItemApiTests(APITestCase):
         student = Client.objects.create(first_name='Group', last_name='Student')
         group = StudyGroup.objects.create(name='Tue Thu', schedule_days=['tuesday', 'thursday'])
         GroupMembership.objects.create(group=group, client=student, status=GroupMembership.Status.ACTIVE)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'start_date': '2026-07-09'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        self.assertEqual(subscription.end_date, date(2026, 8, 4))
+
+    def test_subscription_from_service_uses_service_schedule_without_group(self):
+        service = CatalogItem.objects.create(
+            name='AB-8 Tue Thu',
+            price='45000.00',
+            category='service',
+            lessons_count=8,
+            validity_days=30,
+            schedule_days=['tuesday', 'thursday'],
+        )
+        student = Client.objects.create(first_name='Service', last_name='Schedule')
         self.client.force_authenticate(self.manager)
 
         response = self.client.post(
@@ -708,6 +783,7 @@ class LessonAttendanceJournalTests(APITestCase):
             price='45000.00',
             lessons_count=8,
             validity_days=30,
+            schedule_days=['tuesday', 'thursday'],
         )
 
         response = self.add_student(client, extra={
@@ -729,7 +805,7 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertEqual(subscription.total_visits, 8)
         self.assertEqual(subscription.remaining_visits, 7)
         self.assertEqual(subscription.start_date, date(2026, 7, 9))
-        self.assertEqual(subscription.end_date, date(2026, 8, 7))
+        self.assertEqual(subscription.end_date, date(2026, 8, 4))
         self.assertEqual(subscription.branch, branch)
         self.assertEqual(visit.subscription, subscription)
         self.assertTrue(visit.lesson_deducted)
@@ -1669,6 +1745,28 @@ class TrialConversionTests(APITestCase):
         self.assertEqual(subscription.remaining_visits, 4)
         self.assertEqual(subscription.end_date, date.today() + timedelta(days=27))
         self.assertEqual(transaction.amount, 20000)
+
+    def test_conversion_uses_service_schedule_for_end_date(self):
+        service = CatalogItem.objects.create(
+            name='AB-8 Tue Thu',
+            price='45000.00',
+            category=CatalogItem.Category.SERVICE,
+            lessons_count=8,
+            validity_days=30,
+            schedule_days=['tuesday', 'thursday'],
+        )
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/trials/{trial.id}/convert-to-subscription/',
+            {'service': service.id, 'start_date': '2026-07-09', 'payment_method': 'cash'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['subscription']['id'])
+        self.assertEqual(subscription.end_date, date(2026, 8, 4))
 
     def test_conversion_with_service_defaults_start_end_and_payment(self):
         service = CatalogItem.objects.create(

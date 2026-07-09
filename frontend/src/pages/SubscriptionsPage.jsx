@@ -4,6 +4,7 @@ import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../au
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
 
 const empty = {
   client: '',
@@ -21,14 +22,6 @@ const empty = {
 };
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
-
-const addDaysIso = (dateValue, days) => {
-  if (!dateValue || !days) return '';
-  const date = new Date(`${dateValue}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return '';
-  date.setDate(date.getDate() + Number(days) - 1);
-  return date.toISOString().slice(0, 10);
-};
 
 const baseFields = [
   { name: 'title', label: 'Название' },
@@ -84,7 +77,7 @@ export default function SubscriptionsPage() {
     label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸${service.lessons_count ? ` · ${service.lessons_count} зан.` : ''}${service.validity_days ? ` · ${service.validity_days} дн.` : ''}`,
   }));
   const selectedService = services.find((item) => String(item.id) === String(form.service));
-  const calculateEndDate = (startDate, service) => addDaysIso(startDate, service?.validity_days);
+  const calculateEndDate = (startDate, service) => calculateEndDateFromService(startDate, service);
   const selectService = (value, current, update) => {
     const service = services.find((item) => String(item.id) === String(value));
     const startDate = current.start_date || todayIso();
@@ -121,7 +114,9 @@ export default function SubscriptionsPage() {
           return {
             ...field,
             help: selectedService?.validity_days
-              ? 'Дата окончания рассчитана автоматически из срока действия услуги. Можно изменить вручную.'
+              ? (selectedService?.schedule_days?.length
+                ? `Дата окончания рассчитана по дням услуги: ${formatScheduleDays(selectedService.schedule_days)}. Можно изменить вручную.`
+                : 'Дата окончания рассчитана по сроку действия услуги. Можно изменить вручную.')
               : '',
           };
         }

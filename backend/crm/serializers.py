@@ -2,7 +2,9 @@ from rest_framework import serializers
 from django.utils import timezone
 
 from .group_schedule import (
+    DAY_TO_WEEKDAY,
     group_future_dates,
+    normalize_schedule_days,
     schedule_display,
     subscription_expected_end_date,
     subscription_group,
@@ -326,6 +328,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
                     lessons_count=lessons_count,
                     validity_days=service.validity_days,
                     group=group,
+                    service_schedule_days=service.schedule_days,
                 )
                 if calculated_end_date:
                     attrs['end_date'] = calculated_end_date
@@ -534,3 +537,14 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError('Цена не может быть отрицательной.')
         return value
+
+    def validate_schedule_days(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Дни недели должны быть списком.')
+        normalized = normalize_schedule_days(value)
+        if len(normalized) != len(value):
+            allowed = ', '.join(DAY_TO_WEEKDAY.keys())
+            raise serializers.ValidationError(f'Дни недели должны быть из списка: {allowed}.')
+        return normalized

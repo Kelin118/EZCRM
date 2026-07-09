@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions } from './lookupUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const empty = {
   client: '',
@@ -15,6 +16,7 @@ const empty = {
   paid_amount: 0,
   purchase_date: '',
   status: 'active',
+  branch: '',
 };
 
 const baseFields = [
@@ -56,7 +58,8 @@ function Progress({ row }) {
 }
 
 export default function SubscriptionsPage() {
-  const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '' });
+  const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '', branch: '' });
+  const { branchOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const user = getStoredUser();
   const canEdit = canManageSubscriptions(user);
@@ -64,7 +67,7 @@ export default function SubscriptionsPage() {
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const totalPaid = crud.items.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
-  const fields = [{ name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' }, ...baseFields];
+  const fields = [{ name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' }, { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] }, ...baseFields];
 
   return (
     <>
@@ -74,6 +77,7 @@ export default function SubscriptionsPage() {
       <Filters>
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'paused', label: 'Пауза' }, { value: 'expired', label: 'Истёк' }, { value: 'cancelled', label: 'Отменён' }]} />
         <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
         <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
       </Filters>
@@ -81,6 +85,7 @@ export default function SubscriptionsPage() {
         { key: 'title', header: 'Название' },
         { key: 'client', header: 'Клиент', render: (row) => <Link className="text-brand hover:underline" to={`/clients/${row.client}`}>{row.client_name || `#${row.client}`}</Link> },
         { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status} /> },
+        { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
         { key: 'lessons_total', header: 'Всего', render: (row) => row.lessons_total ?? row.total_visits },
         { key: 'used_lessons', header: 'Использовано' },
         { key: 'lessons_left', header: 'Осталось', render: (row) => row.lessons_left ?? row.remaining_visits },

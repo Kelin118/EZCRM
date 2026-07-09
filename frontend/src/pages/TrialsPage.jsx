@@ -7,6 +7,7 @@ import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const trialStages = [
   { value: 'lead', label: 'Лид' },
@@ -182,7 +183,8 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 }
 
 export default function TrialsPage() {
-  const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '' });
+  const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const { branchOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -198,6 +200,7 @@ export default function TrialsPage() {
   const setForm = (value) => crud.setEditing(value);
   const fields = [
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Преподаватель', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields,

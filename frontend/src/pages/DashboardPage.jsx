@@ -16,7 +16,8 @@ import api from '../api/axios.js';
 import { getStoredUser, hasRole, ROLES } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import StatCard from '../components/ui/StatCard.jsx';
-import { Filters, Input, money, PageHeader } from './pageUtils.jsx';
+import { Filters, Input, money, PageHeader, SelectField } from './pageUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -39,6 +40,7 @@ export default function DashboardPage() {
   const canViewFinance = hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT]);
   const [filters, setFilters] = useState(period(30));
   const [appliedFilters, setAppliedFilters] = useState(period(30));
+  const { branchOptions } = useBranches();
   const [stats, setStats] = useState({});
 
   useEffect(() => {
@@ -84,6 +86,7 @@ export default function DashboardPage() {
       <Filters>
         <Input label="Дата от" type="date" value={filters.date_from} onChange={(event) => setFilters({ ...filters, date_from: event.target.value })} />
         <Input label="Дата до" type="date" value={filters.date_to} onChange={(event) => setFilters({ ...filters, date_to: event.target.value })} />
+        <SelectField label="Филиал" value={filters.branch || ''} onChange={(value) => setFilters({ ...filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
         <div className="flex items-end">
           <Button onClick={() => setAppliedFilters(filters)}>Применить</Button>
         </div>

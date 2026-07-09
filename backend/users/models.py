@@ -12,6 +12,13 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MANAGER)
     roles = models.JSONField(default=list, blank=True)
     phone = models.CharField(max_length=30, blank=True)
+    branch = models.ForeignKey(
+        'crm.Branch',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+    )
 
     def __str__(self):
         return self.get_full_name() or self.username

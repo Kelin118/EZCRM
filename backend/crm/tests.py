@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 
 from .models import (
     AuditLog,
+    Branch,
     CatalogItem,
     Client,
     FinanceTransaction,
@@ -1504,6 +1505,93 @@ class TrialConversionTests(APITestCase):
                 description='Пробник переведен в абонемент',
             ).exists()
         )
+
+
+class BranchIntegrationTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='branch-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='branch-manager', password='pass', role='manager', roles=['manager'])
+        self.branch = Branch.objects.create(name='Сарыарка', address='Астана')
+        self.other_branch = Branch.objects.create(name='Левый берег')
+
+    def test_admin_crud_soft_delete_and_audit(self):
+        self.client.force_authenticate(self.admin)
+        created = self.client.post('/api/branches/', {'name': 'Новый филиал'}, format='json')
+        self.assertEqual(created.status_code, 201)
+        branch_id = created.data['id']
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_CREATE, entity_id=str(branch_id)).exists())
+
+        updated = self.client.patch(f'/api/branches/{branch_id}/', {'address': 'Новый адрес'}, format='json')
+        disabled = self.client.delete(f'/api/branches/{branch_id}/')
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(disabled.status_code, 204)
+        self.assertFalse(Branch.objects.get(pk=branch_id).is_active)
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_UPDATE, entity_id=str(branch_id)).exists())
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_DISABLE, entity_id=str(branch_id)).exists())
+
+    def test_manager_cannot_create_branch(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post('/api/branches/', {'name': 'Forbidden'}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_branch_inheritance_chain_and_filters(self):
+        client = Client.objects.create(first_name='Branch', last_name='Student', branch=self.branch)
+        room = Room.objects.create(name='101', branch=self.branch)
+        group = StudyGroup.objects.create(name='Branch group', room=room)
+        slot = ScheduleSlot.objects.create(
+            group=group, room=room, weekday=date.today().weekday(),
+            start_time=time(9), end_time=time(10),
+        )
+        lesson = Lesson.objects.create(
+            group=group, schedule_slot=slot, room=room,
+            lesson_date=date.today(), start_time=time(9), end_time=time(10),
+        )
+        subscription = Subscription.objects.create(
+            client=client, title='AB-8', start_date=date.today(),
+            total_visits=8, remaining_visits=8,
+        )
+        visit = Visit.objects.create(
+            client=client, subscription=subscription, lesson=lesson,
+            visited_at=timezone.now(), status=Visit.Status.ATTENDED,
+        )
+
+        self.assertEqual(group.branch, self.branch)
+        self.assertEqual(slot.branch, self.branch)
+        self.assertEqual(lesson.branch, self.branch)
+        self.assertEqual(subscription.branch, self.branch)
+        self.assertEqual(visit.branch, self.branch)
+
+        Client.objects.create(first_name='Other', branch=self.other_branch)
+        self.client.force_authenticate(self.admin)
+        clients = self.client.get('/api/clients/', {'branch': self.branch.id})
+        groups = self.client.get('/api/study-groups/', {'branch': self.branch.id})
+        day = self.client.get('/api/attendance/day/', {'date': date.today().isoformat(), 'branch': self.branch.id})
+        self.assertEqual({item['id'] for item in clients.data}, {client.id})
+        self.assertEqual({item['id'] for item in groups.data}, {group.id})
+        self.assertEqual({item['lesson_id'] for item in day.data['items']}, {lesson.id})
+
+    def test_trial_conversion_and_dashboard_keep_branch(self):
+        client = Client.objects.create(first_name='Trial', branch=self.branch)
+        trial = Trial.objects.create(client=client, scheduled_at=timezone.now(), branch=self.branch)
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            f'/api/trials/{trial.id}/convert-to-subscription/',
+            {
+                'subscription_type': 'AB-8', 'start_date': date.today().isoformat(),
+                'total_visits': 8, 'price': '40000', 'payment_amount': '40000',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['subscription']['id'])
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
+        self.assertEqual(subscription.branch, self.branch)
+        self.assertEqual(transaction.branch, self.branch)
+        dashboard = self.client.get('/api/dashboard/stats/', {'branch': self.branch.id})
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(float(dashboard.data['finance']['income']), 40000.0)
 
 
 class CriticalBusinessFlowTests(APITestCase):

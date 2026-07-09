@@ -7,6 +7,7 @@ import api from '../api/axios.js';
 import { canCreateTasks, canDeleteTask, getStoredUser, hasRole, ROLES } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const NEW_STATUS = 'new';
 const IN_PROGRESS_STATUS = 'in_progress';
@@ -202,7 +203,8 @@ function TaskKanban({ canEdit, items, markDone, moveTask, onDelete, onEdit, user
 }
 
 export default function TasksPage() {
-  const crud = useCrudResource('tasks/', { search: '', status: '', assigned_to: '', due_date_from: '', due_date_to: '' });
+  const crud = useCrudResource('tasks/', { search: '', status: '', assigned_to: '', due_date_from: '', due_date_to: '', branch: '' });
+  const { branchOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions } = useEmployeeOptions(['admin', 'manager', 'teacher']);
   const [viewMode, setViewMode] = useState('kanban');
@@ -215,6 +217,7 @@ export default function TasksPage() {
     baseFields[0],
     { name: 'assigned_to', label: 'Ответственный', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...employeeOptions] },
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
     ...baseFields.slice(1),
   ];
 

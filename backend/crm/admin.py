@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     AuditLog,
+    Branch,
     CatalogItem,
     ChatMessage,
     Client,
@@ -19,6 +20,13 @@ from .models import (
     Trial,
     Visit,
 )
+
+
+@admin.register(Branch)
+class BranchAdmin(admin.ModelAdmin):
+    list_display = ('name', 'address', 'phone', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'address', 'phone')
 
 
 @admin.register(Client)

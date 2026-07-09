@@ -8,6 +8,8 @@ import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
 import { PageHeader } from './pageUtils.jsx';
+import { SelectField } from './pageUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const roles = [
   { value: 'admin', label: 'Администратор' },
@@ -23,6 +25,7 @@ const emptyEmployee = {
   roles: ['manager'],
   is_active: true,
   password: '',
+  branch: '',
 };
 
 const emptyPassword = { password: '', password_confirm: '' };
@@ -40,6 +43,7 @@ export default function EmployeesPage() {
   const [passwordForm, setPasswordForm] = useState(emptyPassword);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const { branchOptions } = useBranches();
 
   const filteredEmployees = useMemo(() => employees, [employees]);
 
@@ -68,6 +72,7 @@ export default function EmployeesPage() {
       roles: getEmployeeRoles(employee),
       is_active: Boolean(employee.is_active),
       password: '',
+      branch: employee.branch ? String(employee.branch) : '',
     });
     setModalOpen(true);
   };
@@ -189,6 +194,7 @@ export default function EmployeesPage() {
         columns={[
           { key: 'full_name', header: 'ФИО' },
           { key: 'username', header: 'Username' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
           {
             key: 'roles',
             header: 'Роли',
@@ -240,6 +246,7 @@ export default function EmployeesPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="ФИО" value={editing.full_name} onChange={(event) => setEditingField('full_name', event.target.value)} />
             <Input label="Логин" value={editing.username} onChange={(event) => setEditingField('username', event.target.value)} />
+            <SelectField label="Филиал" value={editing.branch || ''} onChange={(value) => setEditingField('branch', value)} options={[{ value: '', label: 'Без филиала' }, ...branchOptions]} />
             <Input
               label={editing.id ? 'Новый пароль' : 'Пароль'}
               type="password"

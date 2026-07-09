@@ -31,6 +31,7 @@ from .excel_import import import_excel
 from .group_schedule import sync_group_schedule_slots
 from .models import (
     AuditLog,
+    Branch,
     CatalogItem,
     ChatMessage,
     Client,
@@ -53,6 +54,7 @@ from .permissions import (
     MANAGER,
     TEACHER,
     AuditLogPermission,
+    BranchPermission,
     CatalogItemPermission,
     ChatPermission,
     ClientPermission,
@@ -76,6 +78,7 @@ from .permissions import (
 )
 from .serializers import (
     AuditLogSerializer,
+    BranchSerializer,
     CatalogItemSerializer,
     ChatMessageSerializer,
     ClientSerializer,
@@ -93,6 +96,11 @@ from .serializers import (
     TrialSerializer,
     VisitSerializer,
 )
+
+
+def _filter_branch(queryset, request):
+    branch = request.query_params.get('branch')
+    return queryset.filter(branch_id=branch) if branch else queryset
 
 
 def _date_param(request, name):
@@ -332,6 +340,38 @@ class EducationBaseViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, EducationPermission)
 
 
+class BranchViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, BranchPermission)
+    queryset = Branch.objects.all()
+    serializer_class = BranchSerializer
+    audit_entity_type = 'Branch'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        is_active = self.request.query_params.get('is_active')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(address__icontains=search) | Q(phone__icontains=search))
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by('name')
+
+    def perform_create(self, serializer):
+        branch = serializer.save()
+        self._log_instance(AuditLog.Action.BRANCH_CREATE, branch, 'Создан филиал', self._audit_changes())
+
+    def perform_update(self, serializer):
+        branch = serializer.save()
+        self._log_instance(AuditLog.Action.BRANCH_UPDATE, branch, 'Изменён филиал', self._audit_changes())
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=('is_active', 'updated_at'))
+        self._log_instance(AuditLog.Action.BRANCH_DISABLE, instance, 'Филиал отключён', {'is_active': False})
+
+
 class SubjectViewSet(EducationBaseViewSet):
     queryset = Subject.objects.all()
     serializer_class = SubjectSerializer
@@ -383,7 +423,7 @@ class StudyGroupViewSet(EducationBaseViewSet):
     audit_delete_description = 'Удалена группа'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         status_value = self.request.query_params.get('status')
         teacher = self.request.query_params.get('teacher')
         manager = self.request.query_params.get('manager')
@@ -499,7 +539,7 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
     audit_delete_description = 'Удалён слот расписания'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         group = self.request.query_params.get('group')
         teacher = self.request.query_params.get('teacher')
         weekday = self.request.query_params.get('weekday')
@@ -578,7 +618,7 @@ class LessonViewSet(EducationBaseViewSet):
     audit_delete_description = 'Удалён урок'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         group = self.request.query_params.get('group')
         teacher = self.request.query_params.get('teacher')
         subject = self.request.query_params.get('subject')
@@ -880,6 +920,7 @@ class AttendanceDayView(APIView):
         group = request.query_params.get('group')
         teacher = request.query_params.get('teacher')
         room = request.query_params.get('room')
+        branch = request.query_params.get('branch')
         weekday = lesson_date.weekday()
 
         lessons = Lesson.objects.select_related('group', 'schedule_slot', 'subject', 'teacher', 'room').filter(lesson_date=lesson_date)
@@ -897,6 +938,9 @@ class AttendanceDayView(APIView):
         if room:
             lessons = lessons.filter(room_id=room)
             slots = slots.filter(room_id=room)
+        if branch:
+            lessons = lessons.filter(branch_id=branch)
+            slots = slots.filter(branch_id=branch)
 
         items = []
         lesson_keys = set()
@@ -945,7 +989,7 @@ class ClientViewSet(BaseAuthenticatedViewSet):
         )
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         search = self.request.query_params.get('search')
         status_value = self.request.query_params.get('status')
         manager = self.request.query_params.get('manager')
@@ -971,7 +1015,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
     audit_update_description = 'Изменён абонемент'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         status_value = self.request.query_params.get('status')
         client = self.request.query_params.get('client')
         date_from = _date_param(self.request, 'date_from')
@@ -1020,7 +1064,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
     audit_entity_type = 'Visit'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         client = self.request.query_params.get('client')
         group = self.request.query_params.get('group')
         teacher = self.request.query_params.get('teacher')
@@ -1101,7 +1145,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
     audit_update_description = 'Изменён пробник'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
         client = self.request.query_params.get('client')
@@ -1188,6 +1232,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
         with transaction.atomic():
             subscription = Subscription.objects.create(
+                branch=trial.branch or trial.client.branch,
                 client=trial.client,
                 title=title,
                 start_date=start_date,
@@ -1251,7 +1296,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
     audit_update_description = 'Изменён МК'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
         client = self.request.query_params.get('client')
@@ -1307,7 +1352,7 @@ class TaskViewSet(BaseAuthenticatedViewSet):
     audit_update_description = 'Изменена задача'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         status_value = self.request.query_params.get('status')
         assigned_to = self.request.query_params.get('assigned_to')
         client = self.request.query_params.get('client')
@@ -1363,7 +1408,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     audit_delete_description = 'Удалена финансовая операция'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         transaction_type = self.request.query_params.get('type')
         source = self.request.query_params.get('source')
         payment_method = self.request.query_params.get('payment_method')
@@ -1444,7 +1489,7 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
     audit_entity_type = 'CatalogItem'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = _filter_branch(super().get_queryset(), self.request)
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category=category)
@@ -1785,6 +1830,7 @@ class DashboardStatsView(APIView):
         ending_date = today + timedelta(days=7)
         is_teacher = has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT})
         can_view_finance = not is_teacher
+        branch = request.query_params.get('branch')
 
         transactions = FinanceTransaction.objects.filter(paid_at__date__gte=date_from, paid_at__date__lte=date_to)
         clients = Client.objects.all()
@@ -1795,6 +1841,17 @@ class DashboardStatsView(APIView):
         lessons = Lesson.objects.filter(lesson_date__gte=date_from, lesson_date__lte=date_to)
         visits = Visit.objects.filter(visited_at__date__gte=date_from, visited_at__date__lte=date_to)
         tasks = Task.objects.all()
+
+        if branch:
+            transactions = transactions.filter(branch_id=branch)
+            clients = clients.filter(branch_id=branch)
+            subscriptions = subscriptions.filter(branch_id=branch)
+            trials = trials.filter(branch_id=branch)
+            master_classes = master_classes.filter(branch_id=branch)
+            groups = groups.filter(branch_id=branch)
+            lessons = lessons.filter(branch_id=branch)
+            visits = visits.filter(branch_id=branch)
+            tasks = tasks.filter(branch_id=branch)
 
         if is_teacher:
             groups = groups.filter(teacher=request.user)
@@ -1817,15 +1874,16 @@ class DashboardStatsView(APIView):
             expense_total = _decimal(
                 transactions.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total']
             )
+            all_income = FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.INCOME)
+            if branch:
+                all_income = all_income.filter(branch_id=branch)
             income_today = _decimal(
-                FinanceTransaction.objects.filter(
-                    transaction_type=FinanceTransaction.Type.INCOME,
+                all_income.filter(
                     paid_at__date=today,
                 ).aggregate(total=Sum('amount'))['total']
             )
             income_month = _decimal(
-                FinanceTransaction.objects.filter(
-                    transaction_type=FinanceTransaction.Type.INCOME,
+                all_income.filter(
                     paid_at__year=today.year,
                     paid_at__month=today.month,
                 ).aggregate(total=Sum('amount'))['total']
@@ -1963,6 +2021,13 @@ class ReportsSummaryView(APIView):
         master_classes = MasterClass.objects.all()
         lessons = Lesson.objects.all()
         visits = Visit.objects.select_related('client', 'lesson', 'lesson__group', 'teacher')
+        branch = request.query_params.get('branch')
+        if branch:
+            transactions = transactions.filter(branch_id=branch)
+            trials = trials.filter(branch_id=branch)
+            master_classes = master_classes.filter(branch_id=branch)
+            lessons = lessons.filter(branch_id=branch)
+            visits = visits.filter(branch_id=branch)
 
         if date_from:
             transactions = transactions.filter(paid_at__date__gte=date_from)

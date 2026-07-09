@@ -10,7 +10,22 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 
+class Branch(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    address = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ('name',)
+
+    def __str__(self):
+        return self.name
+
+
 class Client(TimeStampedModel):
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='clients')
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100, blank=True)
     parent_name = models.CharField(max_length=150, blank=True)
@@ -41,6 +56,7 @@ class Subscription(TimeStampedModel):
         EXPIRED = 'expired', 'Expired'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='subscriptions')
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='subscriptions')
     title = models.CharField(max_length=120)
     start_date = models.DateField()
@@ -62,6 +78,11 @@ class Subscription(TimeStampedModel):
     def __str__(self):
         return f'{self.client} - {self.title}'
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.client_id:
+            self.branch_id = self.client.branch_id
+        super().save(*args, **kwargs)
+
 
 class Subject(TimeStampedModel):
     name = models.CharField(max_length=150)
@@ -73,6 +94,7 @@ class Subject(TimeStampedModel):
 
 
 class Room(TimeStampedModel):
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='rooms')
     name = models.CharField(max_length=150)
     capacity = models.PositiveIntegerField(null=True, blank=True)
     description = models.TextField(blank=True)
@@ -88,6 +110,7 @@ class StudyGroup(TimeStampedModel):
         PAUSED = 'paused', 'На паузе'
         ARCHIVED = 'archived', 'Архив'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='study_groups')
     name = models.CharField(max_length=150)
     subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='study_groups')
     room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, related_name='study_groups')
@@ -115,6 +138,11 @@ class StudyGroup(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.room_id:
+            self.branch_id = self.room.branch_id
+        super().save(*args, **kwargs)
 
 
 class GroupMembership(TimeStampedModel):
@@ -153,6 +181,7 @@ class ScheduleSlot(TimeStampedModel):
         SATURDAY = 5, 'Суббота'
         SUNDAY = 6, 'Воскресенье'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='schedule_slots')
     group = models.ForeignKey(StudyGroup, on_delete=models.CASCADE, related_name='schedule_slots')
     subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='schedule_slots')
     teacher = models.ForeignKey(
@@ -171,6 +200,11 @@ class ScheduleSlot(TimeStampedModel):
     def __str__(self):
         return f'{self.group} - {self.get_weekday_display()} {self.start_time:%H:%M}'
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id:
+            self.branch_id = self.group.branch_id or (self.room.branch_id if self.room_id else None)
+        super().save(*args, **kwargs)
+
 
 class Lesson(TimeStampedModel):
     class Status(models.TextChoices):
@@ -178,6 +212,7 @@ class Lesson(TimeStampedModel):
         COMPLETED = 'completed', 'Проведён'
         CANCELLED = 'cancelled', 'Отменён'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='lessons')
     group = models.ForeignKey(StudyGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name='lessons')
     schedule_slot = models.ForeignKey(
         ScheduleSlot,
@@ -209,6 +244,13 @@ class Lesson(TimeStampedModel):
         group_name = self.group.name if self.group else 'Lesson'
         return f'{group_name} - {self.lesson_date:%Y-%m-%d} {self.start_time:%H:%M}'
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id:
+            self.branch_id = (
+                self.schedule_slot.branch_id if self.schedule_slot_id else None
+            ) or (self.group.branch_id if self.group_id else None) or (self.room.branch_id if self.room_id else None)
+        super().save(*args, **kwargs)
+
 
 class Visit(TimeStampedModel):
     class Status(models.TextChoices):
@@ -221,6 +263,7 @@ class Visit(TimeStampedModel):
         PLANNED = 'planned', 'Planned'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='visits')
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='visits')
     subscription = models.ForeignKey(
         Subscription,
@@ -245,6 +288,11 @@ class Visit(TimeStampedModel):
     def __str__(self):
         return f'{self.client} - {self.visited_at:%Y-%m-%d %H:%M}'
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.lesson_id:
+            self.branch_id = self.lesson.branch_id or (self.lesson.group.branch_id if self.lesson.group_id else None)
+        super().save(*args, **kwargs)
+
 
 class Trial(TimeStampedModel):
     class Status(models.TextChoices):
@@ -258,6 +306,7 @@ class Trial(TimeStampedModel):
         COMPLETED = 'completed', 'Completed'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='trials')
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, blank=True, related_name='trials')
     manager = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -297,6 +346,11 @@ class Trial(TimeStampedModel):
     def __str__(self):
         return f'Trial: {self.client} - {self.scheduled_at:%Y-%m-%d %H:%M}'
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.client_id:
+            self.branch_id = self.client.branch_id
+        super().save(*args, **kwargs)
+
 
 class MasterClass(TimeStampedModel):
     class Stage(models.TextChoices):
@@ -310,6 +364,7 @@ class MasterClass(TimeStampedModel):
         COMPLETED = 'completed', 'Completed'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     manager = models.ForeignKey(
@@ -355,6 +410,7 @@ class Task(TimeStampedModel):
         DONE = 'done', 'Done'
         CANCELLED = 'cancelled', 'Cancelled'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks')
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     assigned_to = models.ForeignKey(
@@ -371,12 +427,18 @@ class Task(TimeStampedModel):
     def __str__(self):
         return self.title
 
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.client_id:
+            self.branch_id = self.client.branch_id
+        super().save(*args, **kwargs)
+
 
 class FinanceTransaction(TimeStampedModel):
     class Type(models.TextChoices):
         INCOME = 'income', 'Income'
         EXPENSE = 'expense', 'Expense'
 
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='finance_transactions')
     transaction_type = models.CharField(max_length=20, choices=Type.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     source = models.CharField(max_length=100, blank=True)
@@ -407,6 +469,13 @@ class FinanceTransaction(TimeStampedModel):
 
     def __str__(self):
         return f'{self.get_transaction_type_display()} {self.amount}'
+
+    def save(self, *args, **kwargs):
+        if not self.branch_id:
+            self.branch_id = (
+                self.subscription.branch_id if self.subscription_id else None
+            ) or (self.client.branch_id if self.client_id else None)
+        super().save(*args, **kwargs)
 
 
 class ChatMessage(TimeStampedModel):
@@ -475,6 +544,9 @@ class AuditLog(models.Model):
         CATALOG_ITEM_CREATE = 'catalog_item_create', 'Catalog item create'
         CATALOG_ITEM_UPDATE = 'catalog_item_update', 'Catalog item update'
         CATALOG_ITEM_DISABLE = 'catalog_item_disable', 'Catalog item disable'
+        BRANCH_CREATE = 'branch_create', 'Branch create'
+        BRANCH_UPDATE = 'branch_update', 'Branch update'
+        BRANCH_DISABLE = 'branch_disable', 'Branch disable'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

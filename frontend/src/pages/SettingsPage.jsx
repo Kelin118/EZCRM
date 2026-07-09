@@ -25,6 +25,7 @@ const emptyCatalogForm = {
   price: '',
   is_active: true,
 };
+const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
 
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
@@ -67,6 +68,9 @@ export default function SettingsPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [importError, setImportError] = useState('');
+  const [branches, setBranches] = useState([]);
+  const [branchModal, setBranchModal] = useState({ open: false, item: null });
+  const [branchForm, setBranchForm] = useState(emptyBranchForm);
 
   const activeSection = useMemo(
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
@@ -82,7 +86,27 @@ export default function SettingsPage() {
       }
     });
     loadCatalogItems();
+    loadBranches();
   }, []);
+
+  const loadBranches = async () => {
+    const { data } = await api.get('branches/');
+    setBranches(Array.isArray(data) ? data : data.results || []);
+  };
+
+  const saveBranch = async () => {
+    if (!branchForm.name.trim()) return;
+    if (branchModal.item) await api.patch(`branches/${branchModal.item.id}/`, branchForm);
+    else await api.post('branches/', branchForm);
+    setBranchModal({ open: false, item: null });
+    setBranchForm(emptyBranchForm);
+    await loadBranches();
+  };
+
+  const disableBranch = async (branch) => {
+    await api.delete(`branches/${branch.id}/`);
+    await loadBranches();
+  };
 
   const loadCatalogItems = async () => {
     setCatalogLoading(true);
@@ -219,6 +243,28 @@ export default function SettingsPage() {
       </form>
 
       <div className="mt-6 grid max-w-6xl gap-6">
+        <SettingsCard icon={Building2} title="Филиалы" subtitle="Подразделения учебного центра">
+          {canEditStudio && (
+            <Button className="mb-4" onClick={() => { setBranchForm(emptyBranchForm); setBranchModal({ open: true, item: null }); }}>
+              <Plus size={16} />Добавить филиал
+            </Button>
+          )}
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="min-w-[720px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
+                <th className="px-4 py-3">Название</th><th className="px-4 py-3">Адрес</th><th className="px-4 py-3">Телефон</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" />
+              </tr></thead>
+              <tbody>{branches.map((branch) => <tr key={branch.id} className="border-t border-slate-100">
+                <td className="px-4 py-3 font-semibold">{branch.name}</td><td className="px-4 py-3">{branch.address || '—'}</td><td className="px-4 py-3">{branch.phone || '—'}</td>
+                <td className="px-4 py-3">{branch.is_active ? 'Активен' : 'Отключён'}</td>
+                <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                  {canEditStudio && <Button variant="secondary" onClick={() => { setBranchForm(branch); setBranchModal({ open: true, item: branch }); }}>Изменить</Button>}
+                  {canEditStudio && branch.is_active && <Button variant="secondary" onClick={() => disableBranch(branch)}>Отключить</Button>}
+                </div></td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </SettingsCard>
         {catalogSections.map((section) => (
           <CatalogSection
             key={section.category}
@@ -295,6 +341,20 @@ export default function SettingsPage() {
           </div>
         )}
       </section>}
+
+      <Modal
+        title={branchModal.item ? 'Редактировать филиал' : 'Новый филиал'}
+        open={branchModal.open}
+        onClose={() => setBranchModal({ open: false, item: null })}
+        footer={<><Button variant="secondary" onClick={() => setBranchModal({ open: false, item: null })}>Отмена</Button><Button onClick={saveBranch}>Сохранить</Button></>}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Название" value={branchForm.name} onChange={(e) => setBranchForm({ ...branchForm, name: e.target.value })} />
+          <Input label="Телефон" value={branchForm.phone} onChange={(e) => setBranchForm({ ...branchForm, phone: e.target.value })} />
+          <Input label="Адрес" value={branchForm.address} onChange={(e) => setBranchForm({ ...branchForm, address: e.target.value })} />
+          <Input label="Комментарий" value={branchForm.description} onChange={(e) => setBranchForm({ ...branchForm, description: e.target.value })} />
+        </div>
+      </Modal>
 
       <Modal
         title={catalogModal.item ? `Изменить: ${catalogModal.item.name}` : activeSection.modalCreate}

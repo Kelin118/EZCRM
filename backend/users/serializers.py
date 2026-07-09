@@ -65,6 +65,7 @@ class UserPublicSerializer(serializers.ModelSerializer):
     roles = serializers.SerializerMethodField()
     role_display = serializers.SerializerMethodField()
     roles_display = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='Без филиала')
 
     class Meta:
         model = User
@@ -75,6 +76,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
             'full_name',
             'display_name',
             'phone',
+            'branch',
+            'branch_name',
             'role',
             'roles',
             'role_display',
@@ -108,10 +111,11 @@ class StaffOptionSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='Без филиала')
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'full_name', 'display_name', 'role', 'roles', 'is_active')
+        fields = ('id', 'username', 'full_name', 'display_name', 'role', 'roles', 'branch', 'branch_name', 'is_active')
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username

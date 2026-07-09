@@ -5,6 +5,7 @@ from .views import (
     AuditLogViewSet,
     AttendanceDayView,
     BackupCreateView,
+    BranchViewSet,
     CatalogItemViewSet,
     ChatMessageViewSet,
     ClientViewSet,
@@ -37,6 +38,7 @@ from .views import (
 )
 
 router = DefaultRouter()
+router.register('branches', BranchViewSet, basename='branch')
 router.register('clients', ClientViewSet, basename='client')
 router.register('subscriptions', SubscriptionViewSet, basename='subscription')
 router.register('visits', VisitViewSet, basename='visit')

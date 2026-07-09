@@ -74,8 +74,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     serializer_class = EmployeeSerializer
 
     def get_queryset(self):
-        queryset = User.objects.all().order_by('username')
+        queryset = User.objects.select_related('branch').all().order_by('username')
         search = self.request.query_params.get('search')
+        branch = self.request.query_params.get('branch')
         if search:
             queryset = queryset.filter(
                 Q(username__icontains=search)
@@ -84,6 +85,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 | Q(phone__icontains=search)
                 | Q(email__icontains=search)
             )
+        if branch:
+            queryset = queryset.filter(branch_id=branch)
         return queryset
 
     def perform_create(self, serializer):
@@ -175,13 +178,16 @@ class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = StaffOptionSerializer
 
     def get_queryset(self):
-        queryset = User.objects.all().order_by('first_name', 'last_name', 'username')
+        queryset = User.objects.select_related('branch').all().order_by('first_name', 'last_name', 'username')
         active = self.request.query_params.get('active')
+        branch = self.request.query_params.get('branch')
 
         if active in ('1', 'true', 'True', 'yes'):
             queryset = queryset.filter(is_active=True)
         elif active in ('0', 'false', 'False', 'no'):
             queryset = queryset.filter(is_active=False)
+        if branch:
+            queryset = queryset.filter(branch_id=branch)
 
         return queryset
 

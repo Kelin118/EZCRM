@@ -201,6 +201,15 @@ class BackupPermission(BasePermission):
         return is_authenticated(request.user) and is_admin(request.user)
 
 
+class BranchPermission(BasePermission):
+    def has_permission(self, request, view):
+        if not is_authenticated(request.user):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return is_admin(request.user)
+
+
 class ChatPermission(RolePermission):
     allowed_by_role = {
         MANAGER: {'read', 'list', 'retrieve', 'create'},

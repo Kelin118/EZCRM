@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { canDeleteDangerous, canManageClients, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 import { useEmployeeOptions } from './lookupUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const emptyClient = {
   first_name: '',
@@ -16,6 +17,7 @@ const emptyClient = {
   manager: '',
   notes: '',
   is_active: true,
+  branch: '',
 };
 
 const baseFields = [
@@ -40,7 +42,8 @@ const baseFields = [
 ];
 
 export default function ClientsPage() {
-  const crud = useCrudResource('clients/', { search: '', status: '', manager: '' });
+  const crud = useCrudResource('clients/', { search: '', status: '', manager: '', branch: '' });
+  const { branchOptions } = useBranches();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const user = getStoredUser();
   const canEdit = canManageClients(user);
@@ -49,6 +52,7 @@ export default function ClientsPage() {
   const setForm = (value) => crud.setEditing(value);
   const fields = [
     ...baseFields.slice(0, 8),
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Без филиала' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     ...baseFields.slice(8),
   ];
@@ -65,6 +69,7 @@ export default function ClientsPage() {
           options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'inactive', label: 'Неактивные' }]}
         />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
       </Filters>
       <Table
         data={crud.items}
@@ -82,6 +87,7 @@ export default function ClientsPage() {
           { key: 'phone', header: 'Телефон' },
           { key: 'school_class', header: 'Класс' },
           { key: 'direction', header: 'Направление' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
           { key: 'is_active', header: 'Статус', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Активен' : 'Неактивен'}</Badge> },
           {
             key: 'actions',

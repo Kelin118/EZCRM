@@ -9,6 +9,7 @@ import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useStudyGroupOptions } from './lookupUtils.jsx';
+import useBranches from '../hooks/useBranches.js';
 
 const emptyManualVisit = {
   client: '',
@@ -125,7 +126,8 @@ export default function VisitsPage() {
   const [savingAttendance, setSavingAttendance] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [lessonFilters, setLessonFilters] = useState({ group: initialGroup, teacher: '' });
+  const [lessonFilters, setLessonFilters] = useState({ group: initialGroup, teacher: '', branch: '' });
+  const { branchOptions } = useBranches();
   const [manualOpen, setManualOpen] = useState(false);
   const [manualForm, setManualForm] = useState(emptyManualVisit);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
@@ -333,10 +335,11 @@ export default function VisitsPage() {
 
       {mode === 'journal' ? (
         <>
-          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-2 xl:grid-cols-[180px_220px_220px_minmax(240px,1fr)_190px] xl:items-end">
+          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-2 xl:grid-cols-6 xl:items-end">
             <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
             <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
             <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
+            <SelectField label="Филиал" value={lessonFilters.branch} onChange={(value) => setLessonFilters({ ...lessonFilters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
             <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
             <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
           </div>

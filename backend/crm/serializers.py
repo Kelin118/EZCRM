@@ -10,6 +10,7 @@ from .group_schedule import (
 )
 from .models import (
     AuditLog,
+    Branch,
     CatalogItem,
     ChatMessage,
     Client,
@@ -27,6 +28,15 @@ from .models import (
     Trial,
     Visit,
 )
+
+class BranchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Branch
+        fields = '__all__'
+
+
+class BranchNameMixin(serializers.Serializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='Без филиала')
 
 
 class AuditLogSerializer(serializers.ModelSerializer):
@@ -55,7 +65,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
         return obj.user.get_full_name() or obj.user.username
 
 
-class ClientSerializer(serializers.ModelSerializer):
+class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
@@ -80,13 +90,13 @@ class SubjectSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-class RoomSerializer(serializers.ModelSerializer):
+class RoomSerializer(BranchNameMixin, serializers.ModelSerializer):
     class Meta:
         model = Room
         fields = '__all__'
 
 
-class StudyGroupSerializer(serializers.ModelSerializer):
+class StudyGroupSerializer(BranchNameMixin, serializers.ModelSerializer):
     subject_name = serializers.SerializerMethodField()
     room_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
@@ -174,7 +184,7 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
         return obj.client.phone if obj.client else ''
 
 
-class ScheduleSlotSerializer(serializers.ModelSerializer):
+class ScheduleSlotSerializer(BranchNameMixin, serializers.ModelSerializer):
     group_name = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
@@ -201,7 +211,7 @@ class ScheduleSlotSerializer(serializers.ModelSerializer):
         return obj.get_weekday_display()
 
 
-class LessonSerializer(serializers.ModelSerializer):
+class LessonSerializer(BranchNameMixin, serializers.ModelSerializer):
     group_name = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
@@ -240,7 +250,7 @@ class LessonSerializer(serializers.ModelSerializer):
         return obj.visits.filter(status=Visit.Status.MISSED).count()
 
 
-class SubscriptionSerializer(serializers.ModelSerializer):
+class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
     lessons_total = serializers.IntegerField(source='total_visits', read_only=True)
@@ -273,7 +283,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         return subscription_expected_end_date(obj)
 
 
-class VisitSerializer(serializers.ModelSerializer):
+class VisitSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
     group_name = serializers.SerializerMethodField()
@@ -320,7 +330,7 @@ class VisitSerializer(serializers.ModelSerializer):
         return obj.visited_at.date() if obj.visited_at else None
 
 
-class TrialSerializer(serializers.ModelSerializer):
+class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
     stage = serializers.CharField(source='status', required=False)
     client_name = serializers.SerializerMethodField()
     client_parent_name = serializers.SerializerMethodField()
@@ -352,7 +362,7 @@ class TrialSerializer(serializers.ModelSerializer):
         return obj.subscription.title if obj.subscription else ''
 
 
-class MasterClassSerializer(serializers.ModelSerializer):
+class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
@@ -397,7 +407,7 @@ class MasterClassSerializer(serializers.ModelSerializer):
         return master_class
 
 
-class TaskSerializer(serializers.ModelSerializer):
+class TaskSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     assigned_to_name = serializers.SerializerMethodField()
 
@@ -412,7 +422,7 @@ class TaskSerializer(serializers.ModelSerializer):
         return obj.assigned_to.get_full_name() or obj.assigned_to.username if obj.assigned_to else ''
 
 
-class FinanceTransactionSerializer(serializers.ModelSerializer):
+class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer):
     type = serializers.CharField(source='transaction_type', required=False)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()

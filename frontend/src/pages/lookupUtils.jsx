@@ -87,7 +87,14 @@ export function clientLabel(client) {
 
 export function employeeLabel(employee) {
   const name = employee.display_name || employee.full_name || employee.username || `Сотрудник #${employee.id}`;
-  return employee.role ? `${name} · ${employee.role}` : name;
+  return name;
+}
+
+function employeeHasRole(employee, roleName) {
+  const employeeRoles = Array.isArray(employee.roles) && employee.roles.length
+    ? employee.roles
+    : [employee.role].filter(Boolean);
+  return employeeRoles.includes(roleName);
 }
 
 export function subscriptionLabel(subscription) {
@@ -126,7 +133,7 @@ export function useEmployeeOptions(roles = []) {
   const { items, loading } = useEmployees(roles);
   const options = useMemo(
     () => items
-      .filter((employee) => !roles.length || roles.includes(employee.role))
+      .filter((employee) => !roles.length || roles.some((roleName) => employeeHasRole(employee, roleName)))
       .map((employee) => ({ value: String(employee.id), label: employeeLabel(employee) })),
     [items, roles.join('|')],
   );

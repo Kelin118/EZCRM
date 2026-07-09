@@ -961,12 +961,33 @@ class UserRegistrationAndEmployeeTests(APITestCase):
     def test_staff_options_filters_by_roles(self):
         User = get_user_model()
         admin = User.objects.create_user(username='admin', password='password123', role='admin', roles=['admin'])
+        legacy_teacher = User.objects.create_user(
+            username='legacy-staff-teacher',
+            password='password123',
+            role='teacher',
+            roles=[],
+            is_active=True,
+        )
         employee = User.objects.create_user(
             username='multi-role',
             password='password123',
-            role='teacher',
+            role='manager',
             roles=['teacher', 'manager'],
             is_active=True,
+        )
+        accountant = User.objects.create_user(
+            username='accountant-only',
+            password='password123',
+            role='accountant',
+            roles=['accountant'],
+            is_active=True,
+        )
+        inactive_teacher = User.objects.create_user(
+            username='inactive-teacher',
+            password='password123',
+            role='teacher',
+            roles=['teacher'],
+            is_active=False,
         )
         self.client.force_authenticate(admin)
 
@@ -975,8 +996,17 @@ class UserRegistrationAndEmployeeTests(APITestCase):
 
         self.assertEqual(teacher_response.status_code, 200)
         self.assertEqual(manager_response.status_code, 200)
-        self.assertIn(employee.id, [item['id'] for item in teacher_response.data])
-        self.assertIn(employee.id, [item['id'] for item in manager_response.data])
+        teacher_ids = {item['id'] for item in teacher_response.data}
+        manager_ids = {item['id'] for item in manager_response.data}
+        self.assertIn(legacy_teacher.id, teacher_ids)
+        self.assertIn(employee.id, teacher_ids)
+        self.assertIn(employee.id, manager_ids)
+        self.assertNotIn(accountant.id, teacher_ids)
+        self.assertNotIn(inactive_teacher.id, teacher_ids)
+        employee_item = next(item for item in teacher_response.data if item['id'] == employee.id)
+        self.assertEqual(employee_item['roles'], ['teacher', 'manager'])
+        self.assertIn('Преподаватель', employee_item['display_name'])
+        self.assertIn('Менеджер', employee_item['display_name'])
 
     def test_admin_can_create_employee_with_multiple_roles(self):
         User = get_user_model()

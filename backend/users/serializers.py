@@ -7,10 +7,10 @@ User = get_user_model()
 
 ROLE_CHOICES = {'admin', 'manager', 'teacher', 'accountant'}
 ROLE_LABELS = {
-    'admin': 'Admin',
-    'manager': 'Manager',
-    'teacher': 'Teacher',
-    'accountant': 'Accountant',
+    'admin': 'Администратор',
+    'manager': 'Менеджер',
+    'teacher': 'Преподаватель',
+    'accountant': 'Бухгалтер',
 }
 
 
@@ -90,7 +90,9 @@ class UserPublicSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.username
 
     def get_display_name(self, obj):
-        return obj.get_full_name() or obj.username
+        name = obj.get_full_name() or obj.username
+        role_names = [ROLE_LABELS.get(role, role) for role in obj.get_roles()]
+        return ' · '.join(filter(None, [name, ', '.join(role_names)]))
 
     def get_roles(self, obj):
         return obj.get_roles()
@@ -115,7 +117,9 @@ class StaffOptionSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.username
 
     def get_display_name(self, obj):
-        return obj.get_full_name() or obj.username
+        name = obj.get_full_name() or obj.username
+        role_names = [ROLE_LABELS.get(role, role) for role in obj.get_roles()]
+        return ' · '.join(filter(None, [name, ', '.join(role_names)]))
 
     def get_roles(self, obj):
         return obj.get_roles()

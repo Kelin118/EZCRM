@@ -16,8 +16,8 @@ export default function Modal({ title, open, onClose, children, footer, size = '
       <div className={`flex max-h-[90vh] w-full ${sizes[size] || sizes.default} flex-col overflow-hidden rounded-[24px] bg-white shadow-soft`}>
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-          <Button variant="ghost" className="h-9 w-9 p-0" onClick={onClose} aria-label="Закрыть">
-            <X size={18} />
+          <Button variant="ghost" className="h-9 w-9 rounded-xl p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-900" onClick={onClose} aria-label="Закрыть" title="Закрыть">
+            <X size={20} strokeWidth={2.25} />
           </Button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 scrollbar-thin sm:px-6">{children}</div>

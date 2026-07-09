@@ -323,7 +323,7 @@ class CatalogItemApiTests(APITestCase):
         subscription = Subscription.objects.get(pk=response.data['id'])
         self.assertEqual(subscription.service, service)
         self.assertEqual(subscription.title, service.name)
-        self.assertEqual(subscription.price, service.price)
+        self.assertEqual(str(subscription.price), str(service.price))
         self.assertEqual(subscription.total_visits, 8)
         self.assertEqual(subscription.remaining_visits, 8)
         self.assertEqual(subscription.end_date, date.today() + timedelta(days=29))
@@ -657,11 +657,14 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertIn(new_client.id, client_ids)
         self.assertNotIn(inactive_client.id, client_ids)
 
-    def add_student(self, client, user=None, status_value=Visit.Status.ATTENDED):
+    def add_student(self, client, user=None, status_value=Visit.Status.ATTENDED, extra=None):
         self.client.force_authenticate(user or self.admin)
+        payload = {'client': client.id, 'status': status_value, 'comment': 'Added from journal'}
+        if extra:
+            payload.update(extra)
         return self.client.post(
             f'/api/lessons/{self.lesson.id}/add-student/',
-            {'client': client.id, 'status': status_value, 'comment': 'Added from journal'},
+            payload,
             format='json',
         )
 
@@ -691,6 +694,96 @@ class LessonAttendanceJournalTests(APITestCase):
         visit = Visit.objects.get(lesson=self.lesson, client=client)
         self.assertIsNone(visit.subscription)
         self.assertFalse(visit.lesson_deducted)
+
+    def test_add_student_can_create_subscription_from_service_and_deduct_attended(self):
+        branch = Branch.objects.create(name='Lesson branch')
+        self.group.branch = branch
+        self.group.save(update_fields=('branch', 'updated_at'))
+        self.lesson.branch = branch
+        self.lesson.save(update_fields=('branch', 'updated_at'))
+        client = Client.objects.create(first_name='Paid', last_name='Student')
+        service = CatalogItem.objects.create(
+            name='AB-8',
+            category=CatalogItem.Category.SERVICE,
+            price='45000.00',
+            lessons_count=8,
+            validity_days=30,
+        )
+
+        response = self.add_student(client, extra={
+            'create_subscription': True,
+            'service': service.id,
+            'start_date': '2026-07-09',
+            'price': '45000.00',
+            'payment_amount': '45000.00',
+            'total_visits': 8,
+            'remaining_visits': 8,
+        })
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(client=client)
+        visit = Visit.objects.get(lesson=self.lesson, client=client)
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(subscription.service, service)
+        self.assertEqual(str(subscription.price), str(service.price))
+        self.assertEqual(subscription.total_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 7)
+        self.assertEqual(subscription.start_date, date(2026, 7, 9))
+        self.assertEqual(subscription.end_date, date(2026, 8, 7))
+        self.assertEqual(subscription.branch, branch)
+        self.assertEqual(visit.subscription, subscription)
+        self.assertTrue(visit.lesson_deducted)
+        self.assertEqual(str(transaction.amount), str(service.price))
+        self.assertTrue(response.data['subscription_created'])
+
+    def test_add_student_create_subscription_sick_does_not_deduct(self):
+        client = Client.objects.create(first_name='Sick', last_name='Student')
+        service = CatalogItem.objects.create(
+            name='AB-4',
+            category=CatalogItem.Category.SERVICE,
+            price='24000.00',
+            lessons_count=4,
+            validity_days=28,
+        )
+
+        response = self.add_student(client, status_value=Visit.Status.SICK, extra={
+            'create_subscription': True,
+            'service': service.id,
+            'total_visits': 4,
+            'remaining_visits': 4,
+        })
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(client=client)
+        visit = Visit.objects.get(lesson=self.lesson, client=client)
+        self.assertEqual(subscription.remaining_visits, 4)
+        self.assertFalse(visit.lesson_deducted)
+
+    def test_add_student_without_create_subscription_uses_existing_active_only(self):
+        client = Client.objects.create(first_name='Existing', last_name='Student')
+        existing = Subscription.objects.create(
+            client=client,
+            title='AB-4',
+            start_date=date.today(),
+            total_visits=4,
+            remaining_visits=4,
+            status=Subscription.Status.ACTIVE,
+        )
+
+        response = self.add_student(client, extra={'create_subscription': False})
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Subscription.objects.filter(client=client).count(), 1)
+        self.assertEqual(Visit.objects.get(lesson=self.lesson, client=client).subscription, existing)
+
+    def test_add_student_rejects_product_as_subscription_service(self):
+        client = Client.objects.create(first_name='Bad', last_name='Service')
+        product = CatalogItem.objects.create(name='Book', category=CatalogItem.Category.PRODUCT, price='3500.00')
+
+        response = self.add_student(client, extra={'create_subscription': True, 'service': product.id})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Subscription.objects.filter(client=client).exists())
 
     def test_add_student_reuses_membership_and_visit(self):
         client = self.clients[0]

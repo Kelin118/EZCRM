@@ -159,6 +159,22 @@ def _deduct_subscription_lesson(visit):
         visit.save(update_fields=('lesson_deducted', 'updated_at'))
 
 
+def _active_subscription_queryset(client):
+    today = timezone.localdate()
+    return (
+        Subscription.objects.filter(
+            client=client,
+            status=Subscription.Status.ACTIVE,
+            remaining_visits__gt=0,
+        )
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+    )
+
+
+def _client_active_subscription(client):
+    return _active_subscription_queryset(client).order_by('-start_date', '-created_at').first()
+
+
 def create_lessons_for_slot(slot, date_from, date_to):
     created_count = 0
     current = date_from
@@ -791,6 +807,17 @@ class LessonViewSet(EducationBaseViewSet):
             return Response({'detail': 'Недопустимый статус посещения.'}, status=status.HTTP_400_BAD_REQUEST)
 
         notes = request.data.get('comment') or request.data.get('notes') or ''
+        create_subscription = request.data.get('create_subscription') in (True, 'true', 'True', '1', 1)
+        service = None
+        if create_subscription:
+            service = CatalogItem.objects.filter(
+                pk=request.data.get('service'),
+                category=CatalogItem.Category.SERVICE,
+                is_active=True,
+            ).first()
+            if not service:
+                return Response({'detail': 'Выберите активную услугу.'}, status=status.HTTP_400_BAD_REQUEST)
+
         with transaction.atomic():
             memberships = GroupMembership.objects.select_for_update().filter(group=lesson.group, client=client)
             active_membership = memberships.filter(status=GroupMembership.Status.ACTIVE).first()
@@ -809,11 +836,50 @@ class LessonViewSet(EducationBaseViewSet):
                     )
                     membership_created = True
 
-            subscription = (
-                Subscription.objects.filter(client=client, status=Subscription.Status.ACTIVE)
-                .order_by('-start_date', '-created_at')
-                .first()
-            )
+            subscription = _client_active_subscription(client)
+            created_subscription = None
+            finance_transaction = None
+            if create_subscription:
+                start_date = parse_date(request.data.get('start_date') or '') or lesson.lesson_date or timezone.localdate()
+                total_visits = int(request.data.get('total_visits') or service.lessons_count or 0)
+                remaining_visits = int(request.data.get('remaining_visits') or total_visits or 0)
+                if total_visits <= 0:
+                    return Response({'detail': 'Количество занятий должно быть больше 0.'}, status=status.HTTP_400_BAD_REQUEST)
+                price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else service.price))
+                payment_amount = Decimal(str(request.data.get('payment_amount') or 0))
+                end_date = parse_date(request.data.get('end_date') or '') or calculate_subscription_end_date(
+                    start_date,
+                    lessons_count=total_visits,
+                    validity_days=service.validity_days,
+                    group=lesson.group,
+                )
+                created_subscription = Subscription.objects.create(
+                    branch=lesson.branch or lesson.group.branch or client.branch,
+                    service=service,
+                    client=client,
+                    title=service.name,
+                    start_date=start_date,
+                    end_date=end_date,
+                    total_visits=total_visits,
+                    remaining_visits=remaining_visits,
+                    price=price,
+                    paid_amount=payment_amount,
+                    purchase_date=start_date,
+                    status=Subscription.Status.ACTIVE,
+                )
+                if payment_amount > 0:
+                    finance_transaction = _create_income_transaction(
+                        client=client,
+                        amount=payment_amount,
+                        source='subscription',
+                        paid_at=_paid_at_from_date(start_date),
+                        comment='Оплата абонемента из посещений',
+                        created_by=request.user,
+                        subscription=created_subscription,
+                    )
+                    created_subscription.finance_transaction = finance_transaction
+                    created_subscription.save(update_fields=('finance_transaction', 'updated_at'))
+                subscription = created_subscription
             visit = Visit.objects.select_for_update().filter(lesson=lesson, client=client).first()
             if visit:
                 old_subscription = visit.subscription
@@ -857,6 +923,9 @@ class LessonViewSet(EducationBaseViewSet):
                 'membership_created': membership_created,
                 'visit_created': visit_created,
                 'already_in_group': active_membership is not None,
+                'subscription_created': created_subscription is not None,
+                'subscription': SubscriptionSerializer(created_subscription).data if created_subscription else None,
+                'finance_transaction': finance_transaction.id if finance_transaction else None,
                 'message': 'Ученик уже есть в этой группе' if active_membership else '',
             },
             status=status.HTTP_201_CREATED if visit_created else status.HTTP_200_OK,
@@ -1019,6 +1088,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
         queryset = _filter_branch(super().get_queryset(), self.request)
         status_value = self.request.query_params.get('status')
         client = self.request.query_params.get('client')
+        active = self.request.query_params.get('active')
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
 
@@ -1026,6 +1096,12 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(status=status_value)
         if client:
             queryset = queryset.filter(client_id=client)
+        if active in ('1', 'true', 'True', 'yes'):
+            today = timezone.localdate()
+            queryset = queryset.filter(
+                status=Subscription.Status.ACTIVE,
+                remaining_visits__gt=0,
+            ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
         if date_from:
             queryset = queryset.filter(start_date__gte=date_from)
         if date_to:

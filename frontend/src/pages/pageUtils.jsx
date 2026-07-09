@@ -1,4 +1,4 @@
-import { Edit, Plus, Trash2 } from 'lucide-react';
+import { Edit, Plus, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -156,12 +156,12 @@ export function Actions({ onEdit, onDelete, canEdit = true, canDelete = true }) 
   return (
     <div className="flex justify-end gap-2">
       {canEdit && (
-        <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать">
+        <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать" title="Редактировать">
           <Edit size={16} />
         </Button>
       )}
       {canDelete && (
-        <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить">
+        <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить" title="Удалить">
           <Trash2 size={16} />
         </Button>
       )}
@@ -178,9 +178,11 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
+            <X size={16} />
             Отмена
           </Button>
           <Button onClick={onSubmit} disabled={saving}>
+            <Save size={16} />
             Сохранить
           </Button>
         </>

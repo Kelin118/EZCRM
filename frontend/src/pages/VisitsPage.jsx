@@ -1,4 +1,4 @@
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserX } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserX } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
@@ -8,7 +8,7 @@ import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { useClientOptions, useEmployeeOptions, useStudyGroupOptions } from './lookupUtils.jsx';
+import { useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
 const emptyManualVisit = {
@@ -24,6 +24,14 @@ const emptyStudentVisit = {
   client: '',
   status: 'attended',
   comment: '',
+  create_subscription: false,
+  service: '',
+  start_date: '',
+  end_date: '',
+  total_visits: 0,
+  remaining_visits: 0,
+  price: 0,
+  payment_amount: 0,
 };
 
 export const visitStatusOptions = [
@@ -59,6 +67,7 @@ const addDays = (value, count) => {
   date.setDate(date.getDate() + count);
   return isoDate(date);
 };
+const addValidityDays = (value, days) => (value && days ? addDays(value, Number(days) - 1) : '');
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
 const timeRange = (lesson) => `${lesson.start_time?.slice(0, 5) || '--:--'}-${lesson.end_time?.slice(0, 5) || '--:--'}`;
 const statusLabel = (value) => visitStatusOptions.find((item) => item.value === value)?.label || value || '-';
@@ -132,10 +141,13 @@ export default function VisitsPage() {
   const [manualForm, setManualForm] = useState(emptyManualVisit);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
   const [studentForm, setStudentForm] = useState(emptyStudentVisit);
+  const [activeStudentSubscription, setActiveStudentSubscription] = useState(null);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [addingStudent, setAddingStudent] = useState(false);
 
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
+  const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { groupOptions } = useStudyGroupOptions();
   const { employeeOptions } = useEmployeeOptions(['teacher', 'admin']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -298,18 +310,74 @@ export default function VisitsPage() {
   const openStudentModal = () => {
     if (!selectedLesson || !canAddStudent) return;
     setStudentForm(emptyStudentVisit);
+    setActiveStudentSubscription(null);
     setStudentModalOpen(true);
+  };
+
+  const loadActiveSubscription = async (clientId) => {
+    setActiveStudentSubscription(null);
+    if (!clientId) return;
+    setCheckingSubscription(true);
+    try {
+      const { data } = await api.get('subscriptions/', { params: { client: clientId, active: 1 } });
+      const items = Array.isArray(data) ? data : data.results || [];
+      setActiveStudentSubscription(items[0] || null);
+      if (items[0]) {
+        setStudentForm((current) => ({ ...current, create_subscription: false }));
+      }
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setCheckingSubscription(false);
+    }
+  };
+
+  const selectStudentService = (value) => {
+    const service = services.find((item) => String(item.id) === String(value));
+    const startDate = studentForm.start_date || selectedLesson?.lesson_date || isoDate(new Date());
+    setStudentForm({
+      ...studentForm,
+      service: value,
+      start_date: startDate,
+      end_date: addValidityDays(startDate, service?.validity_days),
+      total_visits: service?.lessons_count || 0,
+      remaining_visits: service?.lessons_count || 0,
+      price: Number(service?.price || 0),
+      payment_amount: Number(service?.price || 0),
+    });
+  };
+
+  const changeStudentSubscriptionStart = (value) => {
+    const service = services.find((item) => String(item.id) === String(studentForm.service));
+    setStudentForm({
+      ...studentForm,
+      start_date: value,
+      end_date: addValidityDays(value, service?.validity_days) || studentForm.end_date,
+    });
   };
 
   const addStudentToLesson = async () => {
     if (!selectedLesson || !studentForm.client) return;
     setAddingStudent(true);
     try {
-      const { data } = await api.post(`lessons/${selectedLesson.id}/add-student/`, {
+      const payload = {
         client: studentForm.client,
         status: studentForm.status,
         comment: studentForm.comment || '',
-      });
+      };
+      if (studentForm.create_subscription && !activeStudentSubscription) {
+        Object.assign(payload, {
+          create_subscription: true,
+          service: studentForm.service,
+          start_date: studentForm.start_date || null,
+          end_date: studentForm.end_date || null,
+          total_visits: studentForm.total_visits,
+          remaining_visits: studentForm.remaining_visits,
+          price: studentForm.price,
+          payment_amount: studentForm.payment_amount,
+        });
+      }
+      const { data } = await api.post(`lessons/${selectedLesson.id}/add-student/`, payload);
       setStudentModalOpen(false);
       await loadAttendance(selectedLesson, true);
       dispatchToast(data.message || 'Ученик добавлен в занятие.');
@@ -472,6 +540,15 @@ export default function VisitsPage() {
         clientOptions={clientOptions}
         lesson={selectedLesson}
         saving={addingStudent}
+        services={services}
+        activeSubscription={activeStudentSubscription}
+        checkingSubscription={checkingSubscription}
+        onClientChange={(value) => {
+          setStudentForm({ ...studentForm, client: value, create_subscription: false, service: '' });
+          loadActiveSubscription(value);
+        }}
+        onServiceChange={selectStudentService}
+        onStartDateChange={changeStudentSubscriptionStart}
       />
     </>
   );
@@ -608,7 +685,10 @@ function ClassicVisits({ crud, clientOptions, groupOptions, employeeOptions, can
   );
 }
 
-function AddStudentModal({ open, form, setForm, onClose, onSave, clientOptions, lesson, saving }) {
+function AddStudentModal({
+  open, form, setForm, onClose, onSave, clientOptions, lesson, saving,
+  services, activeSubscription, checkingSubscription, onClientChange, onServiceChange, onStartDateChange,
+}) {
   if (!lesson) return null;
   const lessonDate = lesson.lesson_date
     ? parseLocalDate(lesson.lesson_date).toLocaleDateString('ru-RU')
@@ -628,7 +708,7 @@ function AddStudentModal({ open, form, setForm, onClose, onSave, clientOptions, 
       footer={(
         <>
           <Button variant="secondary" onClick={onClose}>Отмена</Button>
-          <Button onClick={onSave} disabled={!form.client || saving}>
+          <Button onClick={onSave} disabled={!form.client || saving || (form.create_subscription && !activeSubscription && !form.service)}>
             {saving ? 'Добавление...' : 'Добавить ученика'}
           </Button>
         </>
@@ -642,10 +722,67 @@ function AddStudentModal({ open, form, setForm, onClose, onSave, clientOptions, 
         <ClientSelectWithCreate
           label="Ученик"
           value={form.client}
-          onChange={(value) => setForm({ ...form, client: value })}
+          onChange={onClientChange}
           options={clientOptions}
           placeholder="Выберите ученика"
         />
+        <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-900">
+            <CreditCard size={17} />
+            Абонемент
+          </div>
+          {!form.client ? (
+            <p className="text-sm font-medium text-slate-500">Выберите ученика, чтобы проверить абонемент</p>
+          ) : checkingSubscription ? (
+            <p className="text-sm font-medium text-slate-500">Проверяем абонемент...</p>
+          ) : activeSubscription ? (
+            <div className="flex items-start gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              <CheckCircle2 className="mt-0.5 shrink-0" size={17} />
+              <div>
+                <p className="font-bold">Активный абонемент: {activeSubscription.service_name || activeSubscription.title}</p>
+                <p className="mt-1 font-medium">Остаток {activeSubscription.lessons_left ?? activeSubscription.remaining_visits ?? 0}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              <div className="flex items-start gap-2 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <AlertCircle className="mt-0.5 shrink-0" size={17} />
+                <p className="font-semibold">У ученика нет активного абонемента</p>
+              </div>
+              <label className="flex items-center gap-3 text-sm font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.create_subscription)}
+                  onChange={(event) => setForm({ ...form, create_subscription: event.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                />
+                Оформить абонемент сейчас
+              </label>
+              {form.create_subscription && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <SelectField
+                    label="Услуга"
+                    value={form.service}
+                    onChange={onServiceChange}
+                    options={[
+                      { value: '', label: services.length ? 'Выберите услугу' : 'Нет добавленных услуг' },
+                      ...services.map((service) => ({
+                        value: String(service.id),
+                        label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸`,
+                      })),
+                    ]}
+                  />
+                  <Input label="Дата начала" type="date" value={form.start_date} onChange={(event) => onStartDateChange(event.target.value)} />
+                  <Input label="Дата окончания" type="date" value={form.end_date} onChange={(event) => setForm({ ...form, end_date: event.target.value })} />
+                  <Input label="Всего занятий" type="number" value={form.total_visits} onChange={(event) => setForm({ ...form, total_visits: Number(event.target.value) })} />
+                  <Input label="Остаток занятий" type="number" value={form.remaining_visits} onChange={(event) => setForm({ ...form, remaining_visits: Number(event.target.value) })} />
+                  <Input label="Цена" type="number" value={form.price} onChange={(event) => setForm({ ...form, price: Number(event.target.value) })} />
+                  <Input label="Оплата" type="number" value={form.payment_amount} onChange={(event) => setForm({ ...form, payment_amount: Number(event.target.value) })} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <SelectField
           label="Статус"
           value={form.status}

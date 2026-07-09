@@ -397,6 +397,26 @@ export default function VisitsPage() {
             </section>
 
             <section className="min-w-0 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">
+                    {selectedLesson
+                      ? [selectedLesson.group_name, selectedLesson.subject_name, timeRange(selectedLesson), selectedLesson.teacher_name].filter(Boolean).join(' / ')
+                      : 'Выберите занятие'}
+                  </h3>
+                  {selectedLesson && <p className="mt-1 text-sm text-slate-500">Всего учеников: {attendanceRows.length}</p>}
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={openStudentModal}
+                  disabled={!selectedLesson || !canAddStudent}
+                  title={!selectedLesson ? 'Сначала выберите занятие' : (!canAddStudent ? 'Недостаточно прав' : undefined)}
+                >
+                  <Plus size={16} />
+                  Добавить ученика
+                </Button>
+              </div>
+
               {!selectedLesson ? (
                 <div className="grid min-h-80 place-items-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-center">
                   <div>
@@ -406,9 +426,7 @@ export default function VisitsPage() {
                 </div>
               ) : (
                 <AttendanceJournal
-                  lesson={selectedLesson}
                   rows={filteredRows}
-                  allRows={attendanceRows}
                   loading={attendanceLoading}
                   dirtyCount={dirtyRows.length}
                   saving={savingAttendance}
@@ -417,8 +435,6 @@ export default function VisitsPage() {
                   onSetAll={setAllStatuses}
                   onReset={resetChanges}
                   onSave={saveAttendance}
-                  onAddStudent={openStudentModal}
-                  canAddStudent={canAddStudent}
                 />
               )}
             </section>
@@ -459,26 +475,10 @@ export default function VisitsPage() {
 }
 
 function AttendanceJournal({
-  lesson, rows, allRows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave,
-  onAddStudent, canAddStudent,
+  rows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave,
 }) {
-  const header = [lesson.group_name, lesson.subject_name, timeRange(lesson), lesson.teacher_name].filter(Boolean).join(' / ');
-
   return (
     <div>
-      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <h3 className="text-xl font-bold text-slate-900">{header || lessonTitle(lesson)}</h3>
-          <p className="mt-1 text-sm text-slate-500">Всего учеников: {allRows.length}</p>
-        </div>
-        {canAddStudent && (
-          <Button variant="secondary" onClick={onAddStudent}>
-            <Plus size={16} />
-            Добавить ученика
-          </Button>
-        )}
-      </div>
-
       <div className="mb-4 flex flex-wrap gap-2">
         <Button variant="secondary" onClick={() => onSetAll('attended')} disabled={!canEdit}><UserCheck size={16} />Всех отметить Посетил</Button>
         <Button variant="secondary" onClick={() => onSetAll('missed')} disabled={!canEdit}><UserX size={16} />Всех отметить Пропуск</Button>

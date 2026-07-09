@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import api from '../../api/axios.js';
 import { canManageClients, getStoredUser } from '../../auth.js';
+import useClients from '../../hooks/useClients.js';
 import QuickClientCreateModal from './QuickClientCreateModal.jsx';
 
 function toList(data) {
@@ -34,41 +35,39 @@ export default function ClientSelectWithCreate({
   placeholder = 'Выберите клиента',
 }) {
   const [loadedClients, setLoadedClients] = useState([]);
-  const [createdClients, setCreatedClients] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const { clients: sharedClients, addClientToCache } = useClients();
   const user = getStoredUser();
   const canCreate = canManageClients(user);
 
   useEffect(() => {
-    if (clients || options) return undefined;
+    if (clients || options || sharedClients.length) return undefined;
     let mounted = true;
-    api.get('clients/').then(({ data }) => {
+    api.get('clients/options/').then(({ data }) => {
       if (mounted) setLoadedClients(toList(data));
     }).catch(() => {
       if (mounted) setLoadedClients([]);
     });
-    return () => {
-      mounted = false;
-    };
-  }, [clients, options]);
+    return () => { mounted = false; };
+  }, [clients, options, sharedClients]);
 
   const baseClients = useMemo(() => {
-    if (clients) return clients;
-    if (options) return options.map(optionToClient).filter(Boolean);
-    return loadedClients;
-  }, [clients, options, loadedClients]);
+    if (clients) return [...sharedClients, ...clients];
+    if (options) return [...sharedClients, ...options.map(optionToClient).filter(Boolean)];
+    return sharedClients.length ? sharedClients : loadedClients;
+  }, [clients, options, loadedClients, sharedClients]);
 
   const clientOptions = useMemo(() => {
     const byId = new Map();
-    [...createdClients, ...baseClients].forEach((client) => {
+    baseClients.forEach((client) => {
       if (client?.id !== undefined && client?.id !== null) byId.set(String(client.id), client);
     });
     return Array.from(byId.values()).map((client) => ({ value: String(client.id), label: getClientDisplayName(client) }));
-  }, [createdClients, baseClients]);
+  }, [baseClients]);
 
   const handleCreated = (client) => {
     const nextClient = { ...client, id: String(client.id) };
-    setCreatedClients((current) => [nextClient, ...current.filter((item) => String(item.id) !== String(nextClient.id))]);
+    addClientToCache(nextClient);
     onChange(String(nextClient.id), nextClient);
     onClientCreated?.(nextClient);
   };

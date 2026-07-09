@@ -162,6 +162,21 @@ class ClientPhoneDuplicateTests(APITestCase):
         self.assertIn('Айнур', display_name)
         self.assertIn('87070000000', display_name)
 
+    def test_client_options_returns_active_clients_in_shared_format(self):
+        active = Client.objects.create(**self.payload())
+        Client.objects.create(**{**self.payload('Inactive', 'Client'), 'is_active': False})
+
+        response = self.client.get('/api/clients/options/')
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item['id'] for item in response.data}
+        self.assertIn(active.id, ids)
+        self.assertNotIn(Client.objects.get(first_name='Inactive').id, ids)
+        item = next(item for item in response.data if item['id'] == active.id)
+        self.assertEqual(item['full_name'], str(active))
+        self.assertIn(active.parent_name, item['display_name'])
+        self.assertIn(active.phone, item['display_name'])
+
     def test_same_phone_same_name_creation_does_not_return_400(self):
         first = self.client.post('/api/clients/', self.payload(), format='json')
         second = self.client.post('/api/clients/', self.payload(), format='json')
@@ -559,6 +574,28 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         membership.refresh_from_db()
         self.assertEqual(membership.status, GroupMembership.Status.ACTIVE)
+        self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client).count(), 1)
+
+    def test_group_membership_api_reactivates_without_duplicate(self):
+        client = Client.objects.create(first_name='Returning', last_name='Through API')
+        membership = GroupMembership.objects.create(
+            group=self.group,
+            client=client,
+            status=GroupMembership.Status.LEFT,
+            left_at=date.today(),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/group-memberships/',
+            {'group': self.group.id, 'client': client.id, 'status': GroupMembership.Status.ACTIVE},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        membership.refresh_from_db()
+        self.assertEqual(membership.status, GroupMembership.Status.ACTIVE)
+        self.assertIsNone(membership.left_at)
         self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client).count(), 1)
 
     def test_plain_teacher_cannot_add_student(self):

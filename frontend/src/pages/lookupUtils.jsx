@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import useSharedClients from '../hooks/useClients.js';
 
 export function toList(data) {
   return Array.isArray(data) ? data : data?.results || [];
@@ -46,7 +47,14 @@ export function useLookup(endpoint, params = {}, options = {}) {
 }
 
 export function useClients() {
-  return useLookup('clients/');
+  const { clients, loading, refreshClients, addClientToCache, getClientById } = useSharedClients();
+  return {
+    items: clients,
+    loading,
+    refreshClients,
+    addClientToCache,
+    getClientById,
+  };
 }
 
 export function useSubjects() {
@@ -72,8 +80,9 @@ export function useEmployees(roles = []) {
 }
 
 export function clientLabel(client) {
-  const name = client.client_name || `${client.first_name || ''} ${client.last_name || ''}`.trim() || client.full_name || `Клиент #${client.id}`;
-  return [name, client.phone].filter(Boolean).join(' · ');
+  if (client.display_name) return client.display_name;
+  const name = client.client_name || client.full_name || `${client.first_name || ''} ${client.last_name || ''}`.trim() || `Клиент #${client.id}`;
+  return [name, client.parent_name, client.phone].filter(Boolean).join(' · ');
 }
 
 export function employeeLabel(employee) {
@@ -102,9 +111,15 @@ export function groupLabel(group) {
 }
 
 export function useClientOptions() {
-  const { items, loading } = useClients();
-  const options = useMemo(() => items.map((client) => ({ value: String(client.id), label: clientLabel(client) })), [items]);
-  return { clients: items, clientOptions: options, loadingClients: loading };
+  const shared = useSharedClients();
+  return {
+    clients: shared.clients,
+    clientOptions: shared.clientOptions,
+    loadingClients: shared.loading,
+    refreshClients: shared.refreshClients,
+    addClientToCache: shared.addClientToCache,
+    getClientById: shared.getClientById,
+  };
 }
 
 export function useEmployeeOptions(roles = []) {

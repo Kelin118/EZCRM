@@ -458,6 +458,21 @@ class GroupMembershipViewSet(EducationBaseViewSet):
     audit_update_description = 'Изменено участие ученика в группе'
     audit_delete_description = 'Ученик удалён из группы'
 
+    def create(self, request, *args, **kwargs):
+        group_id = request.data.get('group')
+        client_id = request.data.get('client')
+        requested_status = request.data.get('status') or GroupMembership.Status.ACTIVE
+        if group_id and client_id and requested_status == GroupMembership.Status.ACTIVE:
+            existing = GroupMembership.objects.filter(group_id=group_id, client_id=client_id).order_by('-created_at').first()
+            if existing:
+                if existing.status != GroupMembership.Status.ACTIVE:
+                    existing.status = GroupMembership.Status.ACTIVE
+                    existing.left_at = None
+                    existing.note = request.data.get('note', existing.note)
+                    existing.save(update_fields=('status', 'left_at', 'note', 'updated_at'))
+                return Response(self.get_serializer(existing).data, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = super().get_queryset()
         group = self.request.query_params.get('group')
@@ -911,6 +926,23 @@ class ClientViewSet(BaseAuthenticatedViewSet):
     audit_create_description = 'Создан клиент'
     audit_update_description = 'Изменён клиент'
     audit_delete_description = 'Удалён клиент'
+
+    @action(detail=False, methods=['get'], url_path='options')
+    def options(self, request):
+        clients = self.filter_queryset(self.get_queryset().filter(is_active=True))
+        return Response(
+            [
+                {
+                    'id': client.id,
+                    'full_name': str(client),
+                    'display_name': ' · '.join(filter(None, [str(client), client.parent_name, client.phone])),
+                    'phone': client.phone,
+                    'parent_name': client.parent_name,
+                    'is_active': client.is_active,
+                }
+                for client in clients
+            ]
+        )
 
     def get_queryset(self):
         queryset = super().get_queryset()

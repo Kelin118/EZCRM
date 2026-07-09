@@ -230,13 +230,15 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
             );
           }
           return (
-            <Input
-              key={field.name}
-              label={field.label}
-              type={field.type || 'text'}
-              value={form[field.name] ?? ''}
-              onChange={(event) => setForm({ ...form, [field.name]: event.target.value })}
-            />
+            <div key={field.name} className={field.className || ''}>
+              <Input
+                label={field.label}
+                type={field.type || 'text'}
+                value={form[field.name] ?? ''}
+                onChange={(event) => field.onChange ? field.onChange(event.target.value, form, setForm) : setForm({ ...form, [field.name]: event.target.value })}
+              />
+              {field.help && <p className="mt-1 text-xs font-medium text-slate-500">{field.help}</p>}
+            </div>
           );
         })}
       </div>

@@ -1,9 +1,11 @@
 from rest_framework import serializers
+from django.utils import timezone
 
 from .group_schedule import (
     group_future_dates,
     schedule_display,
     subscription_expected_end_date,
+    subscription_group,
     subscription_planned_lessons_left,
     subscription_remaining_lessons,
     subscription_used_lessons,
@@ -28,6 +30,7 @@ from .models import (
     Trial,
     Visit,
 )
+from .subscription_dates import calculate_subscription_end_date
 
 class BranchSerializer(serializers.ModelSerializer):
     class Meta:
@@ -265,7 +268,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     class Meta:
         model = Subscription
         fields = '__all__'
-        extra_kwargs = {'title': {'required': False}}
+        extra_kwargs = {'title': {'required': False}, 'start_date': {'required': False}}
 
     def get_client_name(self, obj):
         return str(obj.client)
@@ -292,16 +295,57 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        service = attrs.get('service')
+        initial_data = getattr(self, 'initial_data', {})
+        service = attrs.get('service', self.instance.service if self.instance else None)
         if service:
             attrs['title'] = service.name
-            if 'price' not in self.initial_data:
+            if 'price' not in initial_data:
                 attrs['price'] = service.price
-            if service.lessons_count and not self.initial_data.get('total_visits'):
+            if 'paid_amount' not in initial_data and self.instance is None:
+                attrs['paid_amount'] = service.price
+            if service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
                 attrs['total_visits'] = service.lessons_count
+            if service.lessons_count:
+                service_changed = self.instance is None or attrs.get('service') is not None
                 if self.instance is None:
                     attrs['remaining_visits'] = service.lessons_count
+                elif service_changed and ('remaining_visits' not in initial_data or initial_data.get('remaining_visits') in (None, '')):
+                    used_lessons = subscription_used_lessons(self.instance)
+                    attrs['remaining_visits'] = max(service.lessons_count - used_lessons, 0)
+
+            if self.instance is None and not attrs.get('start_date'):
+                attrs['start_date'] = timezone.localdate()
+
+            should_calculate_end_date = 'end_date' not in initial_data
+            if should_calculate_end_date:
+                start_date = attrs.get('start_date') or (self.instance.start_date if self.instance else None)
+                lessons_count = attrs.get('total_visits') or getattr(service, 'lessons_count', None)
+                group = self._subscription_group(attrs)
+                calculated_end_date = calculate_subscription_end_date(
+                    start_date,
+                    lessons_count=lessons_count,
+                    validity_days=service.validity_days,
+                    group=group,
+                )
+                if calculated_end_date:
+                    attrs['end_date'] = calculated_end_date
+        elif self.instance is None and not attrs.get('start_date'):
+            raise serializers.ValidationError({'start_date': 'Укажите дату начала.'})
         return attrs
+
+    def _subscription_group(self, attrs):
+        if self.instance:
+            return subscription_group(self.instance)
+        client = attrs.get('client')
+        if not client:
+            return None
+        membership = (
+            GroupMembership.objects.select_related('group')
+            .filter(client=client, status=GroupMembership.Status.ACTIVE)
+            .order_by('joined_at', 'id')
+            .first()
+        )
+        return membership.group if membership else None
 
 
 class VisitSerializer(BranchNameMixin, serializers.ModelSerializer):

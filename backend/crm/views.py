@@ -96,6 +96,7 @@ from .serializers import (
     TrialSerializer,
     VisitSerializer,
 )
+from .subscription_dates import calculate_subscription_end_date
 
 
 def _filter_branch(queryset, request):
@@ -1227,10 +1228,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 return Response({'detail': 'Выберите активную услугу.'}, status=status.HTTP_400_BAD_REQUEST)
 
         title = (service.name if service else None) or request.data.get('subscription_type') or request.data.get('title') or ''
-        start_date = parse_date(request.data.get('start_date') or '')
+        start_date = parse_date(request.data.get('start_date') or '') or (timezone.localdate() if service else None)
         total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
         price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
-        payment_amount = Decimal(str(request.data.get('payment_amount') or 0))
+        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else (service.price if service else 0)))
         payment_method = request.data.get('payment_method') or ''
         comment = request.data.get('comment') or 'Оплата абонемента после пробного'
 
@@ -1241,6 +1242,21 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         if total_visits <= 0:
             return Response({'detail': 'Количество занятий должно быть больше 0'}, status=status.HTTP_400_BAD_REQUEST)
 
+        end_date = parse_date(request.data.get('end_date') or '')
+        if not end_date and service:
+            membership = (
+                GroupMembership.objects.select_related('group')
+                .filter(client=trial.client, status=GroupMembership.Status.ACTIVE)
+                .order_by('joined_at', 'id')
+                .first()
+            )
+            end_date = calculate_subscription_end_date(
+                start_date,
+                lessons_count=total_visits,
+                validity_days=service.validity_days,
+                group=membership.group if membership else None,
+            )
+
         with transaction.atomic():
             subscription = Subscription.objects.create(
                 branch=trial.branch or trial.client.branch,
@@ -1248,6 +1264,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 client=trial.client,
                 title=title,
                 start_date=start_date,
+                end_date=end_date,
                 total_visits=total_visits,
                 remaining_visits=total_visits,
                 price=price,
@@ -1519,6 +1536,7 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
             'category': instance.category,
             'is_active': instance.is_active,
             'lessons_count': instance.lessons_count,
+            'validity_days': instance.validity_days,
         }
 
     def perform_create(self, serializer):

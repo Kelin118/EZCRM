@@ -525,6 +525,7 @@ class CatalogItem(TimeStampedModel):
     name = models.CharField(max_length=150)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     lessons_count = models.PositiveIntegerField(null=True, blank=True)
+    validity_days = models.PositiveIntegerField(null=True, blank=True)
     category = models.CharField(max_length=30, choices=Category.choices)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)

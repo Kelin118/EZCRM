@@ -24,6 +24,7 @@ const emptyCatalogForm = {
   name: '',
   price: '',
   lessons_count: '',
+  validity_days: '',
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
@@ -136,7 +137,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', is_active: item.is_active }
+        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', validity_days: item.validity_days || '', is_active: item.is_active }
         : { ...emptyCatalogForm },
     );
   };
@@ -173,6 +174,7 @@ export default function SettingsPage() {
       category: catalogModal.category,
       is_active: catalogForm.is_active,
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
+      validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
     };
 
     try {
@@ -374,7 +376,10 @@ export default function SettingsPage() {
           <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
           <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
           {catalogModal.category === 'service' && (
-            <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
+            <>
+              <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
+              <Input label="Срок действия, дней" type="number" min="1" value={catalogForm.validity_days} onChange={(event) => setCatalogForm({ ...catalogForm, validity_days: event.target.value })} />
+            </>
           )}
           {catalogModal.item && (
             <label className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700 md:col-span-2">
@@ -439,20 +444,32 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
             <tr>
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Наименование</th>
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
+              {section.category === 'service' && (
+                <>
+                  <th className="border-b border-slate-100 px-4 py-3 font-bold">Занятий</th>
+                  <th className="border-b border-slate-100 px-4 py-3 font-bold">Срок действия</th>
+                </>
+              )}
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th>
               <th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 6 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 6 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
                   <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
                   <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
+                  {section.category === 'service' && (
+                    <>
+                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.lessons_count || '—'}</td>
+                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.validity_days ? `${item.validity_days} дн.` : '—'}</td>
+                    </>
+                  )}
                   <td className="border-b border-slate-100 px-4 py-3">
                     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${item.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                       {item.is_active ? 'Активен' : 'Отключен'}

@@ -26,6 +26,26 @@ from .models import (
     Visit,
 )
 from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
+from .subscription_dates import calculate_subscription_end_date
+
+
+class SubscriptionDateHelperTests(APITestCase):
+    def test_validity_days_calculates_inclusive_end_date(self):
+        self.assertEqual(
+            calculate_subscription_end_date(date(2026, 7, 1), lessons_count=8, validity_days=30),
+            date(2026, 7, 30),
+        )
+
+    def test_lessons_count_fallback_rules(self):
+        self.assertEqual(calculate_subscription_end_date(date(2026, 7, 1), lessons_count=4), date(2026, 7, 28))
+        self.assertEqual(calculate_subscription_end_date(date(2026, 7, 1), lessons_count=8), date(2026, 7, 31))
+
+    def test_group_schedule_uses_nth_group_day(self):
+        group = StudyGroup.objects.create(name='Tue Thu', schedule_days=['tuesday', 'thursday'])
+
+        end_date = calculate_subscription_end_date(date(2026, 7, 9), lessons_count=8, validity_days=30, group=group)
+
+        self.assertEqual(end_date, date(2026, 8, 4))
 
 
 class RolePermissionTests(APITestCase):
@@ -217,6 +237,25 @@ class CatalogItemApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['category'], 'service')
+
+    def test_service_has_lessons_count_and_validity_days(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {
+                'name': 'AB-8',
+                'price': '45000.00',
+                'category': 'service',
+                'lessons_count': 8,
+                'validity_days': 30,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['lessons_count'], 8)
+        self.assertEqual(response.data['validity_days'], 30)
         self.assertEqual(response.data['category_display'], 'Услуги')
 
     def test_admin_can_create_product(self):
@@ -268,7 +307,7 @@ class CatalogItemApiTests(APITestCase):
 
     def test_subscription_from_service_copies_snapshot(self):
         service = CatalogItem.objects.create(
-            name='AB-8', price='45000.00', category='service', lessons_count=8,
+            name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30,
         )
         student = Client.objects.create(first_name='Service', last_name='Student')
         self.client.force_authenticate(self.manager)
@@ -287,10 +326,46 @@ class CatalogItemApiTests(APITestCase):
         self.assertEqual(subscription.price, service.price)
         self.assertEqual(subscription.total_visits, 8)
         self.assertEqual(subscription.remaining_visits, 8)
+        self.assertEqual(subscription.end_date, date.today() + timedelta(days=29))
         service.price = 50000
-        service.save(update_fields=('price', 'updated_at'))
+        service.lessons_count = 10
+        service.save(update_fields=('price', 'lessons_count', 'updated_at'))
         subscription.refresh_from_db()
         self.assertEqual(subscription.price, 45000)
+        self.assertEqual(subscription.total_visits, 8)
+
+    def test_subscription_from_service_defaults_start_date_to_today(self):
+        service = CatalogItem.objects.create(
+            name='AB-4', price='24000.00', category='service', lessons_count=4, validity_days=28,
+        )
+        student = Client.objects.create(first_name='Today', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/subscriptions/', {'client': student.id, 'service': service.id}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        self.assertEqual(subscription.start_date, timezone.localdate())
+        self.assertEqual(subscription.end_date, timezone.localdate() + timedelta(days=27))
+
+    def test_subscription_from_service_uses_group_schedule_for_end_date(self):
+        service = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30,
+        )
+        student = Client.objects.create(first_name='Group', last_name='Student')
+        group = StudyGroup.objects.create(name='Tue Thu', schedule_days=['tuesday', 'thursday'])
+        GroupMembership.objects.create(group=group, client=student, status=GroupMembership.Status.ACTIVE)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'start_date': '2026-07-09'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        self.assertEqual(subscription.end_date, date(2026, 8, 4))
 
     def test_product_cannot_be_used_as_subscription_service(self):
         product = CatalogItem.objects.create(name='Book', price='3500.00', category='product')
@@ -1477,7 +1552,7 @@ class TrialConversionTests(APITestCase):
 
     def test_conversion_accepts_service_and_copies_catalog_values(self):
         service = CatalogItem.objects.create(
-            name='AB-4', price='24000.00', category=CatalogItem.Category.SERVICE, lessons_count=4,
+            name='AB-4', price='24000.00', category=CatalogItem.Category.SERVICE, lessons_count=4, validity_days=28,
         )
         trial = self.create_trial()
         self.client.force_authenticate(self.admin)
@@ -1498,7 +1573,31 @@ class TrialConversionTests(APITestCase):
         self.assertEqual(subscription.title, 'AB-4')
         self.assertEqual(subscription.price, service.price)
         self.assertEqual(subscription.total_visits, 4)
+        self.assertEqual(subscription.remaining_visits, 4)
+        self.assertEqual(subscription.end_date, date.today() + timedelta(days=27))
         self.assertEqual(transaction.amount, 20000)
+
+    def test_conversion_with_service_defaults_start_end_and_payment(self):
+        service = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category=CatalogItem.Category.SERVICE, lessons_count=8, validity_days=30,
+        )
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/trials/{trial.id}/convert-to-subscription/',
+            {'service': service.id, 'payment_method': 'cash'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['subscription']['id'])
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
+        self.assertEqual(subscription.start_date, timezone.localdate())
+        self.assertEqual(subscription.end_date, timezone.localdate() + timedelta(days=29))
+        self.assertEqual(subscription.total_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 8)
+        self.assertEqual(str(transaction.amount), str(service.price))
 
     def test_teacher_without_manager_cannot_convert(self):
         trial = self.create_trial()

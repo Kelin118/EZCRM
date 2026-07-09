@@ -18,7 +18,16 @@ const trialStages = [
 ];
 
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
-const emptyConvertForm = { service: '', subscription_type: '', start_date: new Date().toISOString().slice(0, 10), total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const addDaysIso = (dateValue, days) => {
+  if (!dateValue || !days) return '';
+  const date = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return '';
+  date.setDate(date.getDate() + Number(days) - 1);
+  return date.toISOString().slice(0, 10);
+};
+
+const emptyConvertForm = { service: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -225,7 +234,7 @@ export default function TrialsPage() {
       ...emptyConvertForm,
       price: Number(trial.price || 0),
       payment_amount: Number(trial.price || 0),
-      start_date: new Date().toISOString().slice(0, 10),
+      start_date: todayIso(),
     });
   };
 
@@ -261,12 +270,23 @@ export default function TrialsPage() {
 
   const setSubscriptionService = (value) => {
     const service = services.find((item) => String(item.id) === String(value));
+    const startDate = convertForm.start_date || todayIso();
     updateConvertForm({
       service: value,
       subscription_type: service?.name || '',
       total_visits: service?.lessons_count || 0,
       price: Number(service?.price || 0),
       payment_amount: Number(service?.price || 0),
+      start_date: startDate,
+      end_date: addDaysIso(startDate, service?.validity_days),
+    });
+  };
+
+  const setConvertStartDate = (value) => {
+    const service = services.find((item) => String(item.id) === String(convertForm.service));
+    updateConvertForm({
+      start_date: value,
+      end_date: addDaysIso(value, service?.validity_days) || convertForm.end_date,
     });
   };
 
@@ -347,7 +367,8 @@ export default function TrialsPage() {
               ...services.map((service) => ({ value: String(service.id), label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸` })),
             ]}
           />
-          <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => updateConvertForm({ start_date: event.target.value })} />
+          <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => setConvertStartDate(event.target.value)} />
+          <Input label="Дата окончания" type="date" value={convertForm.end_date} onChange={(event) => updateConvertForm({ end_date: event.target.value })} />
           <Input label="Количество занятий" type="number" value={convertForm.total_visits} onChange={(event) => updateConvertForm({ total_visits: Number(event.target.value) })} />
           <Input label="Цена" type="number" value={convertForm.price} onChange={(event) => updateConvertForm({ price: Number(event.target.value) })} />
           <Input label="Сумма оплаты" type="number" value={convertForm.payment_amount} onChange={(event) => updateConvertForm({ payment_amount: Number(event.target.value) })} />

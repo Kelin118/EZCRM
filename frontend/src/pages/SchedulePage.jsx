@@ -5,7 +5,7 @@ import { useMemo, useState } from 'react';
 import api from '../api/axios.js';
 import Modal from '../components/ui/Modal.jsx';
 import { canDeleteDangerous, getStoredUser, hasRole, ROLES } from '../auth.js';
-import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, dateOnly, showApiError, useCrudResource } from './pageUtils.jsx';
+import { ActionButton, Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, Table, dateOnly, showApiError, useCrudResource } from './pageUtils.jsx';
 import { useEmployeeOptions, useRoomOptions, useStudyGroupOptions, useSubjectOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
@@ -211,7 +211,7 @@ export default function SchedulePage() {
                     <Link to={`/visits?lesson=${row.id}`}>
                       <Button variant="secondary"><CheckSquare size={16} />Отметить посещения</Button>
                     </Link>
-                    {canEdit && <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={() => cancelLesson(row)} aria-label="Отменить" title="Отменить"><XCircle size={16} /></Button>}
+                    {canEdit && <ActionButton icon={XCircle} label="Отменить" onClick={() => cancelLesson(row)} variant="danger" />}
                     <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { lessonCrud.setEditing(row); lessonCrud.setModalOpen(true); }} onDelete={() => lessonCrud.remove(row.id)} />
                   </div>
                 ),

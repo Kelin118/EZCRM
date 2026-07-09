@@ -1,4 +1,4 @@
-import { Edit, Plus, Save, Trash2, X } from 'lucide-react';
+import { Pencil, Plus, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -150,20 +150,43 @@ export function SelectField({ label, value, onChange, options }) {
   );
 }
 
+export function ActionButton({ icon: Icon, label, title, onClick, variant = 'secondary', className = '', as: Component = 'button', to, ...props }) {
+  const tone = {
+    secondary: 'border-slate-200 bg-white text-slate-600 hover:border-brand/30 hover:bg-brand/5 hover:text-brand',
+    danger: 'border-red-100 bg-red-50 text-red-600 hover:border-red-200 hover:bg-red-600 hover:text-white',
+    ghost: 'border-transparent bg-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900',
+    accent: 'border-accent/40 bg-accent/25 text-slate-800 hover:bg-accent/45',
+  };
+  const accessibilityLabel = title || label;
+  const content = Icon ? <Icon size={17} strokeWidth={2.1} aria-hidden="true" /> : <span className="px-2 text-xs font-bold">{label}</span>;
+  const sharedProps = {
+    title: accessibilityLabel,
+    'aria-label': accessibilityLabel,
+    className: `inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-semibold transition ${tone[variant] || tone.secondary} ${className}`,
+    ...props,
+  };
+
+  if (Component !== 'button') {
+    return <Component to={to} {...sharedProps}>{content}</Component>;
+  }
+
+  return (
+    <button type="button" onClick={onClick} {...sharedProps}>
+      {content}
+    </button>
+  );
+}
+
 export function Actions({ onEdit, onDelete, canEdit = true, canDelete = true }) {
   if (!canEdit && !canDelete) return null;
 
   return (
     <div className="flex justify-end gap-2">
       {canEdit && (
-        <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={onEdit} aria-label="Редактировать" title="Редактировать">
-          <Edit size={16} />
-        </Button>
+        <ActionButton icon={Pencil} label="Редактировать" onClick={onEdit} />
       )}
       {canDelete && (
-        <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={onDelete} aria-label="Удалить" title="Удалить">
-          <Trash2 size={16} />
-        </Button>
+        <ActionButton icon={Trash2} label="Удалить" onClick={onDelete} variant="danger" />
       )}
     </div>
   );

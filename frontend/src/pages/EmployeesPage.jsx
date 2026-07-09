@@ -1,4 +1,4 @@
-import { Edit, KeyRound, Lock, Search, UserCheck } from 'lucide-react';
+import { KeyRound, Lock, Pencil, Search, UserCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -7,7 +7,7 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
-import { PageHeader } from './pageUtils.jsx';
+import { ActionButton, PageHeader } from './pageUtils.jsx';
 import { SelectField } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
@@ -210,20 +210,12 @@ export default function EmployeesPage() {
             header: '',
             render: (row) => (
               <div className="flex justify-end gap-2">
-                <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={() => openEdit(row)} aria-label="Редактировать">
-                  <Edit size={16} />
-                </Button>
-                <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={() => openPassword(row)} aria-label="Сменить пароль">
-                  <KeyRound size={16} />
-                </Button>
+                <ActionButton icon={Pencil} label="Редактировать" onClick={() => openEdit(row)} />
+                <ActionButton icon={KeyRound} label="Сменить пароль" onClick={() => openPassword(row)} />
                 {row.is_active ? (
-                  <Button variant="danger" className="h-9 w-9 rounded-xl p-0" onClick={() => deactivate(row)} aria-label="Деактивировать">
-                    <Lock size={16} />
-                  </Button>
+                  <ActionButton icon={Lock} label="Деактивировать" onClick={() => deactivate(row)} variant="danger" />
                 ) : (
-                  <Button variant="accent" className="h-9 w-9 rounded-xl p-0" onClick={() => activate(row)} aria-label="Активировать">
-                    <UserCheck size={16} />
-                  </Button>
+                  <ActionButton icon={UserCheck} label="Активировать" onClick={() => activate(row)} variant="accent" />
                 )}
               </div>
             ),

@@ -6,7 +6,7 @@ import api from '../api/axios.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { canDeleteDangerous, getStoredUser, hasRole, ROLES } from '../auth.js';
-import { Actions, Badge, Button, Filters, Input, PageHeader, SelectField, Table, showApiError, useCrudResource } from './pageUtils.jsx';
+import { ActionButton, Actions, Badge, Button, Filters, Input, PageHeader, SelectField, Table, showApiError, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useRoomOptions, useSubjectOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
@@ -215,19 +215,9 @@ export default function GroupsPage() {
             header: '',
             render: (row) => (
               <div className="flex justify-end gap-2">
-                <Link to={`/schedule?group=${row.id}`}>
-                  <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" aria-label="Расписание">
-                    <CalendarDays size={16} />
-                  </Button>
-                </Link>
-                <Link to={`/visits?group=${row.id}`}>
-                  <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" aria-label="Посещения">
-                    <ClipboardCheck size={16} />
-                  </Button>
-                </Link>
-                <Button variant="secondary" className="h-9 w-9 rounded-xl p-0" onClick={() => setSelectedGroup(row)} aria-label="Ученики">
-                  <Users size={16} />
-                </Button>
+                <ActionButton as={Link} to={`/schedule?group=${row.id}`} icon={CalendarDays} label="Расписание" title="Открыть расписание" />
+                <ActionButton as={Link} to={`/visits?group=${row.id}`} icon={ClipboardCheck} label="Посещения" title="Открыть посещения" />
+                <ActionButton icon={Users} label="Ученики" title="Ученики группы" onClick={() => setSelectedGroup(row)} />
                 <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => openGroupForm(row)} onDelete={() => crud.remove(row.id)} />
               </div>
             ),

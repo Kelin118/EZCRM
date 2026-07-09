@@ -347,13 +347,16 @@ export default function VisitsPage() {
 
       {mode === 'journal' ? (
         <>
+          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-2 xl:grid-cols-[180px_220px_220px_minmax(240px,1fr)_190px] xl:items-end">
+            <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
+            <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
+            <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
+            <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
+          </div>
+
           <div className="grid max-w-full gap-6 xl:grid-cols-[360px_1fr]">
             <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
-              <div className="mb-4 grid gap-3">
-                <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-                <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
-                <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
-              </div>
               <div className="mb-4 flex items-center justify-between gap-2">
                 <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, -1))} aria-label="Предыдущий день">
                   <ChevronLeft size={16} />
@@ -431,10 +434,6 @@ export default function VisitsPage() {
                   onSave={saveAttendance}
                   onAddStudent={openStudentModal}
                   canAddStudent={canAddStudent}
-                  studentSearch={studentSearch}
-                  onStudentSearch={setStudentSearch}
-                  statusFilter={statusFilter}
-                  onStatusFilter={setStatusFilter}
                 />
               )}
             </section>
@@ -480,7 +479,7 @@ export default function VisitsPage() {
 
 function AttendanceJournal({
   lesson, rows, allRows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave,
-  onAddStudent, canAddStudent, studentSearch, onStudentSearch, statusFilter, onStatusFilter,
+  onAddStudent, canAddStudent,
 }) {
   const header = [lesson.group_name, lesson.subject_name, timeRange(lesson), lesson.teacher_name].filter(Boolean).join(' / ');
 
@@ -491,24 +490,19 @@ function AttendanceJournal({
           <h3 className="text-xl font-bold text-slate-900">{header || lessonTitle(lesson)}</h3>
           <p className="mt-1 text-sm text-slate-500">Всего учеников: {allRows.length}</p>
         </div>
-        <Button onClick={onSave} disabled={!canEdit || saving || !dirtyCount}>
-          <Save size={16} />
-          {saving ? 'Сохранение...' : `Сохранить табель${dirtyCount ? ` (${dirtyCount})` : ''}`}
-        </Button>
+        {canAddStudent && (
+          <Button variant="secondary" onClick={onAddStudent}><Plus size={16} />Добавить ученика</Button>
+        )}
       </div>
 
       <div className="mb-4 flex flex-wrap gap-2">
         <Button variant="secondary" onClick={() => onSetAll('attended')} disabled={!canEdit}><UserCheck size={16} />Всех отметить Посетил</Button>
         <Button variant="secondary" onClick={() => onSetAll('missed')} disabled={!canEdit}><UserX size={16} />Всех отметить Пропуск</Button>
         <Button variant="ghost" onClick={onReset} disabled={!dirtyCount}><RotateCcw size={16} />Очистить изменения</Button>
-        {canAddStudent && (
-          <Button variant="secondary" onClick={onAddStudent}><Plus size={16} />Добавить ученика</Button>
-        )}
-      </div>
-
-      <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px]">
-        <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => onStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
-        <SelectField label="Статус" value={statusFilter} onChange={onStatusFilter} options={journalStatusOptions} />
+        <Button onClick={onSave} disabled={!canEdit || saving || !dirtyCount}>
+          <Save size={16} />
+          {saving ? 'Сохранение...' : `Сохранить табель${dirtyCount ? ` (${dirtyCount})` : ''}`}
+        </Button>
       </div>
 
       {loading ? (

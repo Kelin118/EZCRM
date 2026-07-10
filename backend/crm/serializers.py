@@ -491,7 +491,7 @@ class TaskSerializer(BranchNameMixin, serializers.ModelSerializer):
 
 
 class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer):
-    type = serializers.CharField(source='transaction_type', required=False)
+    type = serializers.CharField(source='transaction_type', read_only=True)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
 

@@ -162,6 +162,51 @@ class RolePermissionTests(APITestCase):
         self.assertTrue(AuditLog.objects.filter(action='task_done', entity_type='Task', description='Задача выполнена').exists())
 
 
+class FinanceTransactionApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.accountant = User.objects.create_user(username='finance-accountant', password='pass', role='accountant')
+
+    def test_manual_create_without_transaction_type_returns_error(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {'amount': '1200.00', 'source': 'manual'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('transaction_type', response.data)
+
+    def test_manual_create_income_works(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        transaction = FinanceTransaction.objects.get(pk=response.data['id'])
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
+        self.assertEqual(response.data['type'], FinanceTransaction.Type.INCOME)
+
+    def test_manual_create_expense_works(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {'transaction_type': FinanceTransaction.Type.EXPENSE, 'amount': '700.00', 'source': 'rent'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        transaction = FinanceTransaction.objects.get(pk=response.data['id'])
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.EXPENSE)
+
+
 class ClientPhoneDuplicateTests(APITestCase):
     def setUp(self):
         User = get_user_model()
@@ -386,6 +431,30 @@ class CatalogItemApiTests(APITestCase):
         subscription.refresh_from_db()
         self.assertEqual(subscription.price, 45000)
         self.assertEqual(subscription.total_visits, 8)
+
+    def test_subscription_create_with_paid_amount_creates_income_transaction(self):
+        service = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30,
+        )
+        student = Client.objects.create(first_name='Paid', last_name='Subscription')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': student.id,
+                'service': service.id,
+                'start_date': '2026-07-09',
+                'paid_amount': '45000.00',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
+        self.assertEqual(transaction.source, 'subscription')
 
     def test_subscription_from_service_defaults_start_date_to_today(self):
         service = CatalogItem.objects.create(
@@ -810,6 +879,7 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertEqual(visit.subscription, subscription)
         self.assertTrue(visit.lesson_deducted)
         self.assertEqual(str(transaction.amount), str(service.price))
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
         self.assertTrue(response.data['subscription_created'])
 
     def test_add_student_create_subscription_sick_does_not_deduct(self):
@@ -1744,6 +1814,7 @@ class TrialConversionTests(APITestCase):
         self.assertEqual(subscription.total_visits, 4)
         self.assertEqual(subscription.remaining_visits, 4)
         self.assertEqual(subscription.end_date, date.today() + timedelta(days=27))
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
         self.assertEqual(transaction.amount, 20000)
 
     def test_conversion_uses_service_schedule_for_end_date(self):
@@ -1789,6 +1860,7 @@ class TrialConversionTests(APITestCase):
         self.assertEqual(subscription.total_visits, 8)
         self.assertEqual(subscription.remaining_visits, 8)
         self.assertEqual(str(transaction.amount), str(service.price))
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
 
     def test_teacher_without_manager_cannot_convert(self):
         trial = self.create_trial()
@@ -1839,7 +1911,8 @@ class TrialConversionTests(APITestCase):
 
         self.assertEqual(response.status_code, 201)
         subscription = Subscription.objects.get(client=self.client_obj)
-        self.assertEqual(FinanceTransaction.objects.filter(subscription=subscription, source='subscription').count(), 1)
+        transaction = FinanceTransaction.objects.get(subscription=subscription, source='subscription')
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
 
     def test_zero_payment_does_not_create_finance_transaction(self):
         trial = self.create_trial()

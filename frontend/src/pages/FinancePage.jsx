@@ -3,7 +3,7 @@ import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js'
 import { subscriptionLabel, useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 
-const empty = { type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
+const empty = { transaction_type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' },
   { value: 'trial', label: 'Пробник' },
@@ -14,7 +14,7 @@ const sourceOptions = [
   { value: 'other', label: 'Другое' },
 ];
 const baseFields = [
-  { name: 'type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
+  { name: 'transaction_type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
   { name: 'amount', label: 'Сумма', type: 'number' },
   { name: 'source', label: 'Источник', type: 'select', options: sourceOptions },
   { name: 'payment_method', label: 'Способ оплаты' },
@@ -44,12 +44,12 @@ export default function FinancePage() {
     baseFields[4],
     baseFields[5],
   ];
-  const transactionType = (item) => item.type ?? item.transaction_type;
+  const transactionType = (item) => item.transaction_type ?? item.type;
   const income = crud.items.filter((item) => transactionType(item) === 'income').reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const expense = crud.items.filter((item) => transactionType(item) === 'expense').reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const editTransaction = (row) => {
-    const { transaction_type, ...editableRow } = row;
-    crud.setEditing({ ...editableRow, type: row.type ?? transaction_type });
+    const { type, ...editableRow } = row;
+    crud.setEditing({ ...editableRow, transaction_type: transactionType(row) });
     crud.setModalOpen(true);
   };
 

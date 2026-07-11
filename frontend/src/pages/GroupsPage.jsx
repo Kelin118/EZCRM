@@ -1,4 +1,4 @@
-import { CalendarDays, ClipboardCheck, Users } from 'lucide-react';
+import { CalendarDays, ClipboardCheck, Eye, Plus, UserMinus, UserPlus, Users } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -43,12 +43,6 @@ const statusOptions = [
   { value: 'archived', label: 'Архив' },
 ];
 
-const memberStatusOptions = [
-  { value: 'active', label: 'Активен' },
-  { value: 'paused', label: 'На паузе' },
-  { value: 'left', label: 'Ушел' },
-];
-
 const weekdayShort = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'];
 
 const formatDate = (value) => (value ? new Date(value).toLocaleDateString('ru-RU') : '');
@@ -57,13 +51,19 @@ export default function GroupsPage() {
   const crud = useCrudResource('study-groups/', { search: '', status: '', teacher: '', subject: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { subjectOptions } = useSubjectOptions();
-  const { roomOptions } = useRoomOptions();
+  const { rooms, roomOptions } = useRoomOptions();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
-  const { clientOptions } = useClientOptions();
+  const { clients, clientOptions } = useClientOptions();
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [members, setMembers] = useState([]);
-  const [memberForm, setMemberForm] = useState({ client: '', status: 'active', note: '' });
+  const [memberStatusFilter, setMemberStatusFilter] = useState('active');
+  const [memberSearch, setMemberSearch] = useState('');
+  const [memberForm, setMemberForm] = useState({ client: '', note: '' });
+  const [memberModalOpen, setMemberModalOpen] = useState(false);
+  const [memberSaving, setMemberSaving] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState(null);
+  const [groupToDisable, setGroupToDisable] = useState(null);
   const [groupError, setGroupError] = useState('');
   const [groupSaving, setGroupSaving] = useState(false);
   const user = getStoredUser();
@@ -88,6 +88,13 @@ export default function GroupsPage() {
   };
 
   const setGroupForm = (patch) => crud.setEditing({ ...form, ...patch });
+  const filteredRoomOptions = roomOptions.filter((option) => {
+    if (!form.branch) return true;
+    const room = rooms.find((item) => String(item.id) === String(option.value));
+    return !room?.branch || String(room.branch) === String(form.branch);
+  });
+  const selectedClient = clients.find((client) => String(client.id) === String(memberForm.client));
+  const clientBranchDiffers = selectedGroup?.branch && selectedClient?.branch && String(selectedGroup.branch) !== String(selectedClient.branch);
 
   const toggleScheduleDay = (day) => {
     const current = Array.isArray(form.schedule_days) ? form.schedule_days : [];
@@ -145,46 +152,84 @@ export default function GroupsPage() {
     }
   };
 
-  const loadMembers = async (group) => {
-    const { data } = await api.get('group-memberships/', { params: { group: group.id } });
+  const loadMembers = async (group, statusValue = memberStatusFilter) => {
+    const { data } = await api.get(`study-groups/${group.id}/members/`, { params: { status: statusValue } });
     setMembers(Array.isArray(data) ? data : data.results || []);
   };
 
   useEffect(() => {
-    if (selectedGroup) loadMembers(selectedGroup);
-  }, [selectedGroup?.id]);
+    if (selectedGroup) loadMembers(selectedGroup, memberStatusFilter);
+  }, [selectedGroup?.id, memberStatusFilter]);
+
+  const refreshSelectedGroup = async () => {
+    if (!selectedGroup) return;
+    const { data } = await api.get(`study-groups/${selectedGroup.id}/`);
+    setSelectedGroup(data);
+  };
 
   const addMember = async () => {
     if (!selectedGroup || !memberForm.client) return;
+    setMemberSaving(true);
     try {
-      await api.post('group-memberships/', { ...memberForm, group: selectedGroup.id });
-      setMemberForm({ client: '', status: 'active', note: '' });
-      await loadMembers(selectedGroup);
+      await api.post(`study-groups/${selectedGroup.id}/add-member/`, memberForm);
+      setMemberForm({ client: '', note: '' });
+      setMemberModalOpen(false);
+      setMemberStatusFilter('active');
+      await loadMembers(selectedGroup, 'active');
+      await crud.reload();
+      await refreshSelectedGroup();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setMemberSaving(false);
+    }
+  };
+
+  const removeMember = async () => {
+    if (!selectedGroup || !memberToRemove) return;
+    try {
+      await api.post(`study-groups/${selectedGroup.id}/remove-member/`, { client: memberToRemove.client });
+      setMemberToRemove(null);
+      await loadMembers(selectedGroup, memberStatusFilter);
+      await crud.reload();
+      await refreshSelectedGroup();
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+
+  const restoreMember = async (member) => {
+    try {
+      await api.post(`study-groups/${selectedGroup.id}/restore-member/`, { client: member.client });
+      setMemberStatusFilter('active');
+      await loadMembers(selectedGroup, 'active');
+      await crud.reload();
+      await refreshSelectedGroup();
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+
+  const disableGroup = async () => {
+    if (!groupToDisable) return;
+    try {
+      await api.delete(`study-groups/${groupToDisable.id}/`);
+      setGroupToDisable(null);
       await crud.reload();
     } catch (error) {
       showApiError(error);
     }
   };
 
-  const updateMember = async (member, status) => {
-    try {
-      await api.patch(`group-memberships/${member.id}/`, { status });
-      await loadMembers(selectedGroup);
-      await crud.reload();
-    } catch (error) {
-      showApiError(error);
-    }
-  };
-
-  const removeMember = async (member) => {
-    try {
-      await api.delete(`group-memberships/${member.id}/`);
-      await loadMembers(selectedGroup);
-      await crud.reload();
-    } catch (error) {
-      showApiError(error);
-    }
-  };
+  const visibleMembers = members.filter((member) => {
+    const query = memberSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [member.client_name, member.parent_name, member.phone, member.client_phone]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+  const activeCount = members.filter((member) => member.status === 'active').length;
+  const inactiveCount = members.filter((member) => member.status !== 'active').length;
 
   return (
     <>
@@ -218,7 +263,7 @@ export default function GroupsPage() {
                 <ActionButton as={Link} to={`/schedule?group=${row.id}`} icon={CalendarDays} label="Расписание" title="Открыть расписание" />
                 <ActionButton as={Link} to={`/visits?group=${row.id}`} icon={ClipboardCheck} label="Посещения" title="Открыть посещения" />
                 <ActionButton icon={Users} label="Ученики" title="Ученики группы" onClick={() => setSelectedGroup(row)} />
-                <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => openGroupForm(row)} onDelete={() => crud.remove(row.id)} />
+                <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => openGroupForm(row)} onDelete={() => setGroupToDisable(row)} />
               </div>
             ),
           },
@@ -240,10 +285,10 @@ export default function GroupsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={form.name || ''} onChange={(event) => setGroupForm({ name: event.target.value })} />
           <SelectField label="Предмет" value={form.subject || ''} onChange={(value) => setGroupForm({ subject: value })} options={[{ value: '', label: 'Не выбран' }, ...subjectOptions]} />
-          <SelectField label="Филиал" value={form.branch || ''} onChange={(value) => setGroupForm({ branch: value })} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
+          <SelectField label="Филиал" value={form.branch || ''} onChange={(value) => setGroupForm({ branch: value, room: '' })} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
           <SelectField label="Учитель" value={form.teacher || ''} onChange={(value) => setGroupForm({ teacher: value })} options={[{ value: '', label: 'Не выбран' }, ...teacherOptions]} />
           <SelectField label="Менеджер" value={form.manager || ''} onChange={(value) => setGroupForm({ manager: value })} options={[{ value: '', label: 'Не выбран' }, ...managerOptions]} />
-          <SelectField label="Кабинет" value={form.room || ''} onChange={(value) => setGroupForm({ room: value })} options={[{ value: '', label: 'Не выбран' }, ...roomOptions]} />
+          <SelectField label="Кабинет" value={form.room || ''} onChange={(value) => setGroupForm({ room: value })} options={[{ value: '', label: 'Не выбран' }, ...filteredRoomOptions]} />
           <SelectField label="Статус" value={form.status || 'active'} onChange={(value) => setGroupForm({ status: value })} options={statusOptions.filter((item) => item.value)} />
 
           <div className="grid gap-3 rounded-[22px] border border-slate-100 bg-slate-50 p-4 md:col-span-2">
@@ -273,7 +318,7 @@ export default function GroupsPage() {
         </div>
       </Modal>
 
-      <Modal title={selectedGroup ? `Ученики: ${selectedGroup.name}` : 'Ученики'} open={Boolean(selectedGroup)} onClose={() => setSelectedGroup(null)} size="wide">
+      <Modal title={selectedGroup ? `Ученики группы: ${selectedGroup.name}` : 'Ученики группы'} open={Boolean(selectedGroup)} onClose={() => setSelectedGroup(null)} size="wide">
         {selectedGroup && (
           <div className="mb-5 grid gap-4 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card">
             <div>
@@ -306,37 +351,127 @@ export default function GroupsPage() {
           </div>
         )}
 
-        {canEdit && (
-          <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-slate-50 p-4 md:grid-cols-[1.3fr_0.8fr_1fr_auto]">
-            <ClientSelectWithCreate
-              label="Ученик"
-              value={memberForm.client}
-              onChange={(value) => setMemberForm({ ...memberForm, client: value })}
-              options={clientOptions}
-              placeholder="Выберите ученика"
-            />
-            <SelectField label="Статус" value={memberForm.status} onChange={(value) => setMemberForm({ ...memberForm, status: value })} options={memberStatusOptions} />
-            <Input label="Комментарий" value={memberForm.note} onChange={(event) => setMemberForm({ ...memberForm, note: event.target.value })} />
-            <div className="flex items-end">
-              <Button onClick={addMember}>Добавить</Button>
+        <div className="mb-5 flex flex-col gap-3 rounded-[22px] border border-slate-100 bg-slate-50 p-4 md:flex-row md:items-end md:justify-between">
+          <div className="grid flex-1 gap-3 md:grid-cols-[1fr_auto]">
+            <Input label="Поиск ученика" value={memberSearch} onChange={(event) => setMemberSearch(event.target.value)} />
+            <div className="flex items-end gap-2">
+              {[
+                { value: 'active', label: 'Активные' },
+                { value: 'inactive', label: 'Бывшие' },
+                { value: 'all', label: 'Все' },
+              ].map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => setMemberStatusFilter(item.value)}
+                  className={`min-h-11 rounded-2xl border px-4 text-sm font-bold transition ${memberStatusFilter === item.value ? 'border-brand bg-brand text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-brand/40'}`}
+                >
+                  {item.label}
+                </button>
+              ))}
             </div>
           </div>
-        )}
+          {canEdit && (
+            <Button onClick={() => setMemberModalOpen(true)}>
+              <Plus size={16} />
+              Добавить ученика
+            </Button>
+          )}
+        </div>
+
+        <div className="mb-3 flex flex-wrap gap-2 text-sm font-semibold text-slate-500">
+          <span>Активных: {selectedGroup?.students_count ?? activeCount}</span>
+          <span>Бывших: {memberStatusFilter === 'all' ? inactiveCount : memberStatusFilter === 'inactive' ? visibleMembers.length : '—'}</span>
+        </div>
+
         <Table
-          data={members}
+          data={visibleMembers}
           empty="В группе нет учеников"
           columns={[
             { key: 'client_name', header: 'Ученик' },
-            { key: 'client_phone', header: 'Телефон' },
-            { key: 'status', header: 'Статус', render: (row) => <SelectField label="" value={row.status} onChange={(value) => updateMember(row, value)} options={memberStatusOptions} /> },
-            { key: 'note', header: 'Комментарий' },
+            { key: 'parent_name', header: 'Родитель', render: (row) => row.parent_name || '—' },
+            { key: 'phone', header: 'Телефон', render: (row) => row.phone || row.client_phone || '—' },
+            { key: 'active_subscription', header: 'Абонемент', render: (row) => row.active_subscription?.name || 'Нет активного абонемента' },
+            { key: 'remaining', header: 'Остаток', render: (row) => row.active_subscription?.remaining_visits ?? '—' },
+            { key: 'end_date', header: 'Дата окончания', render: (row) => formatDate(row.active_subscription?.end_date) || '—' },
+            { key: 'joined_at', header: 'Дата добавления', render: (row) => formatDate(row.joined_at || row.created_at) || '—' },
             {
               key: 'actions',
               header: '',
-              render: (row) => canEdit ? <Button variant="danger" onClick={() => removeMember(row)}>Удалить</Button> : null,
+              render: (row) => (
+                <div className="flex justify-end gap-2">
+                  <ActionButton as={Link} to={`/clients/${row.client}`} icon={Eye} label="Открыть клиента" title="Открыть клиента" />
+                  {canEdit && row.status === 'active' && (
+                    <ActionButton icon={UserMinus} label="Убрать из группы" title="Убрать из группы" variant="danger" onClick={() => setMemberToRemove(row)} />
+                  )}
+                  {canEdit && row.status !== 'active' && (
+                    <ActionButton icon={UserPlus} label="Вернуть в группу" title="Вернуть в группу" onClick={() => restoreMember(row)} />
+                  )}
+                </div>
+              ),
             },
           ]}
         />
+      </Modal>
+
+      <Modal
+        title="Добавить ученика"
+        open={memberModalOpen}
+        onClose={() => setMemberModalOpen(false)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setMemberModalOpen(false)}>Отмена</Button>
+            <Button onClick={addMember} disabled={!memberForm.client || memberSaving}>{memberSaving ? 'Добавляем...' : 'Добавить'}</Button>
+          </>
+        }
+      >
+        <div className="grid gap-4">
+          <ClientSelectWithCreate
+            label="Ученик"
+            value={memberForm.client}
+            onChange={(value) => setMemberForm({ ...memberForm, client: value })}
+            options={clientOptions}
+            placeholder="Выберите ученика"
+          />
+          {clientBranchDiffers && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              Филиал клиента отличается от филиала группы.
+            </div>
+          )}
+          <Input label="Комментарий" value={memberForm.note} onChange={(event) => setMemberForm({ ...memberForm, note: event.target.value })} />
+        </div>
+      </Modal>
+
+      <Modal
+        title="Убрать ученика из группы?"
+        open={Boolean(memberToRemove)}
+        onClose={() => setMemberToRemove(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setMemberToRemove(null)}>Отмена</Button>
+            <Button variant="danger" onClick={removeMember}>Убрать из группы</Button>
+          </>
+        }
+      >
+        <p className="text-sm font-semibold text-slate-700">
+          {memberToRemove?.client_name || 'Ученик'} больше не будет появляться в новых табелях этой группы. Клиент, абонемент и история посещений сохранятся.
+        </p>
+      </Modal>
+
+      <Modal
+        title="Отключить группу?"
+        open={Boolean(groupToDisable)}
+        onClose={() => setGroupToDisable(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setGroupToDisable(null)}>Отмена</Button>
+            <Button variant="danger" onClick={disableGroup}>Отключить группу</Button>
+          </>
+        }
+      >
+        <p className="text-sm font-semibold text-slate-700">
+          Группа будет перенесена в архив. Клиенты, состав, прошлые занятия и посещения сохранятся.
+        </p>
       </Modal>
     </>
   );

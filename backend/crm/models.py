@@ -610,6 +610,12 @@ class AuditLog(models.Model):
         PAYMENT_METHOD_UPDATE = 'payment_method_update', 'Payment method update'
         PAYMENT_METHOD_DISABLE = 'payment_method_disable', 'Payment method disable'
         PAYMENT_METHOD_ENABLE = 'payment_method_enable', 'Payment method enable'
+        GROUP_UPDATE = 'group_update', 'Group update'
+        GROUP_DISABLE = 'group_disable', 'Group disable'
+        GROUP_ENABLE = 'group_enable', 'Group enable'
+        GROUP_MEMBER_ADD = 'group_member_add', 'Group member add'
+        GROUP_MEMBER_REMOVE = 'group_member_remove', 'Group member remove'
+        GROUP_MEMBER_RESTORE = 'group_member_restore', 'Group member restore'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

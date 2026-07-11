@@ -1112,6 +1112,128 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertIsNone(membership.left_at)
         self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client).count(), 1)
 
+    def test_group_members_endpoint_returns_active_and_inactive_members_with_subscription(self):
+        inactive_client = Client.objects.create(first_name='Former', last_name='Student', parent_name='Former Parent', phone='87070000999')
+        GroupMembership.objects.create(group=self.group, client=inactive_client, status=GroupMembership.Status.LEFT, left_at=date.today())
+        self.client.force_authenticate(self.admin)
+
+        active_response = self.client.get(f'/api/study-groups/{self.group.id}/members/')
+        inactive_response = self.client.get(f'/api/study-groups/{self.group.id}/members/', {'status': 'inactive'})
+
+        self.assertEqual(active_response.status_code, 200)
+        self.assertEqual(inactive_response.status_code, 200)
+        self.assertTrue(all(item['is_active'] for item in active_response.data))
+        self.assertEqual(inactive_response.data[0]['client'], inactive_client.id)
+        self.assertIn('active_subscription', active_response.data[0])
+        self.assertIn('parent_name', inactive_response.data[0])
+
+    def test_study_group_add_member_reactivates_without_duplicate_and_audits(self):
+        client = Client.objects.create(first_name='Returning', last_name='Group Member')
+        membership = GroupMembership.objects.create(group=self.group, client=client, status=GroupMembership.Status.LEFT, left_at=date.today())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/study-groups/{self.group.id}/add-member/', {'client': client.id}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        membership.refresh_from_db()
+        self.assertEqual(membership.status, GroupMembership.Status.ACTIVE)
+        self.assertIsNone(membership.left_at)
+        self.assertEqual(GroupMembership.objects.filter(group=self.group, client=client).count(), 1)
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.GROUP_MEMBER_RESTORE, entity_id=str(membership.id)).exists())
+
+    def test_study_group_remove_member_soft_deactivates_and_preserves_history(self):
+        client = self.clients[0]
+        subscription = Subscription.objects.get(client=client)
+        visit = Visit.objects.create(
+            lesson=self.lesson,
+            client=client,
+            subscription=subscription,
+            teacher=self.teacher,
+            visited_at=timezone.now(),
+            status=Visit.Status.ATTENDED,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/study-groups/{self.group.id}/remove-member/', {'client': client.id}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        membership = GroupMembership.objects.get(group=self.group, client=client)
+        self.assertEqual(membership.status, GroupMembership.Status.LEFT)
+        self.assertIsNotNone(membership.left_at)
+        self.assertTrue(Client.objects.filter(pk=client.pk).exists())
+        self.assertTrue(Subscription.objects.filter(pk=subscription.pk).exists())
+        self.assertTrue(Visit.objects.filter(pk=visit.pk).exists())
+        attendance = self.client.get(f'/api/lessons/{self.lesson.id}/attendance/')
+        self.assertNotIn(client.id, {item['client'] for item in attendance.data['items']})
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.GROUP_MEMBER_REMOVE, entity_id=str(membership.id)).exists())
+
+    def test_study_group_restore_member_shows_in_attendance_again(self):
+        client = self.clients[0]
+        membership = GroupMembership.objects.get(group=self.group, client=client)
+        membership.status = GroupMembership.Status.LEFT
+        membership.left_at = date.today()
+        membership.save(update_fields=('status', 'left_at', 'updated_at'))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f'/api/study-groups/{self.group.id}/restore-member/', {'client': client.id}, format='json')
+        attendance = self.client.get(f'/api/lessons/{self.lesson.id}/attendance/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(client.id, {item['client'] for item in attendance.data['items']})
+
+    def test_plain_teacher_cannot_change_group_members_but_teacher_manager_can(self):
+        teacher_client = Client.objects.create(first_name='Teacher', last_name='Denied')
+        manager_client = Client.objects.create(first_name='TeacherManager', last_name='Allowed')
+        self.client.force_authenticate(self.teacher)
+        denied = self.client.post(f'/api/study-groups/{self.group.id}/add-member/', {'client': teacher_client.id}, format='json')
+
+        self.client.force_authenticate(self.teacher_manager)
+        allowed = self.client.post(f'/api/study-groups/{self.group.id}/add-member/', {'client': manager_client.id}, format='json')
+
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(allowed.status_code, 201)
+        self.assertFalse(GroupMembership.objects.filter(group=self.group, client=teacher_client).exists())
+        self.assertTrue(GroupMembership.objects.filter(group=self.group, client=manager_client, status=GroupMembership.Status.ACTIVE).exists())
+
+    def test_manager_can_edit_group_and_room_other_branch_is_rejected(self):
+        first_branch = Branch.objects.create(name='First group branch')
+        second_branch = Branch.objects.create(name='Second group branch')
+        other_room = Room.objects.create(name='Other branch room', branch=second_branch)
+        self.client.force_authenticate(self.manager)
+
+        update_response = self.client.patch(f'/api/study-groups/{self.group.id}/', {'name': 'Updated group'}, format='json')
+        invalid_room_response = self.client.patch(
+            f'/api/study-groups/{self.group.id}/',
+            {'branch': first_branch.id, 'room': other_room.id},
+            format='json',
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(invalid_room_response.status_code, 400)
+        self.assertEqual(StudyGroup.objects.get(pk=self.group.pk).name, 'Updated group')
+
+    def test_group_destroy_archives_and_preserves_history(self):
+        slot = ScheduleSlot.objects.create(
+            group=self.group,
+            teacher=self.teacher,
+            weekday=date.today().weekday(),
+            start_time=time(14, 0),
+            end_time=time(15, 0),
+            is_active=True,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/study-groups/{self.group.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.group.refresh_from_db()
+        slot.refresh_from_db()
+        self.assertEqual(self.group.status, StudyGroup.Status.ARCHIVED)
+        self.assertFalse(slot.is_active)
+        self.assertTrue(GroupMembership.objects.filter(group=self.group).exists())
+        self.assertTrue(Lesson.objects.filter(pk=self.lesson.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.GROUP_DISABLE, entity_id=str(self.group.id)).exists())
+
     def test_plain_teacher_cannot_add_student(self):
         client = Client.objects.create(first_name='Forbidden', last_name='Student')
 

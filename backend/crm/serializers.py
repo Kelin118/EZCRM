@@ -127,6 +127,13 @@ class StudyGroupSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = StudyGroup
         fields = '__all__'
 
+    def validate(self, attrs):
+        room = attrs.get('room', getattr(self.instance, 'room', None))
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        if room and branch and room.branch_id and room.branch_id != branch.id:
+            raise serializers.ValidationError({'room': 'Кабинет относится к другому филиалу.'})
+        return attrs
+
     def get_subject_name(self, obj):
         return obj.subject.name if obj.subject else ''
 
@@ -185,6 +192,13 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
     group_name = serializers.SerializerMethodField()
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
+    membership_id = serializers.IntegerField(source='id', read_only=True)
+    parent_name = serializers.SerializerMethodField()
+    phone = serializers.SerializerMethodField()
+    client_branch = serializers.SerializerMethodField()
+    client_branch_name = serializers.SerializerMethodField()
+    is_active = serializers.SerializerMethodField()
+    active_subscription = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMembership
@@ -198,6 +212,36 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
 
     def get_client_phone(self, obj):
         return obj.client.phone if obj.client else ''
+
+    def get_parent_name(self, obj):
+        return obj.client.parent_name if obj.client else ''
+
+    def get_phone(self, obj):
+        return obj.client.phone if obj.client else ''
+
+    def get_client_branch(self, obj):
+        return obj.client.branch_id if obj.client else None
+
+    def get_client_branch_name(self, obj):
+        return obj.client.branch.name if obj.client and obj.client.branch else ''
+
+    def get_is_active(self, obj):
+        return obj.status == GroupMembership.Status.ACTIVE
+
+    def get_active_subscription(self, obj):
+        subscription = (
+            Subscription.objects.filter(client=obj.client, status=Subscription.Status.ACTIVE)
+            .order_by('-start_date', '-created_at')
+            .first()
+        )
+        if not subscription:
+            return None
+        return {
+            'id': subscription.id,
+            'name': subscription.title,
+            'remaining_visits': subscription.remaining_visits,
+            'end_date': subscription.end_date,
+        }
 
 
 class ScheduleSlotSerializer(BranchNameMixin, serializers.ModelSerializer):

@@ -491,7 +491,7 @@ class StudyGroupViewSet(EducationBaseViewSet):
     audit_entity_type = 'StudyGroup'
     audit_create_description = 'Создана группа'
     audit_update_description = 'Изменена группа'
-    audit_delete_description = 'Удалена группа'
+    audit_delete_description = 'Группа отключена'
 
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
@@ -503,7 +503,7 @@ class StudyGroupViewSet(EducationBaseViewSet):
 
         if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(teacher=self.request.user)
-        if status_value:
+        if status_value and getattr(self, 'action', None) != 'members':
             queryset = queryset.filter(status=status_value)
         if teacher:
             queryset = queryset.filter(teacher_id=teacher)
@@ -522,7 +522,8 @@ class StudyGroupViewSet(EducationBaseViewSet):
 
     def perform_create(self, serializer):
         group = serializer.save()
-        sync_group_schedule_slots(group)
+        if group.status == StudyGroup.Status.ACTIVE:
+            sync_group_schedule_slots(group)
         self._log_instance(AuditLog.Action.CREATE, group, self.audit_create_description, self._audit_changes())
 
     def perform_update(self, serializer):
@@ -531,10 +532,170 @@ class StudyGroupViewSet(EducationBaseViewSet):
             'schedule_days': list(instance.schedule_days or []),
             'start_time': instance.start_time,
             'end_time': instance.end_time,
+            'teacher': instance.teacher_id,
+            'room': instance.room_id,
+            'branch': instance.branch_id,
+            'status': instance.status,
         }
         group = serializer.save()
-        sync_group_schedule_slots(group, old_schedule=old_schedule)
-        self._log_instance(AuditLog.Action.UPDATE, group, self.audit_update_description, self._audit_changes())
+        if group.status == StudyGroup.Status.ACTIVE:
+            sync_group_schedule_slots(group, old_schedule=old_schedule)
+        else:
+            group.schedule_slots.filter(is_active=True).update(is_active=False)
+
+        action_value = AuditLog.Action.GROUP_UPDATE
+        description = self.audit_update_description
+        if old_schedule['status'] == StudyGroup.Status.ACTIVE and group.status != StudyGroup.Status.ACTIVE:
+            action_value = AuditLog.Action.GROUP_DISABLE
+            description = 'Группа отключена'
+        elif old_schedule['status'] != StudyGroup.Status.ACTIVE and group.status == StudyGroup.Status.ACTIVE:
+            action_value = AuditLog.Action.GROUP_ENABLE
+            description = 'Группа включена'
+        changes = self._audit_changes()
+        changes['old_schedule'] = {
+            'schedule_days': old_schedule['schedule_days'],
+            'start_time': str(old_schedule['start_time']) if old_schedule['start_time'] else None,
+            'end_time': str(old_schedule['end_time']) if old_schedule['end_time'] else None,
+            'teacher': old_schedule['teacher'],
+            'room': old_schedule['room'],
+            'branch': old_schedule['branch'],
+            'status': old_schedule['status'],
+        }
+        self._log_instance(action_value, group, description, changes)
+
+    def perform_destroy(self, instance):
+        instance.status = StudyGroup.Status.ARCHIVED
+        instance.save(update_fields=('status', 'updated_at'))
+        instance.schedule_slots.filter(is_active=True).update(is_active=False)
+        self._log_instance(AuditLog.Action.GROUP_DISABLE, instance, self.audit_delete_description, {'status': StudyGroup.Status.ARCHIVED})
+
+    def _membership_queryset(self, group, status_value):
+        queryset = group.memberships.select_related('client').all()
+        if status_value == 'inactive':
+            queryset = queryset.exclude(status=GroupMembership.Status.ACTIVE)
+        elif status_value != 'all':
+            queryset = queryset.filter(status=GroupMembership.Status.ACTIVE)
+        return queryset.order_by('client__first_name', 'client__last_name', '-created_at')
+
+    def _membership_response(self, membership, response_status=status.HTTP_200_OK):
+        return Response(GroupMembershipSerializer(membership).data, status=response_status)
+
+    def _client_from_request(self, request):
+        client_id = request.data.get('client')
+        try:
+            return Client.objects.get(pk=client_id)
+        except (Client.DoesNotExist, TypeError, ValueError):
+            return None
+
+    @action(detail=True, methods=['get'], url_path='members')
+    def members(self, request, pk=None):
+        group = self.get_object()
+        status_value = request.query_params.get('status') or 'active'
+        if status_value not in {'active', 'inactive', 'all'}:
+            return Response({'detail': 'Недопустимый статус состава.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = GroupMembershipSerializer(self._membership_queryset(group, status_value), many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='add-member')
+    def add_member(self, request, pk=None):
+        group = self.get_object()
+        client = self._client_from_request(request)
+        if not client:
+            return Response({'detail': 'Выберите ученика.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            memberships = GroupMembership.objects.select_for_update().filter(group=group, client=client)
+            active = memberships.filter(status=GroupMembership.Status.ACTIVE).first()
+            if active:
+                return self._membership_response(active, status.HTTP_400_BAD_REQUEST)
+            membership = memberships.order_by('-created_at').first()
+            created = False
+            if membership:
+                membership.status = GroupMembership.Status.ACTIVE
+                membership.left_at = None
+                if request.data.get('note') is not None:
+                    membership.note = request.data.get('note') or ''
+                membership.save(update_fields=('status', 'left_at', 'note', 'updated_at'))
+            else:
+                membership = GroupMembership.objects.create(
+                    group=group,
+                    client=client,
+                    status=GroupMembership.Status.ACTIVE,
+                    note=request.data.get('note') or '',
+                    joined_at=timezone.localdate(),
+                )
+                created = True
+
+        log_action(
+            request,
+            AuditLog.Action.GROUP_MEMBER_ADD if created else AuditLog.Action.GROUP_MEMBER_RESTORE,
+            'GroupMembership',
+            entity_id=membership.id,
+            entity_name=str(membership),
+            description='Ученик добавлен в группу' if created else 'Ученик возвращён в группу',
+            changes={'group': group.name, 'client': str(client)},
+        )
+        return self._membership_response(membership, status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='remove-member')
+    def remove_member(self, request, pk=None):
+        group = self.get_object()
+        client = self._client_from_request(request)
+        if not client:
+            return Response({'detail': 'Выберите ученика.'}, status=status.HTTP_400_BAD_REQUEST)
+        membership = GroupMembership.objects.filter(
+            group=group,
+            client=client,
+            status=GroupMembership.Status.ACTIVE,
+        ).first()
+        if not membership:
+            return Response({'detail': 'Активный участник группы не найден.'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership.status = GroupMembership.Status.LEFT
+        membership.left_at = timezone.localdate()
+        membership.save(update_fields=('status', 'left_at', 'updated_at'))
+        log_action(
+            request,
+            AuditLog.Action.GROUP_MEMBER_REMOVE,
+            'GroupMembership',
+            entity_id=membership.id,
+            entity_name=str(membership),
+            description='Ученик убран из группы',
+            changes={'group': group.name, 'client': str(client), 'left_at': str(membership.left_at)},
+        )
+        return self._membership_response(membership)
+
+    @action(detail=True, methods=['post'], url_path='restore-member')
+    def restore_member(self, request, pk=None):
+        group = self.get_object()
+        client = self._client_from_request(request)
+        if not client:
+            return Response({'detail': 'Выберите ученика.'}, status=status.HTTP_400_BAD_REQUEST)
+        membership = (
+            GroupMembership.objects.filter(group=group, client=client)
+            .exclude(status=GroupMembership.Status.ACTIVE)
+            .order_by('-created_at')
+            .first()
+        )
+        if not membership:
+            active = GroupMembership.objects.filter(group=group, client=client, status=GroupMembership.Status.ACTIVE).first()
+            if active:
+                return self._membership_response(active)
+            return Response({'detail': 'Бывший участник группы не найден.'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership.status = GroupMembership.Status.ACTIVE
+        membership.left_at = None
+        membership.save(update_fields=('status', 'left_at', 'updated_at'))
+        log_action(
+            request,
+            AuditLog.Action.GROUP_MEMBER_RESTORE,
+            'GroupMembership',
+            entity_id=membership.id,
+            entity_name=str(membership),
+            description='Ученик возвращён в группу',
+            changes={'group': group.name, 'client': str(client)},
+        )
+        return self._membership_response(membership)
 
     @action(detail=True, methods=['post'], url_path='generate-lessons')
     def generate_lessons(self, request, pk=None):

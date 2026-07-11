@@ -25,6 +25,7 @@ from .models import (
     GroupMembership,
     Lesson,
     MasterClass,
+    PaymentMethod,
     Room,
     ScheduleSlot,
     StudioSettings,
@@ -286,6 +287,9 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     addons = serializers.JSONField(required=False)
     addons_total = serializers.SerializerMethodField()
     total_price = serializers.SerializerMethodField()
+    payment_method = serializers.PrimaryKeyRelatedField(
+        queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True,
+    )
 
     class Meta:
         model = Subscription
@@ -338,7 +342,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
             attrs['title'] = service.name
             if 'price' not in initial_data:
                 attrs['price'] = service.price
-            if 'paid_amount' not in initial_data and self.instance is None:
+            if 'paid_amount' not in initial_data and self.instance is None and attrs.get('payment_method'):
                 addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (addons or [])), Decimal('0'))
                 attrs['paid_amount'] = service.price + addons_sum
             if service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
@@ -374,13 +378,16 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         addons = validated_data.pop('addons', [])
+        payment_method = validated_data.pop('payment_method', None)
         subscription = super().create(validated_data)
+        subscription.selected_payment_method = payment_method
         sync_subscription_addons(subscription, addons)
         return subscription
 
     def update(self, instance, validated_data):
         has_addons = 'addons' in validated_data
         addons = validated_data.pop('addons', [])
+        validated_data.pop('payment_method', None)
         subscription = super().update(instance, validated_data)
         if has_addons:
             sync_subscription_addons(subscription, addons)
@@ -456,6 +463,7 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
     manager_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     subscription_title = serializers.SerializerMethodField()
+    payment_method = serializers.PrimaryKeyRelatedField(queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = Trial
@@ -479,6 +487,16 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
     def get_subscription_title(self, obj):
         return obj.subscription.title if obj.subscription else ''
 
+    def create(self, validated_data):
+        payment_method = validated_data.pop('payment_method', None)
+        instance = super().create(validated_data)
+        instance.selected_payment_method = payment_method
+        return instance
+
+    def update(self, instance, validated_data):
+        validated_data.pop('payment_method', None)
+        return super().update(instance, validated_data)
+
 
 class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
@@ -491,6 +509,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    payment_method = serializers.PrimaryKeyRelatedField(queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = MasterClass
@@ -512,15 +531,18 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         client = validated_data.pop('client', None)
+        payment_method = validated_data.pop('payment_method', None)
         if client and not validated_data.get('branch'):
             validated_data['branch'] = client.branch
         master_class = super().create(validated_data)
         if client:
             master_class.participants.add(client)
+        master_class.selected_payment_method = payment_method
         return master_class
 
     def update(self, instance, validated_data):
         client = validated_data.pop('client', None)
+        validated_data.pop('payment_method', None)
         if client and not validated_data.get('branch') and not instance.branch_id:
             validated_data['branch'] = client.branch
         master_class = super().update(instance, validated_data)
@@ -548,16 +570,60 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     type = serializers.CharField(source='transaction_type', read_only=True)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
+    created_by_roles = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceTransaction
         fields = '__all__'
+        read_only_fields = ('created_by', 'payment_method_name')
 
     def get_client_name(self, obj):
         return str(obj.client) if obj.client else ''
 
     def get_created_by_name(self, obj):
-        return obj.created_by.get_full_name() or obj.created_by.username if obj.created_by else ''
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else None
+
+    def get_created_by_roles(self, obj):
+        return obj.created_by.get_roles() if obj.created_by and hasattr(obj.created_by, 'get_roles') else []
+
+    def validate_payment_method(self, value):
+        if value and not value.is_active:
+            raise serializers.ValidationError('Выберите активный способ оплаты.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount = attrs.get('amount', self.instance.amount if self.instance else 0)
+        method = attrs.get('payment_method', self.instance.payment_method if self.instance else None)
+        if amount and amount > 0 and not method and self.instance is None:
+            raise serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
+        return attrs
+
+    def create(self, validated_data):
+        payment_method = validated_data.get('payment_method')
+        validated_data['payment_method_name'] = payment_method.name if payment_method else ''
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if 'payment_method' in validated_data:
+            payment_method = validated_data.get('payment_method')
+            validated_data['payment_method_name'] = payment_method.name if payment_method else instance.payment_method_name
+        return super().update(instance, validated_data)
+
+
+class PaymentMethodSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentMethod
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def validate_name(self, value):
+        queryset = PaymentMethod.objects.filter(name__iexact=value.strip())
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError('Способ оплаты с таким названием уже существует.')
+        return value.strip()
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):

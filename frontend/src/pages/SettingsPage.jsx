@@ -1,4 +1,4 @@
-import { Building2, CheckCircle2, Edit, Package, Plus, ToggleLeft, Upload, Wrench } from 'lucide-react';
+import { Ban, Building2, CheckCircle2, CreditCard, Edit, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -8,6 +8,7 @@ import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { PageHeader } from './pageUtils.jsx';
 import { formatScheduleDays, weekdayOptions } from '../utils/subscriptionDates.js';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const empty = {
   studio_name: 'EDUCRM',
@@ -30,6 +31,7 @@ const emptyCatalogForm = {
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
+const emptyPaymentMethodForm = { name: '', code: '', description: '', is_active: true, sort_order: 0 };
 
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
@@ -75,6 +77,9 @@ export default function SettingsPage() {
   const [branches, setBranches] = useState([]);
   const [branchModal, setBranchModal] = useState({ open: false, item: null });
   const [branchForm, setBranchForm] = useState(emptyBranchForm);
+  const { paymentMethods, refreshPaymentMethods } = usePaymentMethods({ activeOnly: false });
+  const [paymentMethodModal, setPaymentMethodModal] = useState({ open: false, item: null });
+  const [paymentMethodForm, setPaymentMethodForm] = useState(emptyPaymentMethodForm);
 
   const activeSection = useMemo(
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
@@ -110,6 +115,20 @@ export default function SettingsPage() {
   const disableBranch = async (branch) => {
     await api.delete(`branches/${branch.id}/`);
     await loadBranches();
+  };
+
+  const savePaymentMethod = async () => {
+    if (!paymentMethodForm.name.trim()) return;
+    if (paymentMethodModal.item) await api.patch(`payment-methods/${paymentMethodModal.item.id}/`, paymentMethodForm);
+    else await api.post('payment-methods/', paymentMethodForm);
+    setPaymentMethodModal({ open: false, item: null });
+    setPaymentMethodForm(emptyPaymentMethodForm);
+    await refreshPaymentMethods();
+  };
+
+  const togglePaymentMethod = async (item) => {
+    await api.patch(`payment-methods/${item.id}/`, { is_active: !item.is_active });
+    await refreshPaymentMethods();
   };
 
   const loadCatalogItems = async () => {
@@ -280,6 +299,21 @@ export default function SettingsPage() {
             </table>
           </div>
         </SettingsCard>
+        <SettingsCard icon={CreditCard} title="Способы оплаты" subtitle="Доступные способы при оформлении оплат">
+          {canEditCatalog && <Button className="mb-4" onClick={() => { setPaymentMethodForm(emptyPaymentMethodForm); setPaymentMethodModal({ open: true, item: null }); }}><Plus size={16} />Добавить способ оплаты</Button>}
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="min-w-[680px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
+              <tbody>{paymentMethods.map((item) => <tr key={item.id} className="border-t border-slate-100">
+                <td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.description || '—'}</td><td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}</td>
+                <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm(item); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
+                  {canEditCatalog && <Button variant="secondary" onClick={() => togglePaymentMethod(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
+                </div></td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </SettingsCard>
         {catalogSections.map((section) => (
           <CatalogSection
             key={section.category}
@@ -368,6 +402,20 @@ export default function SettingsPage() {
           <Input label="Телефон" value={branchForm.phone} onChange={(e) => setBranchForm({ ...branchForm, phone: e.target.value })} />
           <Input label="Адрес" value={branchForm.address} onChange={(e) => setBranchForm({ ...branchForm, address: e.target.value })} />
           <Input label="Комментарий" value={branchForm.description} onChange={(e) => setBranchForm({ ...branchForm, description: e.target.value })} />
+        </div>
+      </Modal>
+
+      <Modal
+        title={paymentMethodModal.item ? 'Редактировать способ оплаты' : 'Новый способ оплаты'}
+        open={paymentMethodModal.open}
+        onClose={() => setPaymentMethodModal({ open: false, item: null })}
+        footer={<><Button variant="secondary" onClick={() => setPaymentMethodModal({ open: false, item: null })}>Отмена</Button><Button onClick={savePaymentMethod}>Сохранить</Button></>}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Название" value={paymentMethodForm.name} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, name: event.target.value })} />
+          <Input label="Код" value={paymentMethodForm.code || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, code: event.target.value })} />
+          <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>
 

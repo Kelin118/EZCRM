@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 from io import StringIO
 
@@ -18,6 +19,7 @@ from .models import (
     FinanceTransaction,
     GroupMembership,
     Lesson,
+    PaymentMethod,
     Room,
     ScheduleSlot,
     StudyGroup,
@@ -81,6 +83,7 @@ class RolePermissionTests(APITestCase):
         self.manager = User.objects.create_user(username='manager', password='pass', role='manager')
         self.teacher = User.objects.create_user(username='teacher', password='pass', role='teacher')
         self.accountant = User.objects.create_user(username='accountant', password='pass', role='accountant')
+        self.payment_method = PaymentMethod.objects.create(name='Role test cash', code='role_test_cash')
         self.client_obj = Client.objects.create(first_name='Test', last_name='Client', manager=self.manager)
 
     def test_admin_can_get_clients(self):
@@ -142,7 +145,7 @@ class RolePermissionTests(APITestCase):
 
         response = self.client.post(
             '/api/finance/',
-            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual'},
+            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual', 'payment_method': self.payment_method.id},
             format='json',
         )
 
@@ -169,6 +172,7 @@ class FinanceTransactionApiTests(APITestCase):
     def setUp(self):
         User = get_user_model()
         self.accountant = User.objects.create_user(username='finance-accountant', password='pass', role='accountant')
+        self.payment_method = PaymentMethod.objects.create(name='Test cash', code='test_cash')
 
     def test_manual_create_without_transaction_type_returns_error(self):
         self.client.force_authenticate(self.accountant)
@@ -187,7 +191,7 @@ class FinanceTransactionApiTests(APITestCase):
 
         response = self.client.post(
             '/api/finance/',
-            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual'},
+            {'transaction_type': FinanceTransaction.Type.INCOME, 'amount': '1200.00', 'source': 'manual', 'payment_method': self.payment_method.id},
             format='json',
         )
 
@@ -201,7 +205,7 @@ class FinanceTransactionApiTests(APITestCase):
 
         response = self.client.post(
             '/api/finance/',
-            {'transaction_type': FinanceTransaction.Type.EXPENSE, 'amount': '700.00', 'source': 'rent'},
+            {'transaction_type': FinanceTransaction.Type.EXPENSE, 'amount': '700.00', 'source': 'rent', 'payment_method': self.payment_method.id},
             format='json',
         )
 
@@ -294,6 +298,7 @@ class CatalogItemApiTests(APITestCase):
         self.admin = User.objects.create_user(username='catalog-admin', password='pass', role='admin')
         self.manager = User.objects.create_user(username='catalog-manager', password='pass', role='manager')
         self.accountant = User.objects.create_user(username='catalog-accountant', password='pass', role='accountant')
+        self.payment_method = PaymentMethod.objects.create(name='Catalog test cash', code='catalog_test_cash')
 
     def create_item(self, category='service', name='AB-8', price='45000.00'):
         self.client.force_authenticate(self.admin)
@@ -449,6 +454,7 @@ class CatalogItemApiTests(APITestCase):
                 'service': service.id,
                 'start_date': '2026-07-09',
                 'paid_amount': '45000.00',
+                'payment_method': self.payment_method.id,
             },
             format='json',
         )
@@ -458,6 +464,8 @@ class CatalogItemApiTests(APITestCase):
         transaction = FinanceTransaction.objects.get(subscription=subscription)
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
         self.assertEqual(transaction.source, 'subscription')
+        self.assertEqual(transaction.created_by, self.manager)
+        self.assertEqual(transaction.payment_method, self.payment_method)
 
     def test_subscription_from_service_defaults_start_date_to_today(self):
         service = CatalogItem.objects.create(
@@ -544,7 +552,7 @@ class CatalogItemApiTests(APITestCase):
 
         response = self.client.post(
             '/api/subscriptions/',
-            {'client': student.id, 'service': service.id, 'addons': [books.id, {'catalog_item': prolongation.id, 'quantity': 1}]},
+            {'client': student.id, 'service': service.id, 'addons': [books.id, {'catalog_item': prolongation.id, 'quantity': 1}], 'payment_method': self.payment_method.id},
             format='json',
         )
 
@@ -673,6 +681,7 @@ class LessonAttendanceJournalTests(APITestCase):
             role='teacher',
             roles=['teacher', 'manager'],
         )
+        self.payment_method = PaymentMethod.objects.create(name='Attendance test cash', code='attendance_test_cash')
         self.group = StudyGroup.objects.create(name='Math 5', teacher=self.teacher, manager=self.manager)
         self.lesson = Lesson.objects.create(
             group=self.group,
@@ -902,6 +911,8 @@ class LessonAttendanceJournalTests(APITestCase):
         payload = {'client': client.id, 'status': status_value, 'comment': 'Added from journal'}
         if extra:
             payload.update(extra)
+        if payload.get('create_subscription') and 'payment_method' not in payload:
+            payload['payment_method'] = self.payment_method.id
         return self.client.post(
             f'/api/lessons/{self.lesson.id}/add-student/',
             payload,
@@ -976,6 +987,8 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertTrue(visit.lesson_deducted)
         self.assertEqual(str(transaction.amount), str(service.price))
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
+        self.assertEqual(transaction.created_by, self.admin)
+        self.assertEqual(transaction.payment_method, self.payment_method)
         self.assertTrue(response.data['subscription_created'])
 
     def test_add_student_create_subscription_sick_does_not_deduct(self):
@@ -2109,6 +2122,7 @@ class BranchIntegrationTests(APITestCase):
         self.manager = User.objects.create_user(username='branch-manager', password='pass', role='manager', roles=['manager'])
         self.branch = Branch.objects.create(name='Сарыарка', address='Астана')
         self.other_branch = Branch.objects.create(name='Левый берег')
+        self.payment_method = PaymentMethod.objects.create(name='Branch test cash', code='branch_test_cash')
 
     def test_admin_crud_soft_delete_and_audit(self):
         self.client.force_authenticate(self.admin)
@@ -2176,6 +2190,7 @@ class BranchIntegrationTests(APITestCase):
             {
                 'subscription_type': 'AB-8', 'start_date': date.today().isoformat(),
                 'total_visits': 8, 'price': '40000', 'payment_amount': '40000',
+                'payment_method': self.payment_method.id,
             },
             format='json',
         )
@@ -2184,6 +2199,8 @@ class BranchIntegrationTests(APITestCase):
         transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
         self.assertEqual(subscription.branch, self.branch)
         self.assertEqual(transaction.branch, self.branch)
+        self.assertEqual(transaction.created_by, self.admin)
+        self.assertEqual(transaction.payment_method, self.payment_method)
         dashboard = self.client.get('/api/dashboard/stats/', {'branch': self.branch.id})
         self.assertEqual(dashboard.status_code, 200)
         self.assertEqual(float(dashboard.data['finance']['income']), 40000.0)
@@ -2443,3 +2460,80 @@ class BranchFilterAndAuditTests(APITestCase):
         attached.refresh_from_db()
         self.assertIsNone(attached.branch)
         self.assertFalse(Branch.objects.filter(pk=fake.pk).exists())
+
+
+class FinanceJournalAndPaymentMethodTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='payment-admin', password='pass', role='admin', roles=['admin'])
+        self.manager_a = User.objects.create_user(username='manager-a', password='pass', first_name='Менеджер', last_name='А', role='manager', roles=['manager'])
+        self.manager_b = User.objects.create_user(username='manager-b', password='pass', role='manager', roles=['manager'])
+        self.accountant = User.objects.create_user(username='payment-accountant', password='pass', role='accountant', roles=['accountant'])
+        self.teacher = User.objects.create_user(username='payment-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.method = PaymentMethod.objects.create(name='Kaspi Test', code='kaspi_test')
+        self.other_method = PaymentMethod.objects.create(name='Card Test', code='card_test')
+        self.operation = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME, amount=45000, source='manual',
+            payment_method=self.method, payment_method_name=self.method.name, created_by=self.manager_a,
+        )
+        self.unassigned = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.EXPENSE, amount=5000, source='other', payment_method_name='Старое значение',
+        )
+
+    def list_as(self, user, **params):
+        self.client.force_authenticate(user)
+        return self.client.get('/api/finance/', params)
+
+    def test_managers_and_accountant_see_shared_journal_but_teacher_cannot(self):
+        for user in (self.manager_b, self.accountant):
+            response = self.list_as(user)
+            self.assertEqual(response.status_code, 200)
+            data = response.data if isinstance(response.data, list) else response.data['results']
+            self.assertIn(self.operation.id, {item['id'] for item in data})
+        self.assertEqual(self.list_as(self.teacher).status_code, 403)
+
+    def test_manual_create_sets_author_method_snapshot_and_roles(self):
+        self.client.force_authenticate(self.manager_b)
+        response = self.client.post('/api/finance/', {
+            'transaction_type': 'income', 'amount': '12000', 'source': 'manual', 'payment_method': self.method.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['created_by'], self.manager_b.id)
+        self.assertEqual(response.data['created_by_roles'], ['manager'])
+        self.assertEqual(response.data['payment_method_name'], self.method.name)
+
+    def test_payment_method_admin_crud_soft_delete_and_permissions(self):
+        self.client.force_authenticate(self.admin)
+        created = self.client.post('/api/payment-methods/', {'name': 'Новый метод'}, format='json')
+        self.assertEqual(created.status_code, 201)
+        method_id = created.data['id']
+        self.assertEqual(self.client.delete(f'/api/payment-methods/{method_id}/').status_code, 204)
+        self.assertFalse(PaymentMethod.objects.get(pk=method_id).is_active)
+
+        self.client.force_authenticate(self.manager_a)
+        self.assertEqual(self.client.patch(f'/api/payment-methods/{self.method.id}/', {'name': 'Подмена'}, format='json').status_code, 403)
+
+    def test_inactive_method_cannot_be_used_and_old_snapshot_survives(self):
+        self.method.is_active = False
+        self.method.save(update_fields=('is_active', 'updated_at'))
+        self.client.force_authenticate(self.accountant)
+        response = self.client.post('/api/finance/', {
+            'transaction_type': 'income', 'amount': 100, 'payment_method': self.method.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        old = self.client.get(f'/api/finance/{self.operation.id}/')
+        self.assertEqual(old.data['payment_method_name'], 'Kaspi Test')
+
+    def test_method_manager_unassigned_filters_and_summary_match(self):
+        by_method = self.list_as(self.accountant, payment_method=self.method.id)
+        self.assertEqual({item['id'] for item in by_method.data}, {self.operation.id})
+        no_method = self.list_as(self.accountant, payment_method='unassigned')
+        self.assertEqual({item['id'] for item in no_method.data}, {self.unassigned.id})
+        by_manager = self.list_as(self.accountant, manager=self.manager_a.id)
+        self.assertEqual({item['id'] for item in by_manager.data}, {self.operation.id})
+        no_manager = self.list_as(self.accountant, manager='unassigned')
+        self.assertEqual({item['id'] for item in no_manager.data}, {self.unassigned.id})
+        summary = self.client.get('/api/finance/summary/', {'payment_method': self.method.id})
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.data['transactions_count'], 1)
+        self.assertEqual(Decimal(summary.data['income']), Decimal('45000'))

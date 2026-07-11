@@ -9,7 +9,7 @@ from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-from rest_framework import status, viewsets
+from rest_framework import serializers as drf_serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -42,6 +42,7 @@ from .models import (
     GroupMembership,
     Lesson,
     MasterClass,
+    PaymentMethod,
     Room,
     ScheduleSlot,
     StudioSettings,
@@ -66,6 +67,7 @@ from .permissions import (
     EducationPermission,
     BackupPermission,
     FinancePermission,
+    PaymentMethodPermission,
     ExportPermission,
     MasterClassPermission,
     ReportsPermission,
@@ -89,6 +91,7 @@ from .serializers import (
     GroupMembershipSerializer,
     LessonSerializer,
     MasterClassSerializer,
+    PaymentMethodSerializer,
     RoomSerializer,
     ScheduleSlotSerializer,
     StudioSettingsSerializer,
@@ -151,7 +154,28 @@ def _my_param(request):
     return request.query_params.get('my') in ('1', 'true', 'True', 'yes')
 
 
-def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None):
+def _resolve_payment_method(value, *, required=False):
+    if isinstance(value, PaymentMethod):
+        method = value
+    elif value in (None, ''):
+        method = None
+    else:
+        aliases = {
+            'cash': 'cash', 'наличные': 'cash', 'card': 'card', 'terminal': 'card', 'карта': 'card',
+            'kaspi': 'kaspi_qr', 'kaspi_qr': 'kaspi_qr', 'transfer': 'transfer', 'перевод': 'transfer',
+        }
+        normalized = str(value).strip().casefold()
+        method = PaymentMethod.objects.filter(pk=value).first() if str(value).isdigit() else None
+        if not method:
+            method = PaymentMethod.objects.filter(Q(code=aliases.get(normalized, normalized)) | Q(name__iexact=str(value).strip())).first()
+    if method and not method.is_active:
+        raise ValueError('Выберите активный способ оплаты.')
+    if required and not method:
+        raise ValueError('Выберите способ оплаты.')
+    return method
+
+
+def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None, payment_method=None):
     return FinanceTransaction.objects.create(
         transaction_type=FinanceTransaction.Type.INCOME,
         amount=amount,
@@ -159,6 +183,8 @@ def _create_income_transaction(*, client, amount, source, paid_at, comment, crea
         client=client,
         subscription=subscription,
         created_by=created_by,
+        payment_method=payment_method,
+        payment_method_name=payment_method.name if payment_method else '',
         paid_at=paid_at,
         comment=comment,
     )
@@ -1046,6 +1072,10 @@ class LessonViewSet(EducationBaseViewSet):
                 addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
                 full_price = price + addons_sum
                 payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
+                try:
+                    payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
+                except ValueError as error:
+                    return Response({'payment_method': str(error)}, status=status.HTTP_400_BAD_REQUEST)
                 end_date = parse_date(request.data.get('end_date') or '') or calculate_subscription_end_date(
                     start_date,
                     lessons_count=total_visits,
@@ -1077,6 +1107,7 @@ class LessonViewSet(EducationBaseViewSet):
                         comment=addons_comment(created_subscription, 'Оплата абонемента из посещений'),
                         created_by=request.user,
                         subscription=created_subscription,
+                        payment_method=payment_method,
                     )
                     created_subscription.finance_transaction = finance_transaction
                     created_subscription.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1330,6 +1361,9 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             subscription = serializer.save()
             if subscription.paid_amount > 0 and not subscription.finance_transaction_id:
+                payment_method = getattr(subscription, 'selected_payment_method', None)
+                if not payment_method:
+                    raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 finance_transaction = _create_income_transaction(
                     client=subscription.client,
                     amount=subscription.paid_amount,
@@ -1338,6 +1372,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     comment=addons_comment(subscription),
                     created_by=self.request.user,
                     subscription=subscription,
+                    payment_method=payment_method,
                 )
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1485,6 +1520,9 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             trial = serializer.save()
             if trial.price > 0 and trial.payment_date and not trial.finance_transaction_id:
+                payment_method = getattr(trial, 'selected_payment_method', None)
+                if not payment_method:
+                    raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 finance_transaction = _create_income_transaction(
                     client=trial.client,
                     amount=trial.price,
@@ -1492,6 +1530,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     paid_at=_paid_at_from_date(trial.payment_date),
                     comment='Оплата пробника',
                     created_by=self.request.user,
+                    payment_method=payment_method,
                 )
                 trial.finance_transaction = finance_transaction
                 trial.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1534,7 +1573,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
         full_price = price + addons_sum
         payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
-        payment_method = request.data.get('payment_method') or ''
+        try:
+            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
+        except ValueError as error:
+            return Response({'payment_method': str(error)}, status=status.HTTP_400_BAD_REQUEST)
         comment = request.data.get('comment') or 'Оплата абонемента после пробного'
 
         if not title:
@@ -1586,9 +1628,8 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     comment=comment or addons_comment(subscription, 'Оплата абонемента после пробного'),
                     created_by=request.user,
                     subscription=subscription,
+                    payment_method=payment_method,
                 )
-                finance_transaction.payment_method = payment_method
-                finance_transaction.save(update_fields=('payment_method', 'updated_at'))
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
 
@@ -1654,6 +1695,9 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             master_class = serializer.save()
             if master_class.payment_amount > 0 and master_class.payment_date and not master_class.finance_transaction_id:
+                payment_method = getattr(master_class, 'selected_payment_method', None)
+                if not payment_method:
+                    raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 client = master_class.participants.first()
                 finance_transaction = _create_income_transaction(
                     client=client,
@@ -1662,6 +1706,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     paid_at=_paid_at_from_date(master_class.payment_date),
                     comment='Оплата МК',
                     created_by=self.request.user,
+                    payment_method=payment_method,
                 )
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1734,18 +1779,31 @@ class TaskViewSet(BaseAuthenticatedViewSet):
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
     audit_delete_description = 'Удалена финансовая операция'
 
+    def _finance_audit_changes(self, instance):
+        return {
+            'transaction_type': instance.transaction_type,
+            'amount': str(instance.amount),
+            'payment_method_name': instance.payment_method_name,
+            'client': instance.client_id,
+            'branch': instance.branch_id,
+            'created_by': instance.created_by_id,
+            'description': instance.comment,
+        }
+
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
-        transaction_type = self.request.query_params.get('type')
+        transaction_type = self.request.query_params.get('transaction_type') or self.request.query_params.get('type')
         source = self.request.query_params.get('source')
         payment_method = self.request.query_params.get('payment_method')
         client = self.request.query_params.get('client')
+        manager = self.request.query_params.get('manager')
+        search = self.request.query_params.get('search')
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
 
@@ -1753,14 +1811,17 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(transaction_type=transaction_type)
         if source:
             queryset = queryset.filter(source=source)
-        if payment_method:
-            queryset = queryset.filter(payment_method=payment_method)
+        if payment_method and payment_method != 'all':
+            queryset = queryset.filter(payment_method__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_method_id=payment_method)
+        if manager and manager != 'all':
+            queryset = queryset.filter(created_by__isnull=True) if manager == 'unassigned' else queryset.filter(created_by_id=manager)
         if client:
             queryset = queryset.filter(client_id=client)
-        if has_role(self.request.user, MANAGER) and not has_role(self.request.user, ACCOUNTANT):
+        if search:
             queryset = queryset.filter(
-                transaction_type=FinanceTransaction.Type.INCOME,
-                client__manager=self.request.user,
+                Q(client__first_name__icontains=search) | Q(client__last_name__icontains=search)
+                | Q(client__phone__icontains=search) | Q(source__icontains=search)
+                | Q(comment__icontains=search) | Q(payment_method_name__icontains=search)
             )
         if date_from:
             queryset = queryset.filter(paid_at__date__gte=date_from)
@@ -1774,8 +1835,62 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             AuditLog.Action.PAYMENT,
             finance_transaction,
             'Добавлена финансовая операция',
-            self._audit_changes(),
+            self._finance_audit_changes(finance_transaction),
         )
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.UPDATE, instance, self.audit_update_description, self._finance_audit_changes(instance))
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        income = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total'])
+        expense = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total'])
+        income_count = queryset.filter(transaction_type=FinanceTransaction.Type.INCOME).count()
+        return Response({
+            'income': income, 'expense': expense, 'balance': income - expense,
+            'transactions_count': queryset.count(),
+            'average_income': income / income_count if income_count else Decimal('0'),
+        })
+
+
+class PaymentMethodViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, PaymentMethodPermission)
+    queryset = PaymentMethod.objects.all()
+    serializer_class = PaymentMethodSerializer
+    audit_entity_type = 'PaymentMethod'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        active = self.request.query_params.get('is_active')
+        search = self.request.query_params.get('search')
+        if active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(code__icontains=search) | Q(description__icontains=search))
+        return queryset.order_by('sort_order', 'name')
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.PAYMENT_METHOD_CREATE, instance, 'Создан способ оплаты', self._audit_changes())
+
+    def perform_update(self, serializer):
+        was_active = serializer.instance.is_active
+        instance = serializer.save()
+        action_value, description = AuditLog.Action.PAYMENT_METHOD_UPDATE, 'Изменён способ оплаты'
+        if was_active and not instance.is_active:
+            action_value, description = AuditLog.Action.PAYMENT_METHOD_DISABLE, 'Отключён способ оплаты'
+        elif not was_active and instance.is_active:
+            action_value, description = AuditLog.Action.PAYMENT_METHOD_ENABLE, 'Включён способ оплаты'
+        self._log_instance(action_value, instance, description, self._audit_changes())
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=('is_active', 'updated_at'))
+        self._log_instance(AuditLog.Action.PAYMENT_METHOD_DISABLE, instance, 'Отключён способ оплаты', {'is_active': False})
 
 
 class ChatMessageViewSet(BaseAuthenticatedViewSet):
@@ -2227,8 +2342,8 @@ class DashboardStatsView(APIView):
                     paid_at__month=today.month,
                 ).aggregate(total=Sum('amount'))['total']
             )
-            cash = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__icontains='cash').aggregate(total=Sum('amount'))['total'])
-            card = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__icontains='card').aggregate(total=Sum('amount'))['total'])
+            cash = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__code='cash').aggregate(total=Sum('amount'))['total'])
+            card = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__code='card').aggregate(total=Sum('amount'))['total'])
             payment_count = transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).count()
             avg_check = round(float(income_total) / payment_count, 2) if payment_count else 0
 

@@ -7,6 +7,7 @@ import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const masterClassStages = [
   { value: 'lead', label: 'Лид' },
@@ -29,6 +30,7 @@ const empty = {
   capacity: 0,
   price: 0,
   payment_amount: 0,
+  payment_method: '',
   participants: [],
 };
 
@@ -102,6 +104,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
+  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
@@ -118,6 +121,7 @@ export default function MasterClassesPage() {
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields.slice(1),
+    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
   ];
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
 

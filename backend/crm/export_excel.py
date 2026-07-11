@@ -135,7 +135,7 @@ def export_finance(queryset):
             item.source,
             _display_client(item.client),
             _money(item.amount),
-            item.payment_method,
+            item.payment_method_name or (item.payment_method.name if item.payment_method else ''),
             _display_user(item.created_by),
             item.comment,
         ]

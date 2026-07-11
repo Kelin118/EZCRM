@@ -11,6 +11,7 @@ import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 
 const emptyManualVisit = {
@@ -34,6 +35,7 @@ const emptyStudentVisit = {
   remaining_visits: 0,
   price: 0,
   payment_amount: 0,
+  payment_method: '',
   addons: [],
 };
 
@@ -391,6 +393,7 @@ export default function VisitsPage() {
           remaining_visits: studentForm.remaining_visits,
           price: studentForm.price,
           payment_amount: studentForm.payment_amount,
+          payment_method: studentForm.payment_method,
           addons: addonPayload(studentForm.addons),
         });
       }
@@ -711,6 +714,7 @@ function AddStudentModal({
   services, activeSubscription, checkingSubscription, onClientChange, onServiceChange, onStartDateChange,
   onAddonsChange, onAddonCatalogItemsChange, addonCatalogItems, onPaymentChange,
 }) {
+  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   if (!lesson) return null;
   const lessonDate = lesson.lesson_date
     ? parseLocalDate(lesson.lesson_date).toLocaleDateString('ru-RU')
@@ -805,6 +809,7 @@ function AddStudentModal({
                   <Input label="Остаток занятий" type="number" value={form.remaining_visits} onChange={(event) => setForm({ ...form, remaining_visits: Number(event.target.value) })} />
                   <Input label="Цена" type="number" value={form.price} onChange={(event) => setForm({ ...form, price: Number(event.target.value) })} />
                   <Input label="Оплата" type="number" value={form.payment_amount} onChange={(event) => onPaymentChange(event.target.value)} />
+                  <SelectField label="Способ оплаты" value={form.payment_method} onChange={(value) => setForm({ ...form, payment_method: value })} options={[{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions]} />
                   <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700 md:col-span-2">
                     <p>Основная услуга: {Number(form.price || 0).toLocaleString('ru-RU')} ₸</p>
                     <p>Дополнительные услуги: {addonsTotal(form.addons, addonCatalogItems).toLocaleString('ru-RU')} ₸</p>

@@ -10,6 +10,7 @@ import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, S
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const trialStages = [
   { value: 'lead', label: 'Лид' },
@@ -19,10 +20,10 @@ const trialStages = [
   { value: 'lost', label: 'Не купил' },
 ];
 
-const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
+const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, payment_method: '', bought_subscription: false, notes: '' };
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
-const emptyConvertForm = { service: '', addons: [], subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
+const emptyConvertForm = { service: '', addons: [], subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: '', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -189,6 +190,7 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 export default function TrialsPage() {
   const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
+  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
@@ -210,6 +212,7 @@ export default function TrialsPage() {
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Преподаватель', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
+    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
     ...baseFields,
   ];
   const total = crud.items.length;
@@ -395,11 +398,7 @@ export default function TrialsPage() {
             label="Способ оплаты"
             value={convertForm.payment_method}
             onChange={(value) => updateConvertForm({ payment_method: value })}
-            options={[
-              { value: 'cash', label: 'cash' },
-              { value: 'card', label: 'card' },
-              { value: 'transfer', label: 'transfer' },
-            ]}
+            options={[{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions]}
           />
           <Input label="Менеджер" value={convertTrial?.manager_name || ''} onChange={() => {}} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">

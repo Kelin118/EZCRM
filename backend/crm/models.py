@@ -474,7 +474,14 @@ class FinanceTransaction(TimeStampedModel):
     transaction_type = models.CharField(max_length=20, choices=Type.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     source = models.CharField(max_length=100, blank=True)
-    payment_method = models.CharField(max_length=50, blank=True)
+    payment_method = models.ForeignKey(
+        'PaymentMethod',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='finance_transactions',
+    )
+    payment_method_name = models.CharField(max_length=255, blank=True, default='')
     client = models.ForeignKey(
         Client,
         on_delete=models.SET_NULL,
@@ -503,11 +510,27 @@ class FinanceTransaction(TimeStampedModel):
         return f'{self.get_transaction_type_display()} {self.amount}'
 
     def save(self, *args, **kwargs):
+        if self._state.adding and self.payment_method_id and not self.payment_method_name:
+            self.payment_method_name = self.payment_method.name
         if not self.branch_id:
             self.branch_id = (
                 self.subscription.branch_id if self.subscription_id else None
             ) or (self.client.branch_id if self.client_id else None)
         super().save(*args, **kwargs)
+
+
+class PaymentMethod(TimeStampedModel):
+    name = models.CharField(max_length=150, unique=True)
+    code = models.SlugField(max_length=80, blank=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0, blank=True)
+
+    class Meta:
+        ordering = ('sort_order', 'name')
+
+    def __str__(self):
+        return self.name
 
 
 class ChatMessage(TimeStampedModel):
@@ -583,6 +606,10 @@ class AuditLog(models.Model):
         BRANCH_CREATE = 'branch_create', 'Branch create'
         BRANCH_UPDATE = 'branch_update', 'Branch update'
         BRANCH_DISABLE = 'branch_disable', 'Branch disable'
+        PAYMENT_METHOD_CREATE = 'payment_method_create', 'Payment method create'
+        PAYMENT_METHOD_UPDATE = 'payment_method_update', 'Payment method update'
+        PAYMENT_METHOD_DISABLE = 'payment_method_disable', 'Payment method disable'
+        PAYMENT_METHOD_ENABLE = 'payment_method_enable', 'Payment method enable'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

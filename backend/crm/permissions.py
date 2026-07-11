@@ -132,9 +132,21 @@ class TaskPermission(RolePermission):
 
 class FinancePermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
         ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy'},
     }
+
+
+class PaymentMethodPermission(BasePermission):
+    def has_permission(self, request, view):
+        if not is_authenticated(request.user):
+            return False
+        if request.method in SAFE_METHODS:
+            return is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        return is_admin(request.user)
+
+    def has_object_permission(self, request, view, obj):
+        return self.has_permission(request, view)
 
 
 class SettingsPermission(RolePermission):

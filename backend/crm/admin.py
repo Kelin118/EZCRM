@@ -10,6 +10,7 @@ from .models import (
     GroupMembership,
     Lesson,
     MasterClass,
+    PaymentMethod,
     Room,
     ScheduleSlot,
     StudioSettings,
@@ -125,6 +126,13 @@ class FinanceTransactionAdmin(admin.ModelAdmin):
     list_display = ('transaction_type', 'amount', 'client', 'subscription', 'paid_at')
     list_filter = ('transaction_type', 'paid_at')
     search_fields = ('client__first_name', 'client__last_name', 'comment')
+
+
+@admin.register(PaymentMethod)
+class PaymentMethodAdmin(admin.ModelAdmin):
+    list_display = ('name', 'code', 'is_active', 'sort_order')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'code', 'description')
 
 
 @admin.register(ChatMessage)

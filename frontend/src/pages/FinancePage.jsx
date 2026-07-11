@@ -1,84 +1,99 @@
-import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
-import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
-import { subscriptionLabel, useClientOptions, useLookup } from './lookupUtils.jsx';
-import useBranches from '../hooks/useBranches.js';
+import { useEffect, useState } from 'react';
 
-const empty = { transaction_type: 'income', amount: 0, source: '', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
+import api from '../api/axios.js';
+import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
+import useBranches from '../hooks/useBranches.js';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
+import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
+import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+
+const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
+const emptyFilters = { transaction_type: '', payment_method: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const sourceOptions = [
-  { value: 'subscription', label: 'Абонемент' },
-  { value: 'trial', label: 'Пробник' },
-  { value: 'master_class', label: 'МК' },
-  { value: 'manual', label: 'Ручная операция' },
-  { value: 'salary', label: 'Зарплата' },
-  { value: 'rent', label: 'Аренда' },
-  { value: 'other', label: 'Другое' },
+  { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
+  { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительная услуга' },
+  { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' },
+  { value: 'rent', label: 'Аренда' }, { value: 'other', label: 'Другое' },
 ];
-const baseFields = [
-  { name: 'transaction_type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
-  { name: 'amount', label: 'Сумма', type: 'number' },
-  { name: 'source', label: 'Источник', type: 'select', options: sourceOptions },
-  { name: 'payment_method', label: 'Способ оплаты' },
-  { name: 'paid_at', label: 'Дата операции', type: 'datetime-local' },
-  { name: 'comment', label: 'Описание', type: 'textarea' },
-];
+const sourceLabel = (value) => sourceOptions.find((item) => item.value === value)?.label || value || 'Другое';
+const typeLabel = (value) => (value === 'income' ? 'Доход' : value === 'expense' ? 'Расход' : value);
 
 export default function FinancePage() {
-  const crud = useCrudResource('finance/', { type: '', source: '', payment_method: '', date_from: '', date_to: '', branch: '' });
+  const crud = useCrudResource('finance/', emptyFilters);
   const { branchOptions, branchFilterOptions } = useBranches();
+  const { options: paymentOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
+  const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
+  const [summary, setSummary] = useState({ income: 0, expense: 0, balance: 0, transactions_count: 0, average_income: 0 });
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const { items: subscriptions } = useLookup('subscriptions/', { client: form.client || '' }, { enabled: Boolean(form.client) });
-  const subscriptionOptions = subscriptions.map((subscription) => ({ value: String(subscription.id), label: subscriptionLabel(subscription) }));
+  const subscriptionOptions = subscriptions.map((item) => ({ value: String(item.id), label: subscriptionLabel(item) }));
+
+  useEffect(() => {
+    api.get('finance/summary/', { params: crud.filters }).then(({ data }) => setSummary(data));
+  }, [crud.filters, crud.items]);
+
+  const currentInactiveMethod = form.payment_method && !paymentOptions.some((item) => item.value === String(form.payment_method))
+    ? [{ value: String(form.payment_method), label: form.payment_method_name || 'Отключённый способ' }]
+    : [];
   const fields = [
-    baseFields[0],
-    baseFields[1],
-    baseFields[2],
-    baseFields[3],
+    { name: 'transaction_type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
+    { name: 'amount', label: 'Сумма', type: 'number' },
+    { name: 'source', label: 'Источник', type: 'select', options: sourceOptions },
+    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...currentInactiveMethod, ...paymentOptions] },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Автоматически' }, ...branchOptions] },
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
     { name: 'subscription', label: 'Абонемент', type: 'select', options: [{ value: '', label: form.client ? 'Без абонемента' : 'Сначала выберите клиента' }, ...subscriptionOptions] },
-    baseFields[4],
-    baseFields[5],
+    { name: 'paid_at', label: 'Дата операции', type: 'datetime-local' },
+    { name: 'comment', label: 'Комментарий', type: 'textarea' },
   ];
-  const transactionType = (item) => item.transaction_type ?? item.type;
-  const income = crud.items.filter((item) => transactionType(item) === 'income').reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const expense = crud.items.filter((item) => transactionType(item) === 'expense').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
   const editTransaction = (row) => {
-    const { type, ...editableRow } = row;
-    crud.setEditing({ ...editableRow, transaction_type: transactionType(row) });
+    const { type, ...editable } = row;
+    crud.setEditing({ ...editable, transaction_type: row.transaction_type ?? type, payment_method: row.payment_method ? String(row.payment_method) : '' });
     crud.setModalOpen(true);
   };
+  const resetFilters = () => crud.setFilters(emptyFilters);
 
   return (
     <>
-      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
-        <span className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Доход: {money(income)}</span>
-        <span className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700">Расход: {money(expense)}</span>
-        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Баланс: {money(income - expense)}</span>
-      </PageHeader>
+      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined} />
+      <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          ['Доход', summary.income, 'text-emerald-700'], ['Расход', summary.expense, 'text-red-700'],
+          ['Баланс', summary.balance, 'text-brand'], ['Операций', summary.transactions_count, 'text-slate-900'],
+          ['Средний доходный чек', summary.average_income, 'text-slate-900'],
+        ].map(([label, value, tone], index) => <div key={label} className="rounded-[22px] border border-slate-100 bg-white p-4 shadow-card"><p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p><p className={`mt-2 text-xl font-bold ${tone}`}>{index === 3 ? value : money(value)}</p></div>)}
+      </section>
       <Filters>
-        <SelectField label="Тип" value={crud.filters.type} onChange={(value) => crud.setFilters({ ...crud.filters, type: value })} options={[{ value: '', label: 'Все' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
-        <SelectField label="Источник" value={crud.filters.source} onChange={(value) => crud.setFilters({ ...crud.filters, source: value })} options={[{ value: '', label: 'Все' }, ...sourceOptions]} />
-        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
-        <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
-        <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
+        <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(event) => crud.setFilters({ ...crud.filters, date_from: event.target.value })} />
+        <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(event) => crud.setFilters({ ...crud.filters, date_to: event.target.value })} />
+        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
+        <SelectField label="Тип" value={crud.filters.transaction_type} onChange={(value) => crud.setFilters({ ...crud.filters, transaction_type: value })} options={[{ value: '', label: 'Все операции' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
+        <SelectField label="Способ оплаты" value={crud.filters.payment_method} onChange={(value) => crud.setFilters({ ...crud.filters, payment_method: value })} options={[{ value: 'all', label: 'Все способы' }, ...paymentOptions, { value: 'unassigned', label: 'Не указан' }]} />
+        <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: 'all', label: 'Все менеджеры' }, ...managerOptions, { value: 'unassigned', label: 'Не указан' }]} />
+        <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все клиенты' }, ...clientOptions]} />
+        <Input label="Поиск" value={crud.filters.search} onChange={(event) => crud.setFilters({ ...crud.filters, search: event.target.value })} />
+        <div className="flex items-end"><Button variant="secondary" onClick={resetFilters}>Сбросить фильтры</Button></div>
       </Filters>
       <Table data={crud.items} columns={[
-        { key: 'type', header: 'Тип', render: (row) => <Badge value={transactionType(row)} /> },
-        { key: 'client', header: 'Клиент', render: (row) => row.client_name || '—' },
+        { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—' },
+        { key: 'type', header: 'Тип', render: (row) => <Badge value={row.transaction_type}>{typeLabel(row.transaction_type)}</Badge> },
         { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
-        { key: 'source', header: 'Источник' },
+        { key: 'payment_method_name', header: 'Способ оплаты', render: (row) => row.payment_method_name || 'Не указан' },
+        { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
+        { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },
+        { key: 'created_by', header: 'Менеджер', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
-        { key: 'payment_method', header: 'Оплата' },
-        { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || '—' },
-        { key: 'paid_at', header: 'Дата', render: (row) => (row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—') },
+        { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
-      <CrudModal title="Операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
+      <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
     </>
   );
 }

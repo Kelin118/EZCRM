@@ -100,7 +100,7 @@ export function canManageVisits(user = getStoredUser()) {
 }
 
 export function canManageFinance(user = getStoredUser()) {
-  return hasRole(user, [ROLES.ADMIN, ROLES.ACCOUNTANT]);
+  return hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT]);
 }
 
 export function canImportExcel(user = getStoredUser()) {

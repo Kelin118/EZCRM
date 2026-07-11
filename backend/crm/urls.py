@@ -21,6 +21,7 @@ from .views import (
     LessonsExportView,
     LessonViewSet,
     MasterClassViewSet,
+    PaymentMethodViewSet,
     MasterClassesExportView,
     ReportsSummaryView,
     ReportSummaryExportView,
@@ -53,6 +54,7 @@ router.register('trials', TrialViewSet, basename='trial')
 router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
+router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
 router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')

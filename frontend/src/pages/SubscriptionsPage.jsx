@@ -7,6 +7,7 @@ import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
+import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const empty = {
   client: '',
@@ -22,6 +23,7 @@ const empty = {
   branch: '',
   service: '',
   addons: [],
+  payment_method: '',
 };
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -67,6 +69,7 @@ function Progress({ row }) {
 export default function SubscriptionsPage() {
   const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
+  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const [addonCatalogItems, setAddonCatalogItems] = useState([]);
@@ -154,6 +157,7 @@ export default function SubscriptionsPage() {
         }
         return field;
       }),
+    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
     {
       name: 'price_summary',
       type: 'custom',

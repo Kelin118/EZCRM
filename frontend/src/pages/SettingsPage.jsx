@@ -34,7 +34,7 @@ const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
   { category: 'product', title: 'Товары', addLabel: 'Добавить товар', modalCreate: 'Новый товар', icon: Package },
-  { category: 'extra_service', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Plus },
+  { category: 'addon', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Plus },
 ];
 
 function money(value) {

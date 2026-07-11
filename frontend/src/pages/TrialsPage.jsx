@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import Modal from '../components/ui/Modal.jsx';
+import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
@@ -21,7 +22,7 @@ const trialStages = [
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, bought_subscription: false, notes: '' };
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
-const emptyConvertForm = { service: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
+const emptyConvertForm = { service: '', addons: [], subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: 'cash', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -195,6 +196,8 @@ export default function TrialsPage() {
   const [viewMode, setViewMode] = useState('kanban');
   const [convertTrial, setConvertTrial] = useState(null);
   const [convertForm, setConvertForm] = useState(emptyConvertForm);
+  const [addonCatalogItems, setAddonCatalogItems] = useState([]);
+  const [paymentTouched, setPaymentTouched] = useState(false);
   const [converting, setConverting] = useState(false);
   const [message, setMessage] = useState('');
   const user = getStoredUser();
@@ -230,6 +233,7 @@ export default function TrialsPage() {
       payment_amount: Number(trial.price || 0),
       start_date: todayIso(),
     });
+    setPaymentTouched(false);
   };
 
   const moveTrial = async (item, nextStage) => {
@@ -265,14 +269,24 @@ export default function TrialsPage() {
   const setSubscriptionService = (value) => {
     const service = services.find((item) => String(item.id) === String(value));
     const startDate = convertForm.start_date || todayIso();
+    const basePrice = Number(service?.price || 0);
+    const nextTotal = basePrice + addonsTotal(convertForm.addons, addonCatalogItems);
     updateConvertForm({
       service: value,
       subscription_type: service?.name || '',
       total_visits: service?.lessons_count || 0,
-      price: Number(service?.price || 0),
-      payment_amount: Number(service?.price || 0),
+      price: basePrice,
+      payment_amount: paymentTouched ? convertForm.payment_amount : nextTotal,
       start_date: startDate,
       end_date: calculateEndDateFromService(startDate, service),
+    });
+  };
+
+  const setConvertAddons = (value) => {
+    const nextTotal = Number(convertForm.price || 0) + addonsTotal(value, addonCatalogItems);
+    updateConvertForm({
+      addons: value,
+      payment_amount: paymentTouched ? convertForm.payment_amount : nextTotal,
     });
   };
 
@@ -288,7 +302,7 @@ export default function TrialsPage() {
     if (!convertTrial) return;
     setConverting(true);
     try {
-      const { data } = await api.post(`trials/${convertTrial.id}/convert-to-subscription/`, convertForm);
+      const { data } = await api.post(`trials/${convertTrial.id}/convert-to-subscription/`, { ...convertForm, addons: addonPayload(convertForm.addons) });
       crud.setItems((items) => items.map((trial) => (trial.id === convertTrial.id ? { ...trial, ...data.trial, stage: data.trial.stage ?? data.trial.status } : trial)));
       setConvertTrial(null);
       setMessage('Абонемент создан, клиент добавлен в раздел Абонементы.');
@@ -361,11 +375,21 @@ export default function TrialsPage() {
               ...services.map((service) => ({ value: String(service.id), label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸` })),
             ]}
           />
+          <SubscriptionAddonsSelect
+            value={convertForm.addons}
+            onCatalogItemsChange={setAddonCatalogItems}
+            onChange={setConvertAddons}
+          />
           <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => setConvertStartDate(event.target.value)} />
           <Input label="Дата окончания" type="date" value={convertForm.end_date} onChange={(event) => updateConvertForm({ end_date: event.target.value })} />
           <Input label="Количество занятий" type="number" value={convertForm.total_visits} onChange={(event) => updateConvertForm({ total_visits: Number(event.target.value) })} />
           <Input label="Цена" type="number" value={convertForm.price} onChange={(event) => updateConvertForm({ price: Number(event.target.value) })} />
-          <Input label="Сумма оплаты" type="number" value={convertForm.payment_amount} onChange={(event) => updateConvertForm({ payment_amount: Number(event.target.value) })} />
+          <Input label="Сумма оплаты" type="number" value={convertForm.payment_amount} onChange={(event) => { setPaymentTouched(true); updateConvertForm({ payment_amount: Number(event.target.value) }); }} />
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700 md:col-span-2">
+            <p>Основная услуга: {money(convertForm.price)}</p>
+            <p>Дополнительные услуги: {money(addonsTotal(convertForm.addons, addonCatalogItems))}</p>
+            <p className="mt-1 text-base text-slate-900">Итого: {money(Number(convertForm.price || 0) + addonsTotal(convertForm.addons, addonCatalogItems))}</p>
+          </div>
           <SelectField
             label="Способ оплаты"
             value={convertForm.payment_method}

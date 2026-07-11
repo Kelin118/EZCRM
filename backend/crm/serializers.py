@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from django.utils import timezone
 
@@ -26,12 +28,14 @@ from .models import (
     ScheduleSlot,
     StudioSettings,
     StudyGroup,
+    SubscriptionAddon,
     Subject,
     Subscription,
     Task,
     Trial,
     Visit,
 )
+from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .subscription_dates import calculate_subscription_end_date
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -255,6 +259,13 @@ class LessonSerializer(BranchNameMixin, serializers.ModelSerializer):
         return obj.visits.filter(status=Visit.Status.MISSED).count()
 
 
+class SubscriptionAddonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubscriptionAddon
+        fields = ('id', 'catalog_item', 'name', 'unit_price', 'quantity', 'total_price')
+        read_only_fields = fields
+
+
 class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
@@ -266,6 +277,9 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     expected_end_date = serializers.SerializerMethodField()
     service_name = serializers.CharField(source='service.name', read_only=True, default='')
     service_price = serializers.DecimalField(source='service.price', max_digits=10, decimal_places=2, read_only=True)
+    addons = serializers.JSONField(required=False)
+    addons_total = serializers.SerializerMethodField()
+    total_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
@@ -290,21 +304,37 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     def get_expected_end_date(self, obj):
         return subscription_expected_end_date(obj)
 
+    def get_addons_total(self, obj):
+        return addons_total(obj)
+
+    def get_total_price(self, obj):
+        return total_price(obj)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['addons'] = SubscriptionAddonSerializer(instance.subscription_addons.all(), many=True).data
+        return data
+
     def validate_service(self, service):
         if service and (service.category != CatalogItem.Category.SERVICE or not service.is_active):
             raise serializers.ValidationError('Выберите активную услугу.')
         return service
 
+    def validate_addons(self, value):
+        return validate_addons_payload(value)
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         initial_data = getattr(self, 'initial_data', {})
+        addons = attrs.get('addons')
         service = attrs.get('service', self.instance.service if self.instance else None)
         if service:
             attrs['title'] = service.name
             if 'price' not in initial_data:
                 attrs['price'] = service.price
             if 'paid_amount' not in initial_data and self.instance is None:
-                attrs['paid_amount'] = service.price
+                addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (addons or [])), Decimal('0'))
+                attrs['paid_amount'] = service.price + addons_sum
             if service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
                 attrs['total_visits'] = service.lessons_count
             if service.lessons_count:
@@ -335,6 +365,20 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         elif self.instance is None and not attrs.get('start_date'):
             raise serializers.ValidationError({'start_date': 'Укажите дату начала.'})
         return attrs
+
+    def create(self, validated_data):
+        addons = validated_data.pop('addons', [])
+        subscription = super().create(validated_data)
+        sync_subscription_addons(subscription, addons)
+        return subscription
+
+    def update(self, instance, validated_data):
+        has_addons = 'addons' in validated_data
+        addons = validated_data.pop('addons', [])
+        subscription = super().update(instance, validated_data)
+        if has_addons:
+            sync_subscription_addons(subscription, addons)
+        return subscription
 
     def _subscription_group(self, attrs):
         if self.instance:

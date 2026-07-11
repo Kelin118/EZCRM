@@ -92,6 +92,30 @@ class Subscription(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
+class SubscriptionAddon(models.Model):
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name='subscription_addons')
+    catalog_item = models.ForeignKey(
+        'CatalogItem',
+        on_delete=models.PROTECT,
+        related_name='subscription_addons',
+        limit_choices_to={'category': 'addon'},
+    )
+    name = models.CharField(max_length=150)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.PositiveIntegerField(default=1)
+    total_price = models.DecimalField(max_digits=12, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.UniqueConstraint(fields=('subscription', 'catalog_item'), name='unique_subscription_addon_item'),
+        ]
+
+    def __str__(self):
+        return f'{self.subscription_id}: {self.name} x{self.quantity}'
+
+
 class Subject(TimeStampedModel):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
@@ -520,6 +544,7 @@ class CatalogItem(TimeStampedModel):
     class Category(models.TextChoices):
         SERVICE = 'service', 'Услуги'
         PRODUCT = 'product', 'Товары'
+        ADDON = 'addon', 'Доп. услуги'
         EXTRA_SERVICE = 'extra_service', 'Доп. услуги'
 
     name = models.CharField(max_length=150)

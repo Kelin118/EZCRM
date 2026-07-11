@@ -213,6 +213,9 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
     >
       <div className="grid gap-4 md:grid-cols-2">
         {fields.map((field) => {
+          if (field.type === 'custom' && field.render) {
+            return <div key={field.name} className={field.className || 'md:col-span-2'}>{field.render(form, setForm)}</div>;
+          }
           if (field.type === 'client') {
             const placeholderOption = field.options?.find((option) => option.value === '');
             const clientOptions = field.options?.filter((option) => option.value !== '') || [];

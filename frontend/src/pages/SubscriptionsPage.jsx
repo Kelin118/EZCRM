@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom';
+import { useState } from 'react';
 
 import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
+import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 
 const empty = {
   client: '',
@@ -19,6 +21,7 @@ const empty = {
   status: 'active',
   branch: '',
   service: '',
+  addons: [],
 };
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -66,6 +69,8 @@ export default function SubscriptionsPage() {
   const { branchOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
+  const [addonCatalogItems, setAddonCatalogItems] = useState([]);
+  const [paymentTouched, setPaymentTouched] = useState(false);
   const user = getStoredUser();
   const canEdit = canManageSubscriptions(user);
   const canDelete = canDeleteDangerous(user);
@@ -77,6 +82,8 @@ export default function SubscriptionsPage() {
     label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸${service.lessons_count ? ` · ${service.lessons_count} зан.` : ''}${service.validity_days ? ` · ${service.validity_days} дн.` : ''}`,
   }));
   const selectedService = services.find((item) => String(item.id) === String(form.service));
+  const currentAddonsTotal = addonsTotal(form.addons, addonCatalogItems);
+  const currentTotalPrice = Number(form.price || 0) + currentAddonsTotal;
   const calculateEndDate = (startDate, service) => calculateEndDateFromService(startDate, service);
   const selectService = (value, current, update) => {
     const service = services.find((item) => String(item.id) === String(value));
@@ -89,9 +96,17 @@ export default function SubscriptionsPage() {
       price: service?.price ?? current.price,
       total_visits: service?.lessons_count ?? current.total_visits,
       remaining_visits: current.id ? current.remaining_visits : (service?.lessons_count ?? current.remaining_visits),
-      paid_amount: current.id ? current.paid_amount : (service?.price ?? current.paid_amount),
+      paid_amount: current.id || paymentTouched ? current.paid_amount : (Number(service?.price || 0) + addonsTotal(current.addons, addonCatalogItems)),
       start_date: startDate,
       end_date: endDate,
+    });
+  };
+  const changeAddons = (value, current, update) => {
+    const nextTotal = Number(current.price || 0) + addonsTotal(value, addonCatalogItems);
+    update({
+      ...current,
+      addons: value,
+      paid_amount: current.id || paymentTouched ? current.paid_amount : nextTotal,
     });
   };
   const changeStartDate = (value, current, update) => {
@@ -104,8 +119,19 @@ export default function SubscriptionsPage() {
   };
   const fields = [
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
-    { name: 'service', label: 'Услуга', type: 'select', options: [{ value: '', label: services.length ? 'Выберите услугу' : 'Нет добавленных услуг' }, ...serviceOptions], onChange: selectService },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
+    { name: 'service', label: 'Услуга', type: 'select', options: [{ value: '', label: services.length ? 'Выберите услугу' : 'Нет добавленных услуг' }, ...serviceOptions], onChange: selectService },
+    {
+      name: 'addons',
+      type: 'custom',
+      render: (current, update) => (
+        <SubscriptionAddonsSelect
+          value={current.addons}
+          onCatalogItemsChange={setAddonCatalogItems}
+          onChange={(value) => changeAddons(value, current, update)}
+        />
+      ),
+    },
     ...baseFields
       .filter((field) => field.name !== 'title')
       .map((field) => {
@@ -120,13 +146,31 @@ export default function SubscriptionsPage() {
               : '',
           };
         }
+        if (field.name === 'paid_amount') {
+          return { ...field, onChange: (value, current, update) => { setPaymentTouched(true); update({ ...current, paid_amount: value }); } };
+        }
+        if (field.name === 'price') {
+          return { ...field, label: 'Цена основной услуги' };
+        }
         return field;
       }),
+    {
+      name: 'price_summary',
+      type: 'custom',
+      render: () => (
+        <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
+          <p className="mb-2 text-slate-900">Стоимость</p>
+          <p>Основная услуга: {money(form.price)}</p>
+          <p>Дополнительные услуги: {money(currentAddonsTotal)}</p>
+          <p className="mt-2 text-base text-slate-900">Итого: {money(currentTotalPrice)}</p>
+        </div>
+      ),
+    },
   ];
 
   return (
     <>
-      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={canEdit ? () => { crud.setEditing({ ...empty, start_date: todayIso() }); crud.setModalOpen(true); } : undefined}>
+      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={canEdit ? () => { setPaymentTouched(false); crud.setEditing({ ...empty, start_date: todayIso() }); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено за период: {money(totalPaid)}</span>
       </PageHeader>
       <Filters>
@@ -138,7 +182,12 @@ export default function SubscriptionsPage() {
       </Filters>
       <Table data={crud.items} columns={[
         { key: 'client', header: 'Клиент', render: (row) => <Link className="text-brand hover:underline" to={`/clients/${row.client}`}>{row.client_name || `#${row.client}`}</Link> },
-        { key: 'title', header: 'Услуга / Вид абонемента', render: (row) => row.service_name || row.title },
+        { key: 'title', header: 'Услуга / Вид абонемента', render: (row) => (
+          <div>
+            <p>{row.service_name || row.title}</p>
+            {row.addons?.length ? <p className="text-xs font-semibold text-slate-500">+ {row.addons.length} доп. услуги</p> : null}
+          </div>
+        ) },
         { key: 'lessons_total', header: 'Всего', render: (row) => row.lessons_total ?? row.total_visits },
         { key: 'lessons_left', header: 'Осталось', render: (row) => row.lessons_left ?? row.remaining_visits },
         { key: 'start_date', header: 'Дата начала' },
@@ -151,9 +200,17 @@ export default function SubscriptionsPage() {
           return <Badge value={row.status} />;
         } },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
-        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'price', header: 'Стоимость', render: (row) => (
+          <div className="text-sm">
+            <p>Осн.: {money(row.price)}</p>
+            <p>Доп.: {money(row.addons_total)}</p>
+            <p className="font-bold">Итого: {money(row.total_price)}</p>
+          </div>
+        ) },
+        { key: 'paid_amount', header: 'Оплачено', render: (row) => money(row.paid_amount) },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setPaymentTouched(true); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
-      <CrudModal title="Абонемент" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      <CrudModal title="Абонемент" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save({ ...form, addons: addonPayload(form.addons) })} />
     </>
   );
 }

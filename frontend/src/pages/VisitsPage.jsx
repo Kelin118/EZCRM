@@ -5,6 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser, hasAnyRole, ROLES } from '../auth.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
+import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
@@ -33,6 +34,7 @@ const emptyStudentVisit = {
   remaining_visits: 0,
   price: 0,
   payment_amount: 0,
+  addons: [],
 };
 
 export const visitStatusOptions = [
@@ -141,6 +143,8 @@ export default function VisitsPage() {
   const [manualForm, setManualForm] = useState(emptyManualVisit);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
   const [studentForm, setStudentForm] = useState(emptyStudentVisit);
+  const [addonCatalogItems, setAddonCatalogItems] = useState([]);
+  const [paymentTouched, setPaymentTouched] = useState(false);
   const [activeStudentSubscription, setActiveStudentSubscription] = useState(null);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [addingStudent, setAddingStudent] = useState(false);
@@ -310,6 +314,7 @@ export default function VisitsPage() {
   const openStudentModal = () => {
     if (!selectedLesson || !canAddStudent) return;
     setStudentForm(emptyStudentVisit);
+    setPaymentTouched(false);
     setActiveStudentSubscription(null);
     setStudentModalOpen(true);
   };
@@ -335,6 +340,8 @@ export default function VisitsPage() {
   const selectStudentService = (value) => {
     const service = services.find((item) => String(item.id) === String(value));
     const startDate = studentForm.start_date || selectedLesson?.lesson_date || isoDate(new Date());
+    const basePrice = Number(service?.price || 0);
+    const nextTotal = basePrice + addonsTotal(studentForm.addons, addonCatalogItems);
     setStudentForm({
       ...studentForm,
       service: value,
@@ -342,8 +349,17 @@ export default function VisitsPage() {
       end_date: calculateEndDateFromService(startDate, service),
       total_visits: service?.lessons_count || 0,
       remaining_visits: service?.lessons_count || 0,
-      price: Number(service?.price || 0),
-      payment_amount: Number(service?.price || 0),
+      price: basePrice,
+      payment_amount: paymentTouched ? studentForm.payment_amount : nextTotal,
+    });
+  };
+
+  const changeStudentAddons = (value) => {
+    const nextTotal = Number(studentForm.price || 0) + addonsTotal(value, addonCatalogItems);
+    setStudentForm({
+      ...studentForm,
+      addons: value,
+      payment_amount: paymentTouched ? studentForm.payment_amount : nextTotal,
     });
   };
 
@@ -375,6 +391,7 @@ export default function VisitsPage() {
           remaining_visits: studentForm.remaining_visits,
           price: studentForm.price,
           payment_amount: studentForm.payment_amount,
+          addons: addonPayload(studentForm.addons),
         });
       }
       const { data } = await api.post(`lessons/${selectedLesson.id}/add-student/`, payload);
@@ -548,7 +565,11 @@ export default function VisitsPage() {
           loadActiveSubscription(value);
         }}
         onServiceChange={selectStudentService}
+        onAddonsChange={changeStudentAddons}
+        onAddonCatalogItemsChange={setAddonCatalogItems}
+        addonCatalogItems={addonCatalogItems}
         onStartDateChange={changeStudentSubscriptionStart}
+        onPaymentChange={(value) => { setPaymentTouched(true); setStudentForm({ ...studentForm, payment_amount: Number(value) }); }}
       />
     </>
   );
@@ -688,6 +709,7 @@ function ClassicVisits({ crud, clientOptions, groupOptions, employeeOptions, can
 function AddStudentModal({
   open, form, setForm, onClose, onSave, clientOptions, lesson, saving,
   services, activeSubscription, checkingSubscription, onClientChange, onServiceChange, onStartDateChange,
+  onAddonsChange, onAddonCatalogItemsChange, addonCatalogItems, onPaymentChange,
 }) {
   if (!lesson) return null;
   const lessonDate = lesson.lesson_date
@@ -772,12 +794,22 @@ function AddStudentModal({
                       })),
                     ]}
                   />
+                  <SubscriptionAddonsSelect
+                    value={form.addons}
+                    onCatalogItemsChange={onAddonCatalogItemsChange}
+                    onChange={onAddonsChange}
+                  />
                   <Input label="Дата начала" type="date" value={form.start_date} onChange={(event) => onStartDateChange(event.target.value)} />
                   <Input label="Дата окончания" type="date" value={form.end_date} onChange={(event) => setForm({ ...form, end_date: event.target.value })} />
                   <Input label="Всего занятий" type="number" value={form.total_visits} onChange={(event) => setForm({ ...form, total_visits: Number(event.target.value) })} />
                   <Input label="Остаток занятий" type="number" value={form.remaining_visits} onChange={(event) => setForm({ ...form, remaining_visits: Number(event.target.value) })} />
                   <Input label="Цена" type="number" value={form.price} onChange={(event) => setForm({ ...form, price: Number(event.target.value) })} />
-                  <Input label="Оплата" type="number" value={form.payment_amount} onChange={(event) => setForm({ ...form, payment_amount: Number(event.target.value) })} />
+                  <Input label="Оплата" type="number" value={form.payment_amount} onChange={(event) => onPaymentChange(event.target.value)} />
+                  <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700 md:col-span-2">
+                    <p>Основная услуга: {Number(form.price || 0).toLocaleString('ru-RU')} ₸</p>
+                    <p>Дополнительные услуги: {addonsTotal(form.addons, addonCatalogItems).toLocaleString('ru-RU')} ₸</p>
+                    <p className="mt-1 text-base text-slate-900">Итого: {(Number(form.price || 0) + addonsTotal(form.addons, addonCatalogItems)).toLocaleString('ru-RU')} ₸</p>
+                  </div>
                 </div>
               )}
             </div>

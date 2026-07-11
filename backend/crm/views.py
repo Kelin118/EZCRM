@@ -96,6 +96,7 @@ from .serializers import (
     TrialSerializer,
     VisitSerializer,
 )
+from .subscription_addons import addons_comment, sync_subscription_addons, total_price, validate_addons_payload
 from .subscription_dates import calculate_subscription_end_date
 
 
@@ -809,6 +810,7 @@ class LessonViewSet(EducationBaseViewSet):
         notes = request.data.get('comment') or request.data.get('notes') or ''
         create_subscription = request.data.get('create_subscription') in (True, 'true', 'True', '1', 1)
         service = None
+        addons = []
         if create_subscription:
             service = CatalogItem.objects.filter(
                 pk=request.data.get('service'),
@@ -817,6 +819,7 @@ class LessonViewSet(EducationBaseViewSet):
             ).first()
             if not service:
                 return Response({'detail': 'Выберите активную услугу.'}, status=status.HTTP_400_BAD_REQUEST)
+            addons = validate_addons_payload(request.data.get('addons', []))
 
         with transaction.atomic():
             memberships = GroupMembership.objects.select_for_update().filter(group=lesson.group, client=client)
@@ -846,7 +849,9 @@ class LessonViewSet(EducationBaseViewSet):
                 if total_visits <= 0:
                     return Response({'detail': 'Количество занятий должно быть больше 0.'}, status=status.HTTP_400_BAD_REQUEST)
                 price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else service.price))
-                payment_amount = Decimal(str(request.data.get('payment_amount') or 0))
+                addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
+                full_price = price + addons_sum
+                payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
                 end_date = parse_date(request.data.get('end_date') or '') or calculate_subscription_end_date(
                     start_date,
                     lessons_count=total_visits,
@@ -868,13 +873,14 @@ class LessonViewSet(EducationBaseViewSet):
                     purchase_date=start_date,
                     status=Subscription.Status.ACTIVE,
                 )
+                sync_subscription_addons(created_subscription, addons)
                 if payment_amount > 0:
                     finance_transaction = _create_income_transaction(
                         client=client,
                         amount=payment_amount,
                         source='subscription',
                         paid_at=_paid_at_from_date(start_date),
-                        comment='Оплата абонемента из посещений',
+                        comment=addons_comment(created_subscription, 'Оплата абонемента из посещений'),
                         created_by=request.user,
                         subscription=created_subscription,
                     )
@@ -1080,10 +1086,28 @@ class ClientViewSet(BaseAuthenticatedViewSet):
 
 class SubscriptionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, SubscriptionPermission)
-    queryset = Subscription.objects.select_related('client').all()
+    queryset = Subscription.objects.select_related('client', 'service', 'finance_transaction').prefetch_related('subscription_addons').all()
     serializer_class = SubscriptionSerializer
     audit_entity_type = 'Subscription'
     audit_update_description = 'Изменён абонемент'
+
+    def _subscription_audit_changes(self, subscription):
+        changes = self._audit_changes()
+        changes.update({
+            'service': subscription.service.name if subscription.service else subscription.title,
+            'addons': [
+                {
+                    'name': addon.name,
+                    'quantity': addon.quantity,
+                    'unit_price': str(addon.unit_price),
+                    'total_price': str(addon.total_price),
+                }
+                for addon in subscription.subscription_addons.all()
+            ],
+            'addons_total': str(total_price(subscription) - Decimal(subscription.price or 0)),
+            'total_price': str(total_price(subscription)),
+        })
+        return changes
 
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
@@ -1118,13 +1142,18 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     amount=subscription.paid_amount,
                     source='subscription',
                     paid_at=_paid_at_from_date(subscription.purchase_date),
-                    comment='Оплата абонемента',
+                    comment=addons_comment(subscription),
                     created_by=self.request.user,
                     subscription=subscription,
                 )
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
-            self._log_instance(AuditLog.Action.CREATE, subscription, 'Создан абонемент', self._audit_changes())
+            self._log_instance(AuditLog.Action.CREATE, subscription, 'Создан абонемент', self._subscription_audit_changes(subscription))
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            subscription = serializer.save()
+            self._log_instance(AuditLog.Action.UPDATE, subscription, self.audit_update_description, self._subscription_audit_changes(subscription))
 
 
 class VisitViewSet(BaseAuthenticatedViewSet):
@@ -1304,11 +1333,14 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             if not service:
                 return Response({'detail': 'Выберите активную услугу.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        addons = validate_addons_payload(request.data.get('addons', []))
         title = (service.name if service else None) or request.data.get('subscription_type') or request.data.get('title') or ''
         start_date = parse_date(request.data.get('start_date') or '') or (timezone.localdate() if service else None)
         total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
         price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
-        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else (service.price if service else 0)))
+        addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
+        full_price = price + addons_sum
+        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
         payment_method = request.data.get('payment_method') or ''
         comment = request.data.get('comment') or 'Оплата абонемента после пробного'
 
@@ -1350,6 +1382,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 purchase_date=start_date,
                 status=Subscription.Status.ACTIVE,
             )
+            sync_subscription_addons(subscription, addons)
             finance_transaction = None
             if payment_amount > 0:
                 finance_transaction = _create_income_transaction(
@@ -1357,7 +1390,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     amount=payment_amount,
                     source='subscription',
                     paid_at=_paid_at_from_date(start_date),
-                    comment=comment or 'Оплата абонемента после пробного',
+                    comment=comment or addons_comment(subscription, 'Оплата абонемента после пробного'),
                     created_by=request.user,
                     subscription=subscription,
                 )

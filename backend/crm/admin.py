@@ -16,6 +16,7 @@ from .models import (
     StudyGroup,
     Subject,
     Subscription,
+    SubscriptionAddon,
     Task,
     Trial,
     Visit,
@@ -41,6 +42,12 @@ class SubscriptionAdmin(admin.ModelAdmin):
     list_display = ('client', 'title', 'status', 'start_date', 'end_date', 'remaining_visits', 'price')
     list_filter = ('status',)
     search_fields = ('client__first_name', 'client__last_name', 'title')
+
+
+@admin.register(SubscriptionAddon)
+class SubscriptionAddonAdmin(admin.ModelAdmin):
+    list_display = ('subscription', 'name', 'unit_price', 'quantity', 'total_price')
+    search_fields = ('subscription__title', 'subscription__client__first_name', 'subscription__client__last_name', 'name')
 
 
 @admin.register(Subject)

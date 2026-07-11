@@ -21,6 +21,7 @@ from .models import (
     StudyGroup,
     Subject,
     Subscription,
+    SubscriptionAddon,
     Task,
     Trial,
     Visit,
@@ -511,6 +512,99 @@ class CatalogItemApiTests(APITestCase):
         subscription = Subscription.objects.get(pk=response.data['id'])
         self.assertEqual(subscription.end_date, date(2026, 8, 4))
 
+    def test_subscription_can_be_created_with_one_addon(self):
+        service = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30)
+        addon = CatalogItem.objects.create(name='Учебники', price='5000.00', category='addon')
+        student = Client.objects.create(first_name='Addon', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'addons': [{'catalog_item': addon.id, 'quantity': 1}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        subscription_addon = SubscriptionAddon.objects.get(subscription=subscription)
+        self.assertEqual(subscription_addon.name, 'Учебники')
+        self.assertEqual(str(subscription_addon.unit_price), str(addon.price))
+        self.assertEqual(str(subscription_addon.total_price), str(addon.price))
+        self.assertEqual(str(response.data['addons_total']), '5000.00')
+        self.assertEqual(str(response.data['total_price']), '50000.00')
+
+    def test_subscription_can_be_created_with_multiple_addons_and_payment_defaults_to_total(self):
+        service = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30)
+        books = CatalogItem.objects.create(name='Учебники', price='5000.00', category='addon')
+        prolongation = CatalogItem.objects.create(name='Продлёнка', price='10000.00', category='addon')
+        student = Client.objects.create(first_name='Multi', last_name='Addon')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'addons': [books.id, {'catalog_item': prolongation.id, 'quantity': 1}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(SubscriptionAddon.objects.filter(subscription=subscription).count(), 2)
+        self.assertEqual(subscription.paid_amount, 60000)
+        self.assertEqual(transaction.amount, 60000)
+        self.assertEqual(str(response.data['addons_total']), '15000.00')
+        self.assertEqual(str(response.data['total_price']), '60000.00')
+
+    def test_subscription_addon_snapshot_does_not_change_after_catalog_update(self):
+        service = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30)
+        addon = CatalogItem.objects.create(name='Учебники', price='5000.00', category='addon')
+        student = Client.objects.create(first_name='Snapshot', last_name='Addon')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/subscriptions/', {'client': student.id, 'service': service.id, 'addons': [addon.id]}, format='json')
+        self.assertEqual(response.status_code, 201)
+        addon.name = 'Учебники новые'
+        addon.price = 7000
+        addon.save(update_fields=('name', 'price', 'updated_at'))
+
+        subscription_addon = SubscriptionAddon.objects.get(subscription_id=response.data['id'])
+        self.assertEqual(subscription_addon.name, 'Учебники')
+        self.assertEqual(subscription_addon.unit_price, 5000)
+
+    def test_subscription_rejects_product_service_and_inactive_addons(self):
+        service = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30)
+        product = CatalogItem.objects.create(name='Book', price='3500.00', category='product')
+        inactive = CatalogItem.objects.create(name='Old addon', price='1000.00', category='addon', is_active=False)
+        student = Client.objects.create(first_name='Bad', last_name='Addon')
+        self.client.force_authenticate(self.manager)
+
+        for bad_addon in (service, product, inactive):
+            with self.subTest(addon=bad_addon.category):
+                response = self.client.post('/api/subscriptions/', {'client': student.id, 'service': service.id, 'addons': [bad_addon.id]}, format='json')
+                self.assertEqual(response.status_code, 400)
+
+    def test_subscription_update_syncs_addons_and_quantity(self):
+        service = CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30)
+        books = CatalogItem.objects.create(name='Учебники', price='5000.00', category='addon')
+        consult = CatalogItem.objects.create(name='Консультация', price='8000.00', category='addon')
+        student = Client.objects.create(first_name='Update', last_name='Addon')
+        self.client.force_authenticate(self.manager)
+        create = self.client.post('/api/subscriptions/', {'client': student.id, 'service': service.id, 'addons': [books.id]}, format='json')
+
+        response = self.client.patch(
+            f"/api/subscriptions/{create.data['id']}/",
+            {'addons': [{'catalog_item': consult.id, 'quantity': 2}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(SubscriptionAddon.objects.filter(subscription_id=create.data['id'], catalog_item=books).exists())
+        subscription_addon = SubscriptionAddon.objects.get(subscription_id=create.data['id'], catalog_item=consult)
+        self.assertEqual(subscription_addon.quantity, 2)
+        self.assertEqual(subscription_addon.total_price, 16000)
+        self.assertEqual(str(response.data['addons_total']), '16000.00')
+        self.assertEqual(str(response.data['total_price']), '61000.00')
+
     def test_product_cannot_be_used_as_subscription_service(self):
         product = CatalogItem.objects.create(name='Book', price='3500.00', category='product')
         student = Client.objects.create(first_name='Product', last_name='Student')
@@ -904,6 +998,32 @@ class LessonAttendanceJournalTests(APITestCase):
         visit = Visit.objects.get(lesson=self.lesson, client=client)
         self.assertEqual(subscription.remaining_visits, 4)
         self.assertFalse(visit.lesson_deducted)
+
+    def test_add_student_create_subscription_with_addons_defaults_payment_to_total(self):
+        client = Client.objects.create(first_name='Addon', last_name='Visit')
+        service = CatalogItem.objects.create(
+            name='AB-8',
+            category=CatalogItem.Category.SERVICE,
+            price='45000.00',
+            lessons_count=8,
+            validity_days=30,
+        )
+        addon = CatalogItem.objects.create(name='Учебники', category=CatalogItem.Category.ADDON, price='5000.00')
+
+        response = self.add_student(client, extra={
+            'create_subscription': True,
+            'service': service.id,
+            'addons': [{'catalog_item': addon.id, 'quantity': 1}],
+            'total_visits': 8,
+            'remaining_visits': 8,
+        })
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(client=client)
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(subscription.subscription_addons.count(), 1)
+        self.assertEqual(transaction.amount, 50000)
+        self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
 
     def test_add_student_without_create_subscription_uses_existing_active_only(self):
         client = Client.objects.create(first_name='Existing', last_name='Student')
@@ -1861,6 +1981,27 @@ class TrialConversionTests(APITestCase):
         self.assertEqual(subscription.remaining_visits, 8)
         self.assertEqual(str(transaction.amount), str(service.price))
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
+
+    def test_conversion_with_addons_defaults_payment_to_total(self):
+        service = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category=CatalogItem.Category.SERVICE, lessons_count=8, validity_days=30,
+        )
+        addon = CatalogItem.objects.create(name='Учебники', price='5000.00', category=CatalogItem.Category.ADDON)
+        trial = self.create_trial()
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/trials/{trial.id}/convert-to-subscription/',
+            {'service': service.id, 'addons': [{'catalog_item': addon.id, 'quantity': 1}], 'payment_method': 'cash'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['subscription']['id'])
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
+        self.assertEqual(subscription.subscription_addons.count(), 1)
+        self.assertEqual(subscription.paid_amount, 50000)
+        self.assertEqual(transaction.amount, 50000)
 
     def test_teacher_without_manager_cannot_convert(self):
         trial = self.create_trial()

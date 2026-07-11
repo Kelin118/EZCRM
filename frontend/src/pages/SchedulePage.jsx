@@ -60,7 +60,7 @@ export default function SchedulePage() {
   const [tab, setTab] = useState('slots');
   const slotCrud = useCrudResource('schedule-slots/', { group: initialGroup, teacher: '', weekday: '', room: '', is_active: '', branch: '' });
   const lessonCrud = useCrudResource('lessons/', { date_from: '', date_to: '', group: initialGroup, teacher: '', status: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { groupOptions } = useStudyGroupOptions();
   const { subjectOptions } = useSubjectOptions();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -148,7 +148,7 @@ export default function SchedulePage() {
       {tab === 'slots' && (
         <>
           <Filters>
-            <SelectField label="Филиал" value={slotCrud.filters.branch} onChange={(value) => slotCrud.setFilters({ ...slotCrud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+            <SelectField label="Филиал" value={slotCrud.filters.branch || 'all'} onChange={(value) => slotCrud.setFilters({ ...slotCrud.filters, branch: value })} options={branchFilterOptions} />
             <SelectField label="Группа" value={slotCrud.filters.group} onChange={(value) => slotCrud.setFilters({ ...slotCrud.filters, group: value })} options={[{ value: '', label: 'Все' }, ...groupOptions]} />
             <SelectField label="Преподаватель" value={slotCrud.filters.teacher} onChange={(value) => slotCrud.setFilters({ ...slotCrud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
             <SelectField label="День" value={slotCrud.filters.weekday} onChange={(value) => slotCrud.setFilters({ ...slotCrud.filters, weekday: value })} options={weekdayOptions} />
@@ -162,7 +162,7 @@ export default function SchedulePage() {
               { key: 'subject_name', header: 'Предмет' },
               { key: 'teacher_name', header: 'Преподаватель' },
               { key: 'room_name', header: 'Кабинет' },
-              { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+              { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
               { key: 'weekday_display', header: 'День недели' },
               { key: 'time', header: 'Время', render: (row) => `${row.start_time?.slice(0, 5)} - ${row.end_time?.slice(0, 5)}` },
               { key: 'is_active', header: 'Активен', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Да' : 'Нет'}</Badge> },
@@ -184,7 +184,7 @@ export default function SchedulePage() {
       {tab === 'lessons' && (
         <>
           <Filters>
-            <SelectField label="Филиал" value={lessonCrud.filters.branch} onChange={(value) => lessonCrud.setFilters({ ...lessonCrud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+            <SelectField label="Филиал" value={lessonCrud.filters.branch || 'all'} onChange={(value) => lessonCrud.setFilters({ ...lessonCrud.filters, branch: value })} options={branchFilterOptions} />
             <Input label="Дата от" type="date" value={lessonCrud.filters.date_from} onChange={(event) => lessonCrud.setFilters({ ...lessonCrud.filters, date_from: event.target.value })} />
             <Input label="Дата до" type="date" value={lessonCrud.filters.date_to} onChange={(event) => lessonCrud.setFilters({ ...lessonCrud.filters, date_to: event.target.value })} />
             <SelectField label="Группа" value={lessonCrud.filters.group} onChange={(value) => lessonCrud.setFilters({ ...lessonCrud.filters, group: value })} options={[{ value: '', label: 'Все' }, ...groupOptions]} />
@@ -200,7 +200,7 @@ export default function SchedulePage() {
               { key: 'subject_name', header: 'Предмет' },
               { key: 'teacher_name', header: 'Преподаватель' },
               { key: 'room_name', header: 'Кабинет' },
-              { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+              { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
               { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{row.status_display || row.status}</Badge> },
               { key: 'visits', header: 'Посещения', render: (row) => `${row.attended_count || 0}/${row.visits_count || 0}` },
               {

@@ -55,7 +55,7 @@ const formatDate = (value) => (value ? new Date(value).toLocaleDateString('ru-RU
 
 export default function GroupsPage() {
   const crud = useCrudResource('study-groups/', { search: '', status: '', teacher: '', subject: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { subjectOptions } = useSubjectOptions();
   const { roomOptions } = useRoomOptions();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
@@ -195,7 +195,7 @@ export default function GroupsPage() {
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={statusOptions} />
         <SelectField label="Учитель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
         <SelectField label="Предмет" value={crud.filters.subject} onChange={(value) => crud.setFilters({ ...crud.filters, subject: value })} options={[{ value: '', label: 'Все' }, ...subjectOptions]} />
-        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
       </Filters>
 
       <Table
@@ -207,7 +207,7 @@ export default function GroupsPage() {
           { key: 'teacher_name', header: 'Учитель' },
           { key: 'manager_name', header: 'Менеджер' },
           { key: 'schedule_display', header: 'Расписание', render: (row) => row.schedule_display || 'Не указано' },
-          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
           { key: 'students_count', header: 'Ученики' },
           { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{statusOptions.find((item) => item.value === row.status)?.label || row.status}</Badge> },
           {
@@ -240,7 +240,7 @@ export default function GroupsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={form.name || ''} onChange={(event) => setGroupForm({ name: event.target.value })} />
           <SelectField label="Предмет" value={form.subject || ''} onChange={(value) => setGroupForm({ subject: value })} options={[{ value: '', label: 'Не выбран' }, ...subjectOptions]} />
-          <SelectField label="Филиал" value={form.branch || ''} onChange={(value) => setGroupForm({ branch: value })} options={[{ value: '', label: 'Без филиала' }, ...branchOptions]} />
+          <SelectField label="Филиал" value={form.branch || ''} onChange={(value) => setGroupForm({ branch: value })} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
           <SelectField label="Учитель" value={form.teacher || ''} onChange={(value) => setGroupForm({ teacher: value })} options={[{ value: '', label: 'Не выбран' }, ...teacherOptions]} />
           <SelectField label="Менеджер" value={form.manager || ''} onChange={(value) => setGroupForm({ manager: value })} options={[{ value: '', label: 'Не выбран' }, ...managerOptions]} />
           <SelectField label="Кабинет" value={form.room || ''} onChange={(value) => setGroupForm({ room: value })} options={[{ value: '', label: 'Не выбран' }, ...roomOptions]} />

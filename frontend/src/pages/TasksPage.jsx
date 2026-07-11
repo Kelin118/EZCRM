@@ -204,7 +204,7 @@ function TaskKanban({ canEdit, items, markDone, moveTask, onDelete, onEdit, user
 
 export default function TasksPage() {
   const crud = useCrudResource('tasks/', { search: '', status: '', assigned_to: '', due_date_from: '', due_date_to: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions } = useEmployeeOptions(['admin', 'manager', 'teacher']);
   const [viewMode, setViewMode] = useState('kanban');
@@ -283,6 +283,7 @@ export default function TasksPage() {
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, ...statusOptions]} />
         <SelectField label="Ответственный" value={crud.filters.assigned_to} onChange={(value) => crud.setFilters({ ...crud.filters, assigned_to: value })} options={[{ value: '', label: 'Все' }, ...employeeOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Срок от" type="date" value={crud.filters.due_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, due_date_from: e.target.value })} />
         <Input label="Срок до" type="date" value={crud.filters.due_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, due_date_to: e.target.value })} />
       </Filters>

@@ -1,5 +1,6 @@
 import {
   Banknote,
+  Building2,
   CalendarClock,
   CheckSquare,
   CreditCard,
@@ -18,6 +19,7 @@ import Button from '../components/ui/Button.jsx';
 import StatCard from '../components/ui/StatCard.jsx';
 import { Filters, Input, money, PageHeader, SelectField } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import { useBranchFilter } from '../contexts/BranchFilterContext.jsx';
 
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -38,14 +40,30 @@ function thisMonth() {
 export default function DashboardPage() {
   const user = getStoredUser();
   const canViewFinance = hasRole(user, [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT]);
-  const [filters, setFilters] = useState(period(30));
-  const [appliedFilters, setAppliedFilters] = useState(period(30));
-  const { branchOptions } = useBranches();
+  const { selectedBranch, setSelectedBranch } = useBranchFilter();
+  const [filters, setFilters] = useState(() => ({ ...period(30), branch: selectedBranch }));
+  const [appliedFilters, setAppliedFilters] = useState(() => ({ ...period(30), branch: selectedBranch }));
+  const { branches, branchFilterOptions, loading: branchesLoading } = useBranches();
   const [stats, setStats] = useState({});
 
   useEffect(() => {
     api.get('dashboard/stats/', { params: appliedFilters }).then(({ data }) => setStats(data));
   }, [appliedFilters]);
+
+  useEffect(() => {
+    if (branchesLoading || selectedBranch === 'all' || selectedBranch === 'unassigned') return;
+    if (!branches.some((branch) => String(branch.id) === selectedBranch)) {
+      setSelectedBranch('all');
+      setFilters((current) => ({ ...current, branch: 'all' }));
+      setAppliedFilters((current) => ({ ...current, branch: 'all' }));
+    }
+  }, [branches, branchesLoading, selectedBranch, setSelectedBranch]);
+
+  const changeBranch = (value) => {
+    setSelectedBranch(value);
+    setFilters((current) => ({ ...current, branch: value }));
+    setAppliedFilters((current) => ({ ...current, branch: value }));
+  };
 
   const finance = stats.finance || {};
   const subscriptions = stats.subscriptions || {};
@@ -83,10 +101,17 @@ export default function DashboardPage() {
         </div>
       </PageHeader>
 
+      <div className="flex flex-wrap items-end gap-3 rounded-[24px] border border-brand/10 bg-white p-4 shadow-card">
+        <div className="grid h-11 w-11 place-items-center rounded-2xl bg-brand/10 text-brand"><Building2 size={21} /></div>
+        <div className="min-w-[240px] flex-1 sm:max-w-sm">
+          <SelectField label="Данные филиала" value={selectedBranch} onChange={changeBranch} options={branchFilterOptions} />
+        </div>
+      </div>
+
       <Filters>
         <Input label="Дата от" type="date" value={filters.date_from} onChange={(event) => setFilters({ ...filters, date_from: event.target.value })} />
         <Input label="Дата до" type="date" value={filters.date_to} onChange={(event) => setFilters({ ...filters, date_to: event.target.value })} />
-        <SelectField label="Филиал" value={filters.branch || ''} onChange={(value) => setFilters({ ...filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={filters.branch || 'all'} onChange={(value) => setFilters({ ...filters, branch: value })} options={branchFilterOptions} />
         <div className="flex items-end">
           <Button onClick={() => setAppliedFilters(filters)}>Применить</Button>
         </div>
@@ -115,6 +140,21 @@ export default function DashboardPage() {
           ['Отработки', attendance.makeup],
           ['Всего отметок', attendance.total_visits],
         ]} />
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-lg font-bold text-slate-900">Сводка по филиалам</h2>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {(stats.branches_summary || []).map((branch) => (
+            <div key={branch.key} className="rounded-[22px] border border-slate-100 bg-white p-4 shadow-card">
+              <div className="mb-3 flex items-center gap-2 font-bold text-slate-900"><Building2 size={18} className="text-brand" />{branch.name}</div>
+              <div className="grid grid-cols-2 gap-2 text-sm text-slate-600">
+                <span>Клиенты: <b>{branch.clients}</b></span><span>Абонементы: <b>{branch.subscriptions}</b></span>
+                <span>Доход: <b>{money(branch.income)}</b></span><span>Занятия: <b>{branch.lessons}</b></span>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );

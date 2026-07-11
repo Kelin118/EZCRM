@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from crm.audit import log_action
+from crm.branch_filters import apply_branch_filter
 from crm.models import AuditLog
 from crm.permissions import IsAdminRole
 
@@ -85,8 +86,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 | Q(phone__icontains=search)
                 | Q(email__icontains=search)
             )
-        if branch:
-            queryset = queryset.filter(branch_id=branch)
+        queryset = apply_branch_filter(queryset, branch)
         return queryset
 
     def perform_create(self, serializer):
@@ -186,8 +186,7 @@ class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(is_active=True)
         elif active in ('0', 'false', 'False', 'no'):
             queryset = queryset.filter(is_active=False)
-        if branch:
-            queryset = queryset.filter(branch_id=branch)
+        queryset = apply_branch_filter(queryset, branch)
 
         return queryset
 

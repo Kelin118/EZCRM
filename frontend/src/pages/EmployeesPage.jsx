@@ -36,6 +36,7 @@ const getEmployeeRoles = (employee) => (Array.isArray(employee.roles) && employe
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState([]);
   const [search, setSearch] = useState('');
+  const [branchFilter, setBranchFilter] = useState('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -43,18 +44,18 @@ export default function EmployeesPage() {
   const [passwordForm, setPasswordForm] = useState(emptyPassword);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
 
   const filteredEmployees = useMemo(() => employees, [employees]);
 
   const load = async () => {
-    const { data } = await api.get('users/employees/', { params: { search } });
+    const { data } = await api.get('users/employees/', { params: { search, branch: branchFilter } });
     setEmployees(Array.isArray(data) ? data : data.results || []);
   };
 
   useEffect(() => {
     load();
-  }, [search]);
+  }, [search, branchFilter]);
 
   const openCreate = () => {
     setError('');
@@ -176,6 +177,7 @@ export default function EmployeesPage() {
       <PageHeader title="Сотрудники" actionLabel="Добавить сотрудника" onAction={openCreate} />
 
       <div className="mb-5 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card">
+        <div className="grid gap-3 md:grid-cols-[1fr_260px]">
         <label className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-500">
           <Search size={17} />
           <input
@@ -185,6 +187,8 @@ export default function EmployeesPage() {
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
+        <SelectField label="Филиал" value={branchFilter} onChange={setBranchFilter} options={branchFilterOptions} />
+        </div>
       </div>
 
       {error && <div className="mb-4 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{error}</div>}
@@ -194,7 +198,7 @@ export default function EmployeesPage() {
         columns={[
           { key: 'full_name', header: 'ФИО' },
           { key: 'username', header: 'Username' },
-          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
           {
             key: 'roles',
             header: 'Роли',
@@ -238,7 +242,7 @@ export default function EmployeesPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="ФИО" value={editing.full_name} onChange={(event) => setEditingField('full_name', event.target.value)} />
             <Input label="Логин" value={editing.username} onChange={(event) => setEditingField('username', event.target.value)} />
-            <SelectField label="Филиал" value={editing.branch || ''} onChange={(value) => setEditingField('branch', value)} options={[{ value: '', label: 'Без филиала' }, ...branchOptions]} />
+            <SelectField label="Филиал" value={editing.branch || ''} onChange={(value) => setEditingField('branch', value)} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
             <Input
               label={editing.id ? 'Новый пароль' : 'Пароль'}
               type="password"

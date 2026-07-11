@@ -138,7 +138,7 @@ export default function VisitsPage() {
   const [studentSearch, setStudentSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [lessonFilters, setLessonFilters] = useState({ group: initialGroup, teacher: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const [manualOpen, setManualOpen] = useState(false);
   const [manualForm, setManualForm] = useState(emptyManualVisit);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
@@ -424,7 +424,7 @@ export default function VisitsPage() {
             <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
             <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
             <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
-            <SelectField label="Филиал" value={lessonFilters.branch} onChange={(value) => setLessonFilters({ ...lessonFilters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+            <SelectField label="Филиал" value={lessonFilters.branch || 'all'} onChange={(value) => setLessonFilters({ ...lessonFilters, branch: value })} options={branchFilterOptions} />
             <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
             <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
           </div>

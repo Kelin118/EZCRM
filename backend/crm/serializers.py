@@ -14,6 +14,7 @@ from .group_schedule import (
     subscription_remaining_lessons,
     subscription_used_lessons,
 )
+from .branch_filters import PSEUDO_BRANCH_NAMES
 from .models import (
     AuditLog,
     Branch,
@@ -43,9 +44,14 @@ class BranchSerializer(serializers.ModelSerializer):
         model = Branch
         fields = '__all__'
 
+    def validate_name(self, value):
+        if value.strip().casefold() in PSEUDO_BRANCH_NAMES:
+            raise serializers.ValidationError('Это служебное значение фильтра, а не реальный филиал.')
+        return value
+
 
 class BranchNameMixin(serializers.Serializer):
-    branch_name = serializers.CharField(source='branch.name', read_only=True, default='Без филиала')
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default=None, allow_null=True)
 
 
 class AuditLogSerializer(serializers.ModelSerializer):
@@ -506,6 +512,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         client = validated_data.pop('client', None)
+        if client and not validated_data.get('branch'):
+            validated_data['branch'] = client.branch
         master_class = super().create(validated_data)
         if client:
             master_class.participants.add(client)
@@ -513,6 +521,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         client = validated_data.pop('client', None)
+        if client and not validated_data.get('branch') and not instance.branch_id:
+            validated_data['branch'] = client.branch
         master_class = super().update(instance, validated_data)
         if client:
             master_class.participants.add(client)

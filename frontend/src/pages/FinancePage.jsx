@@ -24,7 +24,7 @@ const baseFields = [
 
 export default function FinancePage() {
   const crud = useCrudResource('finance/', { type: '', source: '', payment_method: '', date_from: '', date_to: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
@@ -63,7 +63,7 @@ export default function FinancePage() {
       <Filters>
         <SelectField label="Тип" value={crud.filters.type} onChange={(value) => crud.setFilters({ ...crud.filters, type: value })} options={[{ value: '', label: 'Все' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
         <SelectField label="Источник" value={crud.filters.source} onChange={(value) => crud.setFilters({ ...crud.filters, source: value })} options={[{ value: '', label: 'Все' }, ...sourceOptions]} />
-        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
       </Filters>
@@ -72,7 +72,7 @@ export default function FinancePage() {
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || '—' },
         { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
         { key: 'source', header: 'Источник' },
-        { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+        { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'payment_method', header: 'Оплата' },
         { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || '—' },
         { key: 'paid_at', header: 'Дата', render: (row) => (row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—') },

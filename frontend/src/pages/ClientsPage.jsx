@@ -43,7 +43,7 @@ const baseFields = [
 
 export default function ClientsPage() {
   const crud = useCrudResource('clients/', { search: '', status: '', manager: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const user = getStoredUser();
   const canEdit = canManageClients(user);
@@ -52,7 +52,7 @@ export default function ClientsPage() {
   const setForm = (value) => crud.setEditing(value);
   const fields = [
     ...baseFields.slice(0, 8),
-    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Без филиала' }, ...branchOptions] },
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     ...baseFields.slice(8),
   ];
@@ -69,7 +69,7 @@ export default function ClientsPage() {
           options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'inactive', label: 'Неактивные' }]}
         />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
-        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
       </Filters>
       <Table
         data={crud.items}
@@ -87,7 +87,7 @@ export default function ClientsPage() {
           { key: 'phone', header: 'Телефон' },
           { key: 'school_class', header: 'Класс' },
           { key: 'direction', header: 'Направление' },
-          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
           { key: 'is_active', header: 'Статус', render: (row) => <Badge value={row.is_active ? 'active' : 'cancelled'}>{row.is_active ? 'Активен' : 'Неактивен'}</Badge> },
           {
             key: 'actions',

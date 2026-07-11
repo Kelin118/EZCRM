@@ -1,9 +1,11 @@
 from datetime import date, datetime, time, timedelta
 from unittest.mock import patch
+from io import StringIO
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import connection
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -2352,3 +2354,92 @@ class GlobalSearchTests(APITestCase):
         group_ids = {item['id'] for item in response.data['results'] if item['type'] == 'group'}
         self.assertIn(self.group.id, group_ids)
         self.assertNotIn(self.hidden_group.id, group_ids)
+
+
+class BranchFilterAndAuditTests(APITestCase):
+    def setUp(self):
+        self.admin = get_user_model().objects.create_user(
+            username='branch-filter-admin', password='pass', role='admin', roles=['admin'],
+        )
+        self.client.force_authenticate(self.admin)
+        self.first = Branch.objects.create(name='Сарыарка')
+        self.second = Branch.objects.create(name='Левый берег')
+        self.first_client = Client.objects.create(first_name='Первый', branch=self.first)
+        self.second_client = Client.objects.create(first_name='Второй', branch=self.second)
+        self.unassigned_client = Client.objects.create(first_name='Без филиала')
+
+    def client_ids(self, branch_value):
+        response = self.client.get('/api/clients/', {'branch': branch_value})
+        self.assertEqual(response.status_code, 200)
+        data = response.data if isinstance(response.data, list) else response.data['results']
+        return {item['id'] for item in data}
+
+    def test_branch_filter_all_unassigned_id_and_empty(self):
+        expected_all = {self.first_client.id, self.second_client.id, self.unassigned_client.id}
+        self.assertTrue(expected_all.issubset(self.client_ids('all')))
+        self.assertTrue(expected_all.issubset(self.client_ids('')))
+        self.assertEqual(self.client_ids('unassigned'), {self.unassigned_client.id})
+        self.assertEqual(self.client_ids(str(self.first.id)), {self.first_client.id})
+
+    def test_invalid_branch_filter_and_pseudo_branch_payload_are_rejected(self):
+        self.assertEqual(self.client.get('/api/clients/', {'branch': 'unknown'}).status_code, 400)
+        self.assertEqual(self.client.post('/api/clients/', {'first_name': 'Ошибка', 'branch': 'all'}, format='json').status_code, 400)
+        self.assertEqual(self.client.post('/api/branches/', {'name': 'Все филиалы'}, format='json').status_code, 400)
+        self.assertFalse(Branch.objects.filter(name='Все филиалы').exists())
+
+    def test_branches_endpoint_hides_legacy_pseudo_branch(self):
+        Branch.objects.create(name='All branches')
+        response = self.client.get('/api/branches/', {'is_active': 'true'})
+        names = {item['name'] for item in response.data}
+        self.assertEqual(names, {'Сарыарка', 'Левый берег'})
+
+    def test_dashboard_filters_and_summary(self):
+        Subscription.objects.create(
+            client=self.first_client, title='Первый', start_date=date.today(), status=Subscription.Status.ACTIVE,
+        )
+        Subscription.objects.create(
+            client=self.unassigned_client, title='Без филиала', start_date=date.today(), status=Subscription.Status.ACTIVE,
+        )
+        all_response = self.client.get('/api/dashboard/stats/', {'branch': 'all'})
+        first_response = self.client.get('/api/dashboard/stats/', {'branch': self.first.id})
+        unassigned_response = self.client.get('/api/dashboard/stats/', {'branch': 'unassigned'})
+        self.assertGreaterEqual(all_response.data['clients']['total'], 3)
+        self.assertEqual(first_response.data['clients']['total'], 1)
+        self.assertEqual(unassigned_response.data['clients']['total'], 1)
+        summary = all_response.data['branches_summary']
+        self.assertFalse(any(item['name'].casefold() == 'все филиалы' for item in summary))
+        self.assertTrue(any(item['key'] == 'unassigned' and item['clients'] == 1 for item in summary))
+
+    def test_safe_backfill_and_conflict_detection(self):
+        room = Room.objects.create(name='101', branch=self.first)
+        group = StudyGroup.objects.create(name='Однозначная', room=room, branch=None)
+        unique_client = Client.objects.create(first_name='Однозначный')
+        GroupMembership.objects.create(group=group, client=unique_client, status=GroupMembership.Status.ACTIVE)
+
+        other_group = StudyGroup.objects.create(name='Другой', branch=self.second)
+        conflict_client = Client.objects.create(first_name='Конфликт')
+        GroupMembership.objects.create(group=StudyGroup.objects.create(name='Первый', branch=self.first), client=conflict_client, status=GroupMembership.Status.ACTIVE)
+        GroupMembership.objects.create(group=other_group, client=conflict_client, status=GroupMembership.Status.ACTIVE)
+
+        output = StringIO()
+        call_command('audit_branches', apply=True, stdout=output)
+        group.refresh_from_db()
+        unique_client.refresh_from_db()
+        conflict_client.refresh_from_db()
+        self.assertEqual(group.branch, self.first)
+        self.assertEqual(unique_client.branch, self.first)
+        self.assertIsNone(conflict_client.branch)
+        self.assertIn('конфликты=1', output.getvalue())
+
+    def test_fake_branch_is_detached_and_removed_by_apply(self):
+        fake = Branch.objects.create(name='Не распределено')
+        attached = Client.objects.create(first_name='Ошибочно', branch=fake)
+        dry_output = StringIO()
+        call_command('audit_branches', stdout=dry_output)
+        self.assertTrue(Branch.objects.filter(pk=fake.pk).exists())
+        self.assertIn('Client=1', dry_output.getvalue())
+
+        call_command('audit_branches', apply=True, stdout=StringIO())
+        attached.refresh_from_db()
+        self.assertIsNone(attached.branch)
+        self.assertFalse(Branch.objects.filter(pk=fake.pk).exists())

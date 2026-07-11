@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 
 import Sidebar from './Sidebar.jsx';
 import Topbar from './Topbar.jsx';
+import { BranchFilterProvider } from '../../contexts/BranchFilterContext.jsx';
 
 export default function AppLayout() {
   const [forbiddenMessage, setForbiddenMessage] = useState('');
@@ -40,6 +41,7 @@ export default function AppLayout() {
   }, []);
 
   return (
+    <BranchFilterProvider>
     <div className="min-h-screen bg-app">
       {sidebarOpen && (
         <button
@@ -67,5 +69,6 @@ export default function AppLayout() {
         </main>
       </div>
     </div>
+    </BranchFilterProvider>
   );
 }

@@ -101,7 +101,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 
 export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
@@ -114,7 +114,7 @@ export default function MasterClassesPage() {
   const fields = [
     baseFields[0],
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
-    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Без филиала' }, ...branchOptions] },
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields.slice(1),
@@ -143,6 +143,7 @@ export default function MasterClassesPage() {
       <Filters>
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
       </Filters>

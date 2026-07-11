@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .audit import log_action
+from .branch_filters import apply_branch_filter
 from .backup import create_database_backup
 from .export_excel import (
     export_clients,
@@ -106,14 +107,11 @@ User = get_user_model()
 
 
 def _filter_branch(queryset, request):
-    branch = request.query_params.get('branch')
-    return queryset.filter(branch_id=branch) if branch else queryset
+    return apply_branch_filter(queryset, request.query_params.get('branch'))
 
 
 def _search_branch(queryset, request):
-    """Keep search results inside a non-admin employee's assigned branch."""
-    branch_id = getattr(request.user, 'branch_id', None)
-    return queryset.filter(branch_id=branch_id) if branch_id and not is_admin(request.user) else queryset
+    return apply_branch_filter(queryset, request.query_params.get('branch'))
 
 
 def _person_name(person):
@@ -394,7 +392,7 @@ class BranchViewSet(BaseAuthenticatedViewSet):
     audit_entity_type = 'Branch'
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().exclude(name__iregex=r'^\s*(все филиалы|все|all branches|без филиала|не распределено)\s*$')
         search = self.request.query_params.get('search')
         is_active = self.request.query_params.get('is_active')
         if search:
@@ -686,8 +684,11 @@ class GlobalSearchView(APIView):
 
         if has_any_role(user, {MANAGER, ACCOUNTANT}) or is_admin(user):
             branches = Branch.objects.filter(Q(name__icontains=query) | Q(address__icontains=query))
-            if getattr(user, 'branch_id', None) and not is_admin(user):
-                branches = branches.filter(id=user.branch_id)
+            branch_value = (request.query_params.get('branch') or '').strip()
+            if branch_value == 'unassigned':
+                branches = branches.none()
+            elif branch_value and branch_value != 'all':
+                branches = branches.filter(id=int(branch_value))
             for branch in branches[:self.result_limit]:
                 results.append(_result('branch', branch, branch.name, branch.address, f'/settings?branch={branch.id}'))
 
@@ -1208,9 +1209,8 @@ class AttendanceDayView(APIView):
         if room:
             lessons = lessons.filter(room_id=room)
             slots = slots.filter(room_id=room)
-        if branch:
-            lessons = lessons.filter(branch_id=branch)
-            slots = slots.filter(branch_id=branch)
+        lessons = apply_branch_filter(lessons, branch)
+        slots = apply_branch_filter(slots, branch)
 
         items = []
         lesson_keys = set()
@@ -2183,16 +2183,15 @@ class DashboardStatsView(APIView):
         visits = Visit.objects.filter(visited_at__date__gte=date_from, visited_at__date__lte=date_to)
         tasks = Task.objects.all()
 
-        if branch:
-            transactions = transactions.filter(branch_id=branch)
-            clients = clients.filter(branch_id=branch)
-            subscriptions = subscriptions.filter(branch_id=branch)
-            trials = trials.filter(branch_id=branch)
-            master_classes = master_classes.filter(branch_id=branch)
-            groups = groups.filter(branch_id=branch)
-            lessons = lessons.filter(branch_id=branch)
-            visits = visits.filter(branch_id=branch)
-            tasks = tasks.filter(branch_id=branch)
+        transactions = apply_branch_filter(transactions, branch)
+        clients = apply_branch_filter(clients, branch)
+        subscriptions = apply_branch_filter(subscriptions, branch)
+        trials = apply_branch_filter(trials, branch)
+        master_classes = apply_branch_filter(master_classes, branch)
+        groups = apply_branch_filter(groups, branch)
+        lessons = apply_branch_filter(lessons, branch)
+        visits = apply_branch_filter(visits, branch)
+        tasks = apply_branch_filter(tasks, branch)
 
         if is_teacher:
             groups = groups.filter(teacher=request.user)
@@ -2216,8 +2215,7 @@ class DashboardStatsView(APIView):
                 transactions.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total']
             )
             all_income = FinanceTransaction.objects.filter(transaction_type=FinanceTransaction.Type.INCOME)
-            if branch:
-                all_income = all_income.filter(branch_id=branch)
+            all_income = apply_branch_filter(all_income, branch)
             income_today = _decimal(
                 all_income.filter(
                     paid_at__date=today,
@@ -2257,6 +2255,7 @@ class DashboardStatsView(APIView):
         attendance_rate = round(attended / attendance_base * 100, 2) if attendance_base else 0
 
         dashboard = {
+            'branch_filter': branch or 'all',
             'finance': {
                 'income': income_total,
                 'expense': expense_total,
@@ -2325,6 +2324,42 @@ class DashboardStatsView(APIView):
             'period': {'date_from': date_from, 'date_to': date_to},
         }
 
+        branches_summary = []
+        real_branches = Branch.objects.filter(is_active=True).exclude(
+            name__iregex=r'^\s*(все филиалы|все|all branches|без филиала|не распределено)\s*$'
+        ).order_by('name')
+        summary_branches = [(str(item.id), item.id, item.name) for item in real_branches]
+        summary_branches.append(('unassigned', None, 'Не распределено'))
+        for branch_key, branch_id, branch_name in summary_branches:
+            branch_clients = Client.objects.filter(branch_id=branch_id)
+            branch_subscriptions = Subscription.objects.filter(branch_id=branch_id)
+            branch_transactions = FinanceTransaction.objects.filter(
+                branch_id=branch_id,
+                paid_at__date__gte=date_from,
+                paid_at__date__lte=date_to,
+            )
+            branch_groups = StudyGroup.objects.filter(branch_id=branch_id)
+            branch_lessons = Lesson.objects.filter(
+                branch_id=branch_id,
+                lesson_date__gte=date_from,
+                lesson_date__lte=date_to,
+            )
+            if is_teacher:
+                branch_groups = branch_groups.filter(teacher=request.user)
+                branch_lessons = branch_lessons.filter(teacher=request.user)
+            branches_summary.append({
+                'id': branch_id,
+                'key': branch_key,
+                'name': branch_name,
+                'clients': branch_clients.count() if not is_teacher else 0,
+                'subscriptions': branch_subscriptions.filter(status=Subscription.Status.ACTIVE).count() if not is_teacher else 0,
+                'income': _decimal(branch_transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total']) if can_view_finance else 0,
+                'finance_transactions': branch_transactions.count() if can_view_finance else 0,
+                'groups': branch_groups.count(),
+                'lessons': branch_lessons.count(),
+            })
+        dashboard['branches_summary'] = branches_summary
+
         dashboard.update(
             {
                 'clients_total': dashboard['clients']['total'],
@@ -2363,12 +2398,11 @@ class ReportsSummaryView(APIView):
         lessons = Lesson.objects.all()
         visits = Visit.objects.select_related('client', 'lesson', 'lesson__group', 'teacher')
         branch = request.query_params.get('branch')
-        if branch:
-            transactions = transactions.filter(branch_id=branch)
-            trials = trials.filter(branch_id=branch)
-            master_classes = master_classes.filter(branch_id=branch)
-            lessons = lessons.filter(branch_id=branch)
-            visits = visits.filter(branch_id=branch)
+        transactions = apply_branch_filter(transactions, branch)
+        trials = apply_branch_filter(trials, branch)
+        master_classes = apply_branch_filter(master_classes, branch)
+        lessons = apply_branch_filter(lessons, branch)
+        visits = apply_branch_filter(visits, branch)
 
         if date_from:
             transactions = transactions.filter(paid_at__date__gte=date_from)

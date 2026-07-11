@@ -188,7 +188,7 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 
 export default function TrialsPage() {
   const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
@@ -328,6 +328,7 @@ export default function TrialsPage() {
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...trialStages]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Пробный от" type="date" value={crud.filters.scheduled_at_from} onChange={(e) => crud.setFilters({ ...crud.filters, scheduled_at_from: e.target.value })} />
         <Input label="Пробный до" type="date" value={crud.filters.scheduled_at_to} onChange={(e) => crud.setFilters({ ...crud.filters, scheduled_at_to: e.target.value })} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />

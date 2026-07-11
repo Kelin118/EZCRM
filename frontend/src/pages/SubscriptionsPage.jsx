@@ -66,7 +66,7 @@ function Progress({ row }) {
 
 export default function SubscriptionsPage() {
   const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '', branch: '' });
-  const { branchOptions } = useBranches();
+  const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const [addonCatalogItems, setAddonCatalogItems] = useState([]);
@@ -176,7 +176,7 @@ export default function SubscriptionsPage() {
       <Filters>
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'paused', label: 'Пауза' }, { value: 'expired', label: 'Истёк' }, { value: 'cancelled', label: 'Отменён' }]} />
         <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
-        <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(e) => crud.setFilters({ ...crud.filters, date_to: e.target.value })} />
       </Filters>
@@ -199,7 +199,7 @@ export default function SubscriptionsPage() {
           if (row.end_date && row.end_date < today) return <Badge value="expired">Истёк</Badge>;
           return <Badge value={row.status} />;
         } },
-        { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' },
+        { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'price', header: 'Стоимость', render: (row) => (
           <div className="text-sm">
             <p>Осн.: {money(row.price)}</p>

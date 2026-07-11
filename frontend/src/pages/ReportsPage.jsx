@@ -30,7 +30,7 @@ function percent(value) {
 export default function ReportsPage() {
   const [filters, setFilters] = useState(period(30));
   const [appliedFilters, setAppliedFilters] = useState(period(30));
-  const { branchOptions } = useBranches();
+  const { branchFilterOptions } = useBranches();
   const [summary, setSummary] = useState({});
 
   useEffect(() => {
@@ -55,7 +55,7 @@ export default function ReportsPage() {
       <Filters>
         <Input label="Дата от" type="date" value={filters.date_from} onChange={(event) => setFilters({ ...filters, date_from: event.target.value })} />
         <Input label="Дата до" type="date" value={filters.date_to} onChange={(event) => setFilters({ ...filters, date_to: event.target.value })} />
-        <SelectField label="Филиал" value={filters.branch || ''} onChange={(value) => setFilters({ ...filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />
+        <SelectField label="Филиал" value={filters.branch || 'all'} onChange={(value) => setFilters({ ...filters, branch: value })} options={branchFilterOptions} />
         <div className="flex items-end">
           <Button onClick={() => setAppliedFilters(filters)}>Обновить</Button>
         </div>

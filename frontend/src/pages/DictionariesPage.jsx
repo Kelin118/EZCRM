@@ -52,8 +52,8 @@ function DictionarySection({ type }) {
   const isSubjects = type === 'subjects';
   const endpoint = isSubjects ? 'subjects/' : 'rooms/';
   const emptyItem = isSubjects ? emptySubject : emptyRoom;
-  const { branchOptions } = useBranches();
-  const fields = isSubjects ? subjectFields : [{ name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Без филиала' }, ...branchOptions] }, ...roomFields];
+  const { branchOptions, branchFilterOptions } = useBranches();
+  const fields = isSubjects ? subjectFields : [{ name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] }, ...roomFields];
   const crud = useCrudResource(endpoint, { search: '', is_active: '', branch: '' });
   const user = getStoredUser();
   const canEdit = hasRole(user, [ROLES.ADMIN, ROLES.MANAGER]);
@@ -78,7 +78,7 @@ function DictionarySection({ type }) {
       <Filters>
         <Input label="Поиск" value={crud.filters.search} onChange={(event) => crud.setFilters({ ...crud.filters, search: event.target.value })} />
         <SelectField label="Статус" value={crud.filters.is_active} onChange={(value) => crud.setFilters({ ...crud.filters, is_active: value })} options={statusOptions} />
-        {!isSubjects && <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={[{ value: '', label: 'Все филиалы' }, ...branchOptions]} />}
+        {!isSubjects && <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />}
       </Filters>
 
       <Table
@@ -87,7 +87,7 @@ function DictionarySection({ type }) {
         columns={[
           { key: 'name', header: 'Название' },
           ...(isSubjects ? [] : [{ key: 'capacity', header: 'Вместимость', render: (row) => row.capacity || '-' }]),
-          ...(isSubjects ? [] : [{ key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Без филиала' }]),
+          ...(isSubjects ? [] : [{ key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' }]),
           { key: 'description', header: 'Описание' },
           {
             key: 'is_active',

@@ -2275,3 +2275,80 @@ class CriticalBusinessFlowTests(APITestCase):
 
         self.assertTrue(AuditLog.objects.filter(entity_type='Visit').exists())
         self.assertTrue(AuditLog.objects.filter(entity_type='Lesson', action='visit').exists())
+
+
+class GlobalSearchTests(APITestCase):
+    def setUp(self):
+        self.branch = Branch.objects.create(name='Сарыарка', address='проспект Республики')
+        self.other_branch = Branch.objects.create(name='Алатау')
+        self.admin = get_user_model().objects.create_user(
+            username='search-admin', password='pass', role='admin', roles=['admin'], branch=self.branch,
+        )
+        self.teacher = get_user_model().objects.create_user(
+            username='search-teacher', password='pass', first_name='Айгуль', last_name='Омарова',
+            role='teacher', roles=['teacher', 'manager'], branch=self.branch,
+        )
+        self.only_teacher = get_user_model().objects.create_user(
+            username='only-teacher', password='pass', role='teacher', roles=['teacher'], branch=self.branch,
+        )
+        self.client_record = Client.objects.create(
+            branch=self.branch, first_name='Алихан', last_name='Сатыбалдин', parent_name='Айнур',
+            phone='+7 (707) 000-00-00', email='alikhan@example.test',
+        )
+        self.service = CatalogItem.objects.create(
+            name='AB-8 Робототехника', price=24000, lessons_count=8, category=CatalogItem.Category.SERVICE,
+        )
+        self.subscription = Subscription.objects.create(
+            branch=self.branch, client=self.client_record, service=self.service, title='Старый AB-8',
+            start_date=date.today(), total_visits=8, remaining_visits=7, price=24000,
+        )
+        self.legacy_subscription = Subscription.objects.create(
+            branch=self.branch, client=self.client_record, title='Архивный абонемент',
+            start_date=date.today(), total_visits=4, remaining_visits=0,
+        )
+        self.group = StudyGroup.objects.create(branch=self.branch, name='Юные инженеры', teacher=self.only_teacher)
+        self.hidden_group = StudyGroup.objects.create(branch=self.other_branch, name='Юные инженеры')
+
+    def search(self, query, user=None):
+        self.client.force_authenticate(user or self.admin)
+        return self.client.get('/api/search/', {'q': query})
+
+    def test_search_requires_authentication(self):
+        response = self.client.get('/api/search/', {'q': 'Алихан'})
+        self.assertEqual(response.status_code, 401)
+
+    def test_search_client_by_full_partial_name_and_phone(self):
+        for query in ('Алихан', 'алих', '8 707'):
+            with self.subTest(query=query):
+                response = self.search(query)
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(any(item['type'] == 'client' and item['id'] == self.client_record.id for item in response.data['results']))
+
+    def test_search_group_subscription_branch_and_multi_role_employee(self):
+        expectations = (
+            ('инжен', 'group', self.group.id),
+            ('Робото', 'subscription', self.subscription.id),
+            ('Сарыар', 'branch', self.branch.id),
+            ('преподаватель', 'employee', self.teacher.id),
+        )
+        for query, result_type, object_id in expectations:
+            with self.subTest(query=query):
+                response = self.search(query)
+                self.assertTrue(any(item['type'] == result_type and item['id'] == object_id for item in response.data['results']))
+
+    def test_short_and_empty_queries_return_empty_result(self):
+        for query in ('', 'а', '  '):
+            response = self.search(query)
+            self.assertEqual(response.data, {'query': query.strip(), 'total': 0, 'results': []})
+
+    def test_response_has_public_unified_shape_and_legacy_subscription_is_safe(self):
+        response = self.search('Архивный')
+        item = next(item for item in response.data['results'] if item['type'] == 'subscription')
+        self.assertEqual(set(item), {'type', 'id', 'title', 'subtitle', 'url'})
+        self.assertEqual(item['id'], self.legacy_subscription.id)
+
+    def test_teacher_does_not_see_unassigned_or_other_branch_groups(self):
+        response = self.search('инжен', self.only_teacher)
+        group_ids = {item['id'] for item in response.data['results'] if item['type'] == 'group'}
+        self.assertIn(self.group.id, group_ids)
+        self.assertNotIn(self.hidden_group.id, group_ids)

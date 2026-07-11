@@ -16,6 +16,7 @@ from .views import (
     FinanceExportView,
     FinanceTransactionViewSet,
     GroupsExportView,
+    GlobalSearchView,
     GroupMembershipViewSet,
     LessonsExportView,
     LessonViewSet,
@@ -58,6 +59,7 @@ router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')
 router.register('audit-logs', AuditLogViewSet, basename='audit-log')
 
 urlpatterns = [
+    path('search/', GlobalSearchView.as_view(), name='global-search'),
     path('auth/me/', CurrentUserView.as_view(), name='auth-me'),
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),

@@ -1,6 +1,8 @@
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+import re
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
@@ -100,9 +102,36 @@ from .subscription_addons import addons_comment, sync_subscription_addons, total
 from .subscription_dates import calculate_subscription_end_date
 
 
+User = get_user_model()
+
+
 def _filter_branch(queryset, request):
     branch = request.query_params.get('branch')
     return queryset.filter(branch_id=branch) if branch else queryset
+
+
+def _search_branch(queryset, request):
+    """Keep search results inside a non-admin employee's assigned branch."""
+    branch_id = getattr(request.user, 'branch_id', None)
+    return queryset.filter(branch_id=branch_id) if branch_id and not is_admin(request.user) else queryset
+
+
+def _person_name(person):
+    return person.get_full_name() or person.username if person else ''
+
+
+def _client_name(client):
+    return str(client) if client else 'Без клиента'
+
+
+def _result(result_type, instance, title, subtitle, url):
+    return {
+        'type': result_type,
+        'id': instance.pk,
+        'title': title,
+        'subtitle': subtitle,
+        'url': url,
+    }
 
 
 def _date_param(request, name):
@@ -506,6 +535,170 @@ class StudyGroupViewSet(EducationBaseViewSet):
             changes={'created': created_count, 'date_from': str(date_from), 'date_to': str(date_to)},
         )
         return Response({'created': created_count}, status=status.HTTP_201_CREATED)
+
+
+class GlobalSearchView(APIView):
+    permission_classes = (IsAuthenticated,)
+    result_limit = 10
+
+    def get(self, request):
+        query = request.query_params.get('q', '').strip()
+        if len(query) < 2:
+            return Response({'query': query, 'total': 0, 'results': []})
+
+        results = []
+        user = request.user
+        teacher_only = has_role(user, TEACHER) and not has_any_role(user, {MANAGER, ACCOUNTANT}) and not is_admin(user)
+        digits = re.sub(r'\D', '', query)
+
+        clients = _search_branch(Client.objects.select_related('branch'), request)
+        if teacher_only:
+            clients = clients.filter(
+                Q(group_memberships__group__teacher=user)
+                | Q(trials__teacher=user)
+                | Q(master_classes__teacher=user)
+                | Q(tasks__assigned_to=user)
+            ).distinct()
+        client_filter = (
+            Q(first_name__icontains=query)
+            | Q(last_name__icontains=query)
+            | Q(parent_name__icontains=query)
+            | Q(phone__icontains=query)
+            | Q(email__icontains=query)
+        )
+        phone_ids = []
+        if digits:
+            phone_query = f'7{digits[1:]}' if digits.startswith('8') and len(digits) > 1 else digits
+            phone_ids = [
+                item_id for item_id, phone in clients.values_list('id', 'phone')
+                if phone_query in re.sub(r'\D', '', phone or '')
+            ]
+        matched_clients = clients.filter(client_filter | Q(id__in=phone_ids)).distinct()[:self.result_limit]
+        for client in matched_clients:
+            subtitle = ' · '.join(filter(None, [f'Родитель: {client.parent_name}' if client.parent_name else '', client.phone, client.email]))
+            results.append(_result('client', client, _client_name(client), subtitle, f'/clients/{client.id}'))
+
+        subscriptions = _search_branch(Subscription.objects.select_related('client', 'service'), request)
+        if teacher_only:
+            subscriptions = subscriptions.filter(client_id__in=clients.values('id'))
+        subscription_filter = (
+            Q(client__first_name__icontains=query)
+            | Q(client__last_name__icontains=query)
+            | Q(client__phone__icontains=query)
+            | Q(service__name__icontains=query)
+            | Q(title__icontains=query)
+        )
+        if query.isdigit():
+            subscription_filter |= Q(id=int(query))
+        subscriptions = subscriptions.filter(subscription_filter).distinct()[:self.result_limit]
+        for subscription in subscriptions:
+            name = subscription.service.name if subscription.service else subscription.title
+            results.append(_result(
+                'subscription', subscription, f'{name} — {_client_name(subscription.client)}',
+                f'Остаток: {subscription.remaining_visits} · {subscription.get_status_display()}',
+                f'/subscriptions?client={subscription.client_id}',
+            ))
+
+        groups = _search_branch(StudyGroup.objects.select_related('subject', 'teacher', 'manager'), request)
+        if teacher_only:
+            groups = groups.filter(teacher=user)
+        groups = groups.filter(
+            Q(name__icontains=query) | Q(subject__name__icontains=query)
+            | Q(teacher__first_name__icontains=query) | Q(teacher__last_name__icontains=query)
+            | Q(teacher__username__icontains=query) | Q(manager__first_name__icontains=query)
+            | Q(manager__last_name__icontains=query) | Q(manager__username__icontains=query)
+        ).distinct()[:self.result_limit]
+        for group in groups:
+            results.append(_result(
+                'group', group, group.name,
+                ' · '.join(filter(None, [group.subject.name if group.subject else '', _person_name(group.teacher)])),
+                f'/groups?group={group.id}',
+            ))
+
+        if is_admin(user):
+            employee_ids = []
+            lowered = query.casefold()
+            role_labels = {'admin': 'администратор', 'manager': 'менеджер', 'teacher': 'преподаватель', 'accountant': 'бухгалтер'}
+            for employee in User.objects.select_related('branch').all():
+                role_values = employee.get_roles()
+                haystack = ' '.join([
+                    employee.first_name, employee.last_name, employee.username, employee.email,
+                    ' '.join(role_values), ' '.join(role_labels.get(value, value) for value in role_values),
+                ]).casefold()
+                if lowered in haystack:
+                    employee_ids.append(employee.id)
+            for employee in User.objects.filter(id__in=employee_ids).order_by('first_name', 'last_name')[:self.result_limit]:
+                results.append(_result(
+                    'employee', employee, _person_name(employee), ', '.join(employee.get_roles()),
+                    f'/employees?employee={employee.id}',
+                ))
+
+        trials = _search_branch(Trial.objects.select_related('client'), request)
+        if teacher_only:
+            trials = trials.filter(teacher=user)
+        trials = trials.filter(
+            Q(client__first_name__icontains=query) | Q(client__last_name__icontains=query)
+            | Q(client__phone__icontains=query) | Q(status__icontains=query) | Q(notes__icontains=query)
+        ).distinct()[:self.result_limit]
+        for trial in trials:
+            results.append(_result('trial', trial, _client_name(trial.client), trial.get_status_display(), f'/trials?trial={trial.id}'))
+
+        tasks = _search_branch(Task.objects.select_related('client'), request)
+        if teacher_only:
+            tasks = tasks.filter(assigned_to=user)
+        if has_any_role(user, {MANAGER, TEACHER}) or is_admin(user):
+            tasks = tasks.filter(
+                Q(title__icontains=query) | Q(description__icontains=query)
+                | Q(client__first_name__icontains=query) | Q(client__last_name__icontains=query)
+            ).distinct()[:self.result_limit]
+            for task in tasks:
+                results.append(_result('task', task, task.title, _client_name(task.client), f'/tasks?task={task.id}'))
+
+        master_classes = _search_branch(MasterClass.objects.prefetch_related('participants'), request)
+        if teacher_only:
+            master_classes = master_classes.filter(teacher=user)
+        master_classes = master_classes.filter(
+            Q(title__icontains=query) | Q(description__icontains=query)
+            | Q(participants__first_name__icontains=query) | Q(participants__last_name__icontains=query)
+        ).distinct()[:self.result_limit]
+        for master_class in master_classes:
+            participants = ', '.join(str(item) for item in master_class.participants.all()[:2])
+            results.append(_result('master_class', master_class, master_class.title, participants, f'/master-classes?master_class={master_class.id}'))
+
+        if has_any_role(user, {MANAGER, ACCOUNTANT}) or is_admin(user):
+            finance = _search_branch(FinanceTransaction.objects.select_related('client'), request)
+            finance_filter = (
+                Q(client__first_name__icontains=query) | Q(client__last_name__icontains=query)
+                | Q(comment__icontains=query) | Q(source__icontains=query)
+            )
+            try:
+                finance_filter |= Q(amount=Decimal(query.replace(',', '.')))
+            except Exception:
+                pass
+            if has_role(user, MANAGER) and not has_role(user, ACCOUNTANT) and not is_admin(user):
+                finance = finance.filter(transaction_type=FinanceTransaction.Type.INCOME, client__manager=user)
+            for operation in finance.filter(finance_filter).distinct()[:self.result_limit]:
+                results.append(_result(
+                    'finance', operation, f'{operation.amount} · {operation.get_transaction_type_display()}',
+                    ' · '.join(filter(None, [_client_name(operation.client), operation.source, operation.comment])),
+                    f'/finance?transaction={operation.id}',
+                ))
+
+        if has_any_role(user, {MANAGER, ACCOUNTANT}) or is_admin(user):
+            branches = Branch.objects.filter(Q(name__icontains=query) | Q(address__icontains=query))
+            if getattr(user, 'branch_id', None) and not is_admin(user):
+                branches = branches.filter(id=user.branch_id)
+            for branch in branches[:self.result_limit]:
+                results.append(_result('branch', branch, branch.name, branch.address, f'/settings?branch={branch.id}'))
+
+        if has_any_role(user, {MANAGER, TEACHER}) or is_admin(user):
+            rooms = _search_branch(Room.objects.select_related('branch'), request).filter(
+                Q(name__icontains=query) | Q(branch__name__icontains=query)
+            ).distinct()[:self.result_limit]
+            for room in rooms:
+                results.append(_result('room', room, room.name, room.branch.name if room.branch else 'Без филиала', f'/schedule?room={room.id}'))
+
+        return Response({'query': query, 'total': len(results), 'results': results})
 
 
 class GroupMembershipViewSet(EducationBaseViewSet):

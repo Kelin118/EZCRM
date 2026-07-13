@@ -1,7 +1,9 @@
+import { ShoppingCart } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
+import AddonSaleModal from '../components/sales/AddonSaleModal.jsx';
 import useBranches from '../hooks/useBranches.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
@@ -11,7 +13,7 @@ const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment
 const emptyFilters = { transaction_type: '', payment_method: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
-  { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительная услуга' },
+  { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительные услуги' },
   { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' },
   { value: 'rent', label: 'Аренда' }, { value: 'other', label: 'Другое' },
 ];
@@ -25,6 +27,7 @@ export default function FinancePage() {
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const [summary, setSummary] = useState({ income: 0, expense: 0, balance: 0, transactions_count: 0, average_income: 0 });
+  const [addonSaleOpen, setAddonSaleOpen] = useState(false);
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
@@ -58,10 +61,22 @@ export default function FinancePage() {
     crud.setModalOpen(true);
   };
   const resetFilters = () => crud.setFilters(emptyFilters);
+  const refreshFinance = async () => {
+    await crud.reload();
+    const { data } = await api.get('finance/summary/', { params: crud.filters });
+    setSummary(data);
+  };
 
   return (
     <>
-      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined} />
+      <PageHeader title="Финансы" actionLabel="Добавить операцию" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
+        {canEdit && (
+          <Button variant="secondary" onClick={() => setAddonSaleOpen(true)}>
+            <ShoppingCart size={17} />
+            Продать доп. услугу
+          </Button>
+        )}
+      </PageHeader>
       <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
           ['Доход', summary.income, 'text-emerald-700'], ['Расход', summary.expense, 'text-red-700'],
@@ -87,6 +102,7 @@ export default function FinancePage() {
         { key: 'payment_method_name', header: 'Способ оплаты', render: (row) => row.payment_method_name || 'Не указан' },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
         { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },
+        { key: 'addon_sale_summary', header: 'Состав', render: (row) => row.source === 'addon' ? (row.addon_sale_summary || row.comment || '—') : '—' },
         { key: 'created_by', header: 'Менеджер', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
@@ -94,6 +110,7 @@ export default function FinancePage() {
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
       <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      <AddonSaleModal open={addonSaleOpen} onClose={() => setAddonSaleOpen(false)} onSaved={refreshFinance} />
     </>
   );
 }

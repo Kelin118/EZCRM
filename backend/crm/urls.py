@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AddonSaleViewSet,
     AuditLogViewSet,
     AttendanceDayView,
     BackupCreateView,
@@ -53,6 +54,7 @@ router.register('lessons', LessonViewSet, basename='lesson')
 router.register('trials', TrialViewSet, basename='trial')
 router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
+router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
 router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')

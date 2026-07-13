@@ -33,6 +33,7 @@ from .export_excel import (
 from .excel_import import import_excel
 from .group_schedule import sync_group_schedule_slots
 from .models import (
+    AddonSale,
     AuditLog,
     Branch,
     CatalogItem,
@@ -57,6 +58,7 @@ from .permissions import (
     ACCOUNTANT,
     MANAGER,
     TEACHER,
+    AddonSalePermission,
     AuditLogPermission,
     BranchPermission,
     CatalogItemPermission,
@@ -82,6 +84,7 @@ from .permissions import (
     role,
 )
 from .serializers import (
+    AddonSaleSerializer,
     AuditLogSerializer,
     BranchSerializer,
     CatalogItemSerializer,
@@ -176,8 +179,9 @@ def _resolve_payment_method(value, *, required=False):
     return method
 
 
-def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None, payment_method=None):
+def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None, payment_method=None, branch=None):
     return FinanceTransaction.objects.create(
+        branch=branch,
         transaction_type=FinanceTransaction.Type.INCOME,
         amount=amount,
         source=source,
@@ -1951,9 +1955,138 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         return Response(self.get_serializer(task).data)
 
 
+class AddonSaleViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, AddonSalePermission)
+    queryset = (
+        AddonSale.objects
+        .select_related('client', 'branch', 'created_by', 'payment_method', 'finance_transaction')
+        .prefetch_related('items')
+        .all()
+    )
+    serializer_class = AddonSaleSerializer
+    audit_entity_type = 'AddonSale'
+
+    def get_queryset(self):
+        queryset = _filter_branch(super().get_queryset(), self.request)
+        client = self.request.query_params.get('client')
+        manager = self.request.query_params.get('manager') or self.request.query_params.get('created_by')
+        payment_method = self.request.query_params.get('payment_method')
+        search = self.request.query_params.get('search')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+
+        if client:
+            queryset = queryset.filter(client_id=client)
+        if manager and manager != 'all':
+            queryset = queryset.filter(created_by__isnull=True) if manager == 'unassigned' else queryset.filter(created_by_id=manager)
+        if payment_method and payment_method != 'all':
+            queryset = queryset.filter(payment_method__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_method_id=payment_method)
+        if search:
+            queryset = queryset.filter(
+                Q(client__first_name__icontains=search)
+                | Q(client__last_name__icontains=search)
+                | Q(client__parent_name__icontains=search)
+                | Q(client__phone__icontains=search)
+                | Q(items__name__icontains=search)
+                | Q(comment__icontains=search)
+                | Q(payment_method_name__icontains=search)
+            )
+        if date_from:
+            queryset = queryset.filter(sale_date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(sale_date__lte=date_to)
+        return queryset.distinct().order_by('-sale_date', '-created_at')
+
+    def _sale_comment(self, sale):
+        names = [item.name for item in sale.items.all()]
+        details = ', '.join(names)
+        base = f'Доп. услуги: {details}' if details else 'Доп. услуги'
+        return f'{base}. {sale.comment}' if sale.comment else base
+
+    def _audit_changes(self, sale=None):
+        if not sale:
+            return super()._audit_changes()
+        return {
+            'client': sale.client_id,
+            'branch': sale.branch_id,
+            'items': [
+                {
+                    'name': item.name,
+                    'catalog_item': item.catalog_item_id,
+                    'quantity': item.quantity,
+                    'unit_price': str(item.unit_price),
+                    'total_price': str(item.total_price),
+                }
+                for item in sale.items.all()
+            ],
+            'total_price': str(sale.total_price),
+            'payment_amount': str(sale.payment_amount),
+            'payment_method': sale.payment_method_id,
+            'payment_method_name': sale.payment_method_name,
+            'created_by': sale.created_by_id,
+            'comment': sale.comment,
+        }
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            sale = serializer.save(created_by=self.request.user)
+            if sale.payment_amount and sale.payment_amount > 0:
+                finance_transaction = _create_income_transaction(
+                    client=sale.client,
+                    amount=sale.payment_amount,
+                    source='addon',
+                    paid_at=_paid_at_from_date(sale.sale_date),
+                    comment=self._sale_comment(sale),
+                    created_by=self.request.user,
+                    payment_method=sale.payment_method,
+                    branch=sale.branch,
+                )
+                sale.finance_transaction = finance_transaction
+                sale.save(update_fields=('finance_transaction', 'updated_at'))
+            self._log_instance(AuditLog.Action.ADDON_SALE_CREATE, sale, 'Создана продажа доп. услуг', self._audit_changes(sale))
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            sale = serializer.save()
+            finance_transaction = sale.finance_transaction
+            if sale.payment_amount and sale.payment_amount > 0:
+                if finance_transaction:
+                    finance_transaction.amount = sale.payment_amount
+                    finance_transaction.client = sale.client
+                    finance_transaction.branch = sale.branch
+                    finance_transaction.payment_method = sale.payment_method
+                    finance_transaction.payment_method_name = sale.payment_method.name if sale.payment_method else finance_transaction.payment_method_name
+                    finance_transaction.paid_at = _paid_at_from_date(sale.sale_date)
+                    finance_transaction.comment = self._sale_comment(sale)
+                    finance_transaction.save(update_fields=(
+                        'amount',
+                        'client',
+                        'branch',
+                        'payment_method',
+                        'payment_method_name',
+                        'paid_at',
+                        'comment',
+                        'updated_at',
+                    ))
+                else:
+                    finance_transaction = _create_income_transaction(
+                        client=sale.client,
+                        amount=sale.payment_amount,
+                        source='addon',
+                        paid_at=_paid_at_from_date(sale.sale_date),
+                        comment=self._sale_comment(sale),
+                        created_by=self.request.user,
+                        payment_method=sale.payment_method,
+                        branch=sale.branch,
+                    )
+                    sale.finance_transaction = finance_transaction
+                    sale.save(update_fields=('finance_transaction', 'updated_at'))
+            self._log_instance(AuditLog.Action.ADDON_SALE_UPDATE, sale, 'Изменена продажа доп. услуг', self._audit_changes(sale))
+
+
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'addon_sale').prefetch_related('addon_sale__items').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -2739,6 +2872,7 @@ class ReportsSummaryView(APIView):
             'subscription': 'Абонементы',
             'trial': 'Пробники',
             'master_class': 'МК',
+            'addon': 'Дополнительные услуги',
             'manual': 'Ручные операции',
             'other': 'Другое',
             '': 'Другое',

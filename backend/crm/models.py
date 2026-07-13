@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class TimeStampedModel(models.Model):
@@ -114,6 +115,72 @@ class SubscriptionAddon(models.Model):
 
     def __str__(self):
         return f'{self.subscription_id}: {self.name} x{self.quantity}'
+
+
+class AddonSale(TimeStampedModel):
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name='addon_sales')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='addon_sales')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='addon_sales',
+    )
+    payment_method = models.ForeignKey(
+        'PaymentMethod',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='addon_sales',
+    )
+    payment_method_name = models.CharField(max_length=255, blank=True, default='')
+    total_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payment_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sale_date = models.DateField(default=timezone.localdate)
+    comment = models.TextField(blank=True)
+    finance_transaction = models.OneToOneField(
+        'FinanceTransaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='addon_sale',
+    )
+
+    class Meta:
+        ordering = ('-sale_date', '-created_at')
+
+    def __str__(self):
+        return f'Addon sale #{self.pk or "new"}'
+
+    def save(self, *args, **kwargs):
+        if not self.branch_id and self.client_id:
+            self.branch_id = self.client.branch_id
+        if self.payment_method_id and not self.payment_method_name:
+            self.payment_method_name = self.payment_method.name
+        super().save(*args, **kwargs)
+
+
+class AddonSaleItem(models.Model):
+    sale = models.ForeignKey(AddonSale, on_delete=models.CASCADE, related_name='items')
+    catalog_item = models.ForeignKey(
+        'CatalogItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='addon_sale_items',
+    )
+    name = models.CharField(max_length=150)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    quantity = models.PositiveIntegerField(default=1)
+    total_price = models.DecimalField(max_digits=12, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('id',)
+
+    def __str__(self):
+        return f'{self.sale_id}: {self.name} x{self.quantity}'
 
 
 class Subject(TimeStampedModel):
@@ -616,6 +683,8 @@ class AuditLog(models.Model):
         GROUP_MEMBER_ADD = 'group_member_add', 'Group member add'
         GROUP_MEMBER_REMOVE = 'group_member_remove', 'Group member remove'
         GROUP_MEMBER_RESTORE = 'group_member_restore', 'Group member restore'
+        ADDON_SALE_CREATE = 'addon_sale_create', 'Addon sale create'
+        ADDON_SALE_UPDATE = 'addon_sale_update', 'Addon sale update'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

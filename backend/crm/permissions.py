@@ -137,6 +137,13 @@ class FinancePermission(RolePermission):
     }
 
 
+class AddonSalePermission(RolePermission):
+    allowed_by_role = {
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
+        ACCOUNTANT: {'read', 'list', 'retrieve'},
+    }
+
+
 class PaymentMethodPermission(BasePermission):
     def has_permission(self, request, view):
         if not is_authenticated(request.user):

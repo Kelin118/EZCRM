@@ -1,6 +1,8 @@
 from django.contrib import admin
 
 from .models import (
+    AddonSale,
+    AddonSaleItem,
     AuditLog,
     Branch,
     CatalogItem,
@@ -49,6 +51,19 @@ class SubscriptionAdmin(admin.ModelAdmin):
 class SubscriptionAddonAdmin(admin.ModelAdmin):
     list_display = ('subscription', 'name', 'unit_price', 'quantity', 'total_price')
     search_fields = ('subscription__title', 'subscription__client__first_name', 'subscription__client__last_name', 'name')
+
+
+@admin.register(AddonSale)
+class AddonSaleAdmin(admin.ModelAdmin):
+    list_display = ('id', 'client', 'branch', 'total_price', 'payment_amount', 'payment_method_name', 'sale_date', 'created_by')
+    list_filter = ('sale_date', 'branch', 'payment_method')
+    search_fields = ('client__first_name', 'client__last_name', 'client__phone', 'items__name', 'comment')
+
+
+@admin.register(AddonSaleItem)
+class AddonSaleItemAdmin(admin.ModelAdmin):
+    list_display = ('sale', 'name', 'unit_price', 'quantity', 'total_price')
+    search_fields = ('sale__client__first_name', 'sale__client__last_name', 'name')
 
 
 @admin.register(Subject)

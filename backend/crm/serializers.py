@@ -16,6 +16,8 @@ from .group_schedule import (
 )
 from .branch_filters import PSEUDO_BRANCH_NAMES
 from .models import (
+    AddonSale,
+    AddonSaleItem,
     AuditLog,
     Branch,
     CatalogItem,
@@ -315,6 +317,135 @@ class SubscriptionAddonSerializer(serializers.ModelSerializer):
         model = SubscriptionAddon
         fields = ('id', 'catalog_item', 'name', 'unit_price', 'quantity', 'total_price')
         read_only_fields = fields
+
+
+class AddonSaleItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AddonSaleItem
+        fields = ('id', 'catalog_item', 'name', 'unit_price', 'quantity', 'total_price')
+        read_only_fields = fields
+
+
+class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
+    client_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    items = serializers.JSONField()
+    payment_method = serializers.PrimaryKeyRelatedField(
+        queryset=PaymentMethod.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = AddonSale
+        fields = (
+            'id',
+            'client',
+            'client_name',
+            'branch',
+            'branch_name',
+            'created_by',
+            'created_by_name',
+            'payment_method',
+            'payment_method_name',
+            'items',
+            'total_price',
+            'payment_amount',
+            'sale_date',
+            'comment',
+            'finance_transaction',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = (
+            'created_by',
+            'payment_method_name',
+            'total_price',
+            'finance_transaction',
+            'created_at',
+            'updated_at',
+        )
+
+    def get_client_name(self, obj):
+        return str(obj.client) if obj.client else None
+
+    def get_created_by_name(self, obj):
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['items'] = AddonSaleItemSerializer(instance.items.all(), many=True).data
+        return data
+
+    def validate_items(self, value):
+        addons = validate_addons_payload(value)
+        if not addons:
+            raise serializers.ValidationError('Выберите хотя бы одну доп. услугу.')
+        return addons
+
+    def validate_payment_method(self, value):
+        if value and not value.is_active:
+            raise serializers.ValidationError('Выберите активный способ оплаты.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        addons = attrs.get('items')
+        if addons is None and self.instance:
+            addons = [
+                {'catalog_item': item.catalog_item, 'quantity': item.quantity}
+                for item in self.instance.items.all()
+                if item.catalog_item_id
+            ]
+
+        total = sum(
+            (item['catalog_item'].price * Decimal(item['quantity']) for item in (addons or [])),
+            Decimal('0'),
+        )
+        attrs['total_price'] = total
+
+        initial_data = getattr(self, 'initial_data', {})
+        if 'payment_amount' not in initial_data or initial_data.get('payment_amount') in (None, ''):
+            attrs['payment_amount'] = total
+
+        payment_amount = attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0'))
+        payment_method = attrs.get('payment_method', self.instance.payment_method if self.instance else None)
+        if payment_amount and payment_amount > 0 and not payment_method:
+            raise serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
+        return attrs
+
+    def create(self, validated_data):
+        addons = validated_data.pop('items', [])
+        payment_method = validated_data.get('payment_method')
+        validated_data['payment_method_name'] = payment_method.name if payment_method else ''
+        sale = super().create(validated_data)
+        self._sync_items(sale, addons)
+        return sale
+
+    def update(self, instance, validated_data):
+        has_items = 'items' in validated_data
+        addons = validated_data.pop('items', [])
+        if 'payment_method' in validated_data:
+            payment_method = validated_data.get('payment_method')
+            validated_data['payment_method_name'] = payment_method.name if payment_method else instance.payment_method_name
+        sale = super().update(instance, validated_data)
+        if has_items:
+            sale.items.all().delete()
+            self._sync_items(sale, addons)
+        return sale
+
+    def _sync_items(self, sale, addons):
+        for item in addons:
+            catalog_item = item['catalog_item']
+            quantity = item['quantity']
+            AddonSaleItem.objects.create(
+                sale=sale,
+                catalog_item=catalog_item,
+                name=catalog_item.name,
+                unit_price=catalog_item.price,
+                quantity=quantity,
+                total_price=catalog_item.price * Decimal(quantity),
+            )
 
 
 class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -632,6 +763,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     created_by_roles = serializers.SerializerMethodField()
+    addon_sale_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceTransaction
@@ -646,6 +778,12 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
 
     def get_created_by_roles(self, obj):
         return obj.created_by.get_roles() if obj.created_by and hasattr(obj.created_by, 'get_roles') else []
+
+    def get_addon_sale_summary(self, obj):
+        sale = getattr(obj, 'addon_sale', None)
+        if not sale:
+            return ''
+        return ', '.join(f'{item.name} ×{item.quantity}' for item in sale.items.all())
 
     def validate_payment_method(self, value):
         if value and not value.is_active:

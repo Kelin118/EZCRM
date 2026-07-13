@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom';
 import { useState } from 'react';
 
+import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
-import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
@@ -25,6 +26,7 @@ const empty = {
   service: '',
   addons: [],
   payment_method: '',
+  comment: '',
 };
 
 const todayIso = todayLocalDate;
@@ -75,6 +77,7 @@ export default function SubscriptionsPage() {
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const [addonCatalogItems, setAddonCatalogItems] = useState([]);
   const [paymentTouched, setPaymentTouched] = useState(false);
+  const [savingSale, setSavingSale] = useState(false);
   const user = getStoredUser();
   const canEdit = canManageSubscriptions(user);
   const canDelete = canDeleteDangerous(user);
@@ -88,21 +91,23 @@ export default function SubscriptionsPage() {
   const selectedService = services.find((item) => String(item.id) === String(form.service));
   const currentAddonsTotal = addonsTotal(form.addons, addonCatalogItems);
   const currentTotalPrice = Number(form.price || 0) + currentAddonsTotal;
+  const hasService = Boolean(form.service);
+  const selectedAddons = addonPayload(form.addons);
   const calculateEndDate = (startDate, service) => calculateEndDateFromService(startDate, service);
   const selectService = (value, current, update) => {
     const service = services.find((item) => String(item.id) === String(value));
-    const startDate = current.start_date || todayIso();
+    const startDate = service ? (current.start_date || todayIso()) : '';
     const endDate = calculateEndDate(startDate, service) || current.end_date;
     update({
       ...current,
       service: value,
-      title: service?.name || current.title,
-      price: service?.price ?? current.price,
-      total_visits: service?.lessons_count ?? current.total_visits,
-      remaining_visits: current.id ? current.remaining_visits : (service?.lessons_count ?? current.remaining_visits),
+      title: service?.name || '',
+      price: service?.price ?? 0,
+      total_visits: service?.lessons_count ?? 0,
+      remaining_visits: service ? (current.id ? current.remaining_visits : (service?.lessons_count ?? current.remaining_visits)) : 0,
       paid_amount: current.id || paymentTouched ? current.paid_amount : (Number(service?.price || 0) + addonsTotal(current.addons, addonCatalogItems)),
       start_date: startDate,
-      end_date: endDate,
+      end_date: service ? endDate : '',
     });
   };
   const changeAddons = (value, current, update) => {
@@ -121,10 +126,61 @@ export default function SubscriptionsPage() {
       end_date: calculateEndDate(value, service) || current.end_date,
     });
   };
+  const notifyError = (message) => {
+    window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
+  };
+  const notifySuccess = (message) => {
+    window.dispatchEvent(new CustomEvent('api-success', { detail: message }));
+  };
+  const numericBranchOrNull = (value) => (value && value !== 'all' && value !== 'unassigned' ? Number(value) : null);
+  const saveSale = async () => {
+    const current = crud.editing || empty;
+    const addons = addonPayload(current.addons);
+    const currentHasService = Boolean(current.service);
+    const currentHasAddons = addons.length > 0;
+
+    if (!currentHasService && !currentHasAddons) {
+      notifyError('Выберите основную или дополнительную услугу.');
+      return;
+    }
+
+    if (current.id || currentHasService) {
+      const { comment, price_summary, ...payload } = current;
+      await crud.save({ ...payload, addons });
+      return;
+    }
+
+    if (Number(current.paid_amount || 0) > 0 && !current.payment_method) {
+      notifyError('Выберите способ оплаты.');
+      return;
+    }
+
+    setSavingSale(true);
+    try {
+      await api.post('addon-sales/', {
+        client: current.client ? Number(current.client) : null,
+        branch: numericBranchOrNull(current.branch),
+        payment_method: current.payment_method ? Number(current.payment_method) : null,
+        sale_date: current.purchase_date || todayIso(),
+        items: addons,
+        payment_amount: current.paid_amount,
+        comment: current.comment || '',
+      });
+      crud.setModalOpen(false);
+      crud.setEditing(null);
+      setPaymentTouched(false);
+      await crud.reload();
+      notifySuccess('Дополнительные услуги проданы.');
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setSavingSale(false);
+    }
+  };
   const fields = [
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
-    { name: 'service', label: 'Услуга', type: 'select', options: [{ value: '', label: services.length ? 'Выберите услугу' : 'Нет добавленных услуг' }, ...serviceOptions], onChange: selectService },
+    { name: 'service', label: 'Основная услуга', type: 'select', options: [{ value: '', label: 'Без основной услуги' }, ...serviceOptions], onChange: selectService },
     {
       name: 'addons',
       type: 'custom',
@@ -138,6 +194,7 @@ export default function SubscriptionsPage() {
     },
     ...baseFields
       .filter((field) => field.name !== 'title')
+      .filter((field) => hasService || !['start_date', 'end_date', 'total_visits', 'remaining_visits', 'price', 'status'].includes(field.name))
       .map((field) => {
         if (field.name === 'start_date') return { ...field, onChange: changeStartDate };
         if (field.name === 'end_date') {
@@ -171,11 +228,12 @@ export default function SubscriptionsPage() {
         </div>
       ),
     },
+    { name: 'comment', label: 'Комментарий', type: 'textarea' },
   ];
 
   return (
     <>
-      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={canEdit ? () => { setPaymentTouched(false); crud.setEditing({ ...empty, start_date: todayIso() }); crud.setModalOpen(true); } : undefined}>
+      <PageHeader title="Абонементы" actionLabel="Добавить абонемент" onAction={canEdit ? () => { setPaymentTouched(false); crud.setEditing({ ...empty, start_date: todayIso(), purchase_date: todayIso() }); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено за период: {money(totalPaid)}</span>
       </PageHeader>
       <Filters>
@@ -215,7 +273,16 @@ export default function SubscriptionsPage() {
         { key: 'paid_amount', header: 'Оплачено', render: (row) => money(row.paid_amount) },
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setPaymentTouched(true); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
-      <CrudModal title="Абонемент" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save({ ...form, addons: addonPayload(form.addons) })} />
+      <CrudModal
+        title={hasService ? 'Добавить абонемент' : selectedAddons.length ? 'Продать дополнительные услуги' : 'Продажа услуги'}
+        open={crud.modalOpen}
+        onClose={() => crud.setModalOpen(false)}
+        fields={fields}
+        form={form}
+        setForm={setForm}
+        saving={crud.saving || savingSale}
+        onSubmit={saveSale}
+      />
     </>
   );
 }

@@ -1736,6 +1736,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         addons = validate_addons_payload(request.data.get('addons', []))
         title = (service.name if service else None) or request.data.get('subscription_type') or request.data.get('title') or ''
         start_date = parse_date(request.data.get('start_date') or '') or (timezone.localdate() if service else None)
+        purchase_date = parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate()
         total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
         price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
         addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
@@ -1782,7 +1783,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 remaining_visits=total_visits,
                 price=price,
                 paid_amount=payment_amount,
-                purchase_date=start_date,
+                purchase_date=purchase_date,
                 status=Subscription.Status.ACTIVE,
             )
             sync_subscription_addons(subscription, addons)
@@ -1792,7 +1793,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     client=trial.client,
                     amount=payment_amount,
                     source='subscription',
-                    paid_at=_paid_at_from_date(start_date),
+                    paid_at=_paid_at_from_date(purchase_date),
                     comment=comment or addons_comment(subscription, 'Оплата абонемента после пробного'),
                     created_by=request.user,
                     subscription=subscription,

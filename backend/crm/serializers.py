@@ -1,3 +1,4 @@
+from datetime import datetime, time
 from decimal import Decimal
 
 from rest_framework import serializers
@@ -23,6 +24,7 @@ from .models import (
     CatalogItem,
     ChatMessage,
     Client,
+    Discount,
     FinanceTransaction,
     GroupMembership,
     Lesson,
@@ -39,6 +41,7 @@ from .models import (
     Trial,
     Visit,
 )
+from .discounts import calculate_discount, validate_discount_for_sale
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .subscription_dates import calculate_subscription_end_date
 
@@ -81,6 +84,28 @@ class AuditLogSerializer(serializers.ModelSerializer):
         if not obj.user:
             return 'Система'
         return obj.user.get_full_name() or obj.user.username
+
+
+class DiscountSerializer(BranchNameMixin, serializers.ModelSerializer):
+    class Meta:
+        model = Discount
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        discount_type = attrs.get('discount_type', self.instance.discount_type if self.instance else None)
+        value = attrs.get('value', self.instance.value if self.instance else None)
+        valid_from = attrs.get('valid_from', self.instance.valid_from if self.instance else None)
+        valid_until = attrs.get('valid_until', self.instance.valid_until if self.instance else None)
+        if value is not None:
+            if value <= 0:
+                raise serializers.ValidationError({'value': 'Значение скидки должно быть больше 0.'})
+            if discount_type == Discount.Type.PERCENTAGE and value > 100:
+                raise serializers.ValidationError({'value': 'Процентная скидка не может быть больше 100.'})
+        if valid_from and valid_until and valid_until < valid_from:
+            raise serializers.ValidationError({'valid_until': 'Дата окончания не может быть раньше даты начала.'})
+        return attrs
 
 
 class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -330,6 +355,12 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     items = serializers.JSONField()
+    subtotal = serializers.SerializerMethodField()
+    discount = serializers.PrimaryKeyRelatedField(
+        queryset=Discount.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     payment_method = serializers.PrimaryKeyRelatedField(
         queryset=PaymentMethod.objects.filter(is_active=True),
         required=False,
@@ -349,6 +380,12 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
             'payment_method',
             'payment_method_name',
             'items',
+            'subtotal',
+            'discount',
+            'discount_name',
+            'discount_type',
+            'discount_value',
+            'discount_amount',
             'total_price',
             'payment_amount',
             'sale_date',
@@ -360,6 +397,10 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
         read_only_fields = (
             'created_by',
             'payment_method_name',
+            'discount_name',
+            'discount_type',
+            'discount_value',
+            'discount_amount',
             'total_price',
             'finance_transaction',
             'created_at',
@@ -371,6 +412,9 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else None
+
+    def get_subtotal(self, obj):
+        return sum((item.total_price for item in obj.items.all()), Decimal('0'))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -402,13 +446,23 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
             (item['catalog_item'].price * Decimal(item['quantity']) for item in (addons or [])),
             Decimal('0'),
         )
-        attrs['total_price'] = total
+        client = attrs.get('client', self.instance.client if self.instance else None)
+        branch = attrs.get('branch', self.instance.branch if self.instance else None) or (client.branch if client else None)
+        discount = attrs.get('discount', self.instance.discount if self.instance else None)
+        calculation = calculate_discount(total, discount, branch=branch, calculation_date=attrs.get('sale_date'))
+        attrs['discount_name'] = calculation['discount_name']
+        attrs['discount_type'] = calculation['discount_type']
+        attrs['discount_value'] = calculation['discount_value']
+        attrs['discount_amount'] = calculation['discount_amount']
+        attrs['total_price'] = calculation['total_price']
 
         initial_data = getattr(self, 'initial_data', {})
         if 'payment_amount' not in initial_data or initial_data.get('payment_amount') in (None, ''):
-            attrs['payment_amount'] = total
+            attrs['payment_amount'] = calculation['total_price']
 
         payment_amount = attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0'))
+        if payment_amount < 0:
+            raise serializers.ValidationError({'payment_amount': 'Сумма оплаты не может быть отрицательной.'})
         payment_method = attrs.get('payment_method', self.instance.payment_method if self.instance else None)
         if payment_amount and payment_amount > 0 and not payment_method:
             raise serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
@@ -461,7 +515,13 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     service_price = serializers.DecimalField(source='service.price', max_digits=10, decimal_places=2, read_only=True)
     addons = serializers.JSONField(required=False)
     addons_total = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
     total_price = serializers.SerializerMethodField()
+    discount = serializers.PrimaryKeyRelatedField(
+        queryset=Discount.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     payment_method = serializers.PrimaryKeyRelatedField(
         queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True,
     )
@@ -492,6 +552,9 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     def get_addons_total(self, obj):
         return addons_total(obj)
 
+    def get_subtotal(self, obj):
+        return Decimal(obj.price or 0) + addons_total(obj)
+
     def get_total_price(self, obj):
         return total_price(obj)
 
@@ -519,9 +582,6 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
                 attrs['title'] = service.name
             if service_changed and 'price' not in initial_data:
                 attrs['price'] = service.price
-            if 'paid_amount' not in initial_data and self.instance is None and attrs.get('payment_method'):
-                addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (addons or [])), Decimal('0'))
-                attrs['paid_amount'] = service.price + addons_sum
             if service_changed and service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
                 attrs['total_visits'] = service.lessons_count
             if service.lessons_count:
@@ -550,6 +610,30 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
                     attrs['end_date'] = calculated_end_date
         elif self.instance is None and not attrs.get('start_date'):
             raise serializers.ValidationError({'start_date': 'Укажите дату начала.'})
+        effective_addons = addons
+        if effective_addons is None and self.instance:
+            effective_addons = [
+                {'catalog_item': item.catalog_item, 'quantity': item.quantity}
+                for item in self.instance.subscription_addons.all()
+                if item.catalog_item_id
+            ]
+        effective_price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
+        addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (effective_addons or [])), Decimal('0'))
+        client = attrs.get('client', self.instance.client if self.instance else None)
+        branch = attrs.get('branch', self.instance.branch if self.instance else None) or (client.branch if client else None)
+        discount = attrs.get('discount', self.instance.discount if self.instance else None)
+        calculation = calculate_discount(Decimal(effective_price or 0) + addons_sum, discount, branch=branch, calculation_date=attrs.get('purchase_date'))
+        attrs['discount_name'] = calculation['discount_name']
+        attrs['discount_type'] = calculation['discount_type']
+        attrs['discount_value'] = calculation['discount_value']
+        attrs['discount_amount'] = calculation['discount_amount']
+        if 'paid_amount' not in initial_data and self.instance is None and attrs.get('payment_method'):
+            attrs['paid_amount'] = calculation['total_price']
+        paid_amount = attrs.get('paid_amount', self.instance.paid_amount if self.instance else Decimal('0'))
+        if paid_amount < 0:
+            raise serializers.ValidationError({'paid_amount': 'Сумма оплаты не может быть отрицательной.'})
+        if self.instance is None and paid_amount > 0 and not attrs.get('purchase_date'):
+            attrs['purchase_date'] = timezone.localdate()
         return attrs
 
     def create(self, validated_data):
@@ -721,6 +805,23 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
+        branch = attrs.get('branch', self.instance.branch if self.instance else None)
+        discount = attrs.get('discount', self.instance.discount if self.instance else None)
+        calculation = calculate_discount(price, discount, branch=branch, calculation_date=attrs.get('payment_date'))
+        attrs['discount_name'] = calculation['discount_name']
+        attrs['discount_type'] = calculation['discount_type']
+        attrs['discount_value'] = calculation['discount_value']
+        attrs['discount_amount'] = calculation['discount_amount']
+        initial_data = getattr(self, 'initial_data', {})
+        if self.instance is None and 'payment_amount' not in initial_data:
+            attrs['payment_amount'] = calculation['total_price']
+        if attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0')) < 0:
+            raise serializers.ValidationError({'payment_amount': 'Сумма оплаты не может быть отрицательной.'})
+        return attrs
+
     def create(self, validated_data):
         client = validated_data.pop('client', None)
         payment_method = validated_data.pop('payment_method', None)
@@ -794,6 +895,12 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         attrs = super().validate(attrs)
         amount = attrs.get('amount', self.instance.amount if self.instance else 0)
         method = attrs.get('payment_method', self.instance.payment_method if self.instance else None)
+        transaction_type = attrs.get('transaction_type', self.instance.transaction_type if self.instance else None)
+        discount = attrs.get('discount', self.instance.discount if self.instance else None)
+        if transaction_type == FinanceTransaction.Type.EXPENSE and discount:
+            raise serializers.ValidationError({'discount': 'Скидка не применяется к расходам.'})
+        if amount is not None and amount < 0:
+            raise serializers.ValidationError({'amount': 'Сумма операции не может быть отрицательной.'})
         if amount and amount > 0 and not method and self.instance is None:
             raise serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
         return attrs
@@ -801,6 +908,13 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     def create(self, validated_data):
         payment_method = validated_data.get('payment_method')
         validated_data['payment_method_name'] = payment_method.name if payment_method else ''
+        if not validated_data.get('paid_at'):
+            validated_data['paid_at'] = timezone.make_aware(datetime.combine(timezone.localdate(), time.min))
+        if not validated_data.get('subtotal_amount'):
+            validated_data['subtotal_amount'] = validated_data.get('amount') or 0
+        discount = validated_data.get('discount')
+        if discount and not validated_data.get('discount_name'):
+            validated_data['discount_name'] = discount.name
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

@@ -3,11 +3,14 @@ import { useState } from 'react';
 import api from '../api/axios.js';
 import KanbanBoard from '../components/ui/KanbanBoard.jsx';
 import KanbanCard from '../components/ui/KanbanCard.jsx';
+import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
+import useDiscounts from '../hooks/useDiscounts.js';
+import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
 
 const masterClassStages = [
   { value: 'lead', label: 'Лид' },
@@ -30,6 +33,7 @@ const empty = {
   capacity: 0,
   price: 0,
   payment_amount: 0,
+  discount: '',
   payment_method: '',
   participants: [],
 };
@@ -122,13 +126,33 @@ export default function MasterClassesPage() {
   const canDelete = canDeleteDangerous(user);
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
+  const { getDiscountById } = useDiscounts({ branch: form.branch });
+  const selectedDiscount = getDiscountById(form.discount);
+  const discountAmount = calculateDiscountAmount(form.price, selectedDiscount);
+  const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
+  const changeDiscount = (value) => {
+    const discount = getDiscountById(value);
+    setForm({ ...form, discount: value, payment_amount: form.id ? form.payment_amount : calculateDiscountedTotal(form.price, discount) });
+  };
   const fields = [
     baseFields[0],
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
+    { name: 'discount', type: 'custom', className: '', render: () => <DiscountSelect value={form.discount} onChange={changeDiscount} branch={form.branch} /> },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     ...baseFields.slice(1),
+    {
+      name: 'price_summary',
+      type: 'custom',
+      render: () => (
+        <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700">
+          <p>Промежуточный итог: {money(form.price)}</p>
+          <p className="text-emerald-700">Скидка: −{money(discountAmount)}</p>
+          <p className="mt-1 text-base text-slate-900">Итого: {money(totalAfterDiscount)}</p>
+        </div>
+      ),
+    },
     { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
   ];
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);

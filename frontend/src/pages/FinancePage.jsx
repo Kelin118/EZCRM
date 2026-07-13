@@ -5,12 +5,13 @@ import api from '../api/axios.js';
 import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
 import AddonSaleModal from '../components/sales/AddonSaleModal.jsx';
 import useBranches from '../hooks/useBranches.js';
+import useDiscounts from '../hooks/useDiscounts.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
-const emptyFilters = { transaction_type: '', payment_method: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
+const emptyFilters = { transaction_type: '', payment_method: 'all', discount: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
   { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительные услуги' },
@@ -24,6 +25,7 @@ export default function FinancePage() {
   const crud = useCrudResource('finance/', emptyFilters);
   const { branchOptions, branchFilterOptions } = useBranches();
   const { options: paymentOptions } = usePaymentMethods({ activeOnly: true });
+  const { options: discountOptions } = useDiscounts({ branch: crud.filters.branch });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const [summary, setSummary] = useState({ income: 0, expense: 0, balance: 0, transactions_count: 0, average_income: 0 });
@@ -90,6 +92,7 @@ export default function FinancePage() {
         <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <SelectField label="Тип" value={crud.filters.transaction_type} onChange={(value) => crud.setFilters({ ...crud.filters, transaction_type: value })} options={[{ value: '', label: 'Все операции' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
         <SelectField label="Способ оплаты" value={crud.filters.payment_method} onChange={(value) => crud.setFilters({ ...crud.filters, payment_method: value })} options={[{ value: 'all', label: 'Все способы' }, ...paymentOptions, { value: 'unassigned', label: 'Не указан' }]} />
+        <SelectField label="Скидка" value={crud.filters.discount} onChange={(value) => crud.setFilters({ ...crud.filters, discount: value })} options={[{ value: 'all', label: 'Все скидки' }, ...discountOptions, { value: 'unassigned', label: 'Без скидки' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: 'all', label: 'Все менеджеры' }, ...managerOptions, { value: 'unassigned', label: 'Не указан' }]} />
         <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все клиенты' }, ...clientOptions]} />
         <Input label="Поиск" value={crud.filters.search} onChange={(event) => crud.setFilters({ ...crud.filters, search: event.target.value })} />
@@ -98,7 +101,13 @@ export default function FinancePage() {
       <Table data={crud.items} columns={[
         { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—' },
         { key: 'type', header: 'Тип', render: (row) => <Badge value={row.transaction_type}>{typeLabel(row.transaction_type)}</Badge> },
-        { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
+        { key: 'amount', header: 'Сумма', render: (row) => (
+          <div className="text-sm">
+            <p>{money(row.subtotal_amount || row.amount)}</p>
+            {Number(row.discount_amount || 0) > 0 && <p className="text-emerald-700">Скидка: −{money(row.discount_amount)}</p>}
+            <p className="font-bold">Оплачено: {money(row.amount)}</p>
+          </div>
+        ) },
         { key: 'payment_method_name', header: 'Способ оплаты', render: (row) => row.payment_method_name || 'Не указан' },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
         { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },

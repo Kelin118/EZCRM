@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import Modal from '../components/ui/Modal.jsx';
+import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
@@ -12,6 +13,8 @@ import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { todayLocalDate } from '../utils/dateTime.js';
+import useDiscounts from '../hooks/useDiscounts.js';
+import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
 
 const trialStages = [
   { value: 'lead', label: 'Лид' },
@@ -24,7 +27,7 @@ const trialStages = [
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, payment_method: '', bought_subscription: false, notes: '' };
 const todayIso = todayLocalDate;
 
-const emptyConvertForm = { service: '', addons: [], subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: '', comment: 'Купил после пробного' };
+const emptyConvertForm = { service: '', addons: [], discount: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: '', payment_date: todayIso(), comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -203,6 +206,7 @@ export default function TrialsPage() {
   const [paymentTouched, setPaymentTouched] = useState(false);
   const [converting, setConverting] = useState(false);
   const [message, setMessage] = useState('');
+  const { getDiscountById } = useDiscounts({ branch: convertTrial?.branch || '' });
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -221,6 +225,10 @@ export default function TrialsPage() {
   const lost = crud.items.filter((item) => trialColumnId(item) === 'lost').length;
   const paidTotal = crud.items.reduce((sum, item) => sum + Number(item.price || 0), 0);
   const conversion = total ? Math.round((bought / total) * 100) : 0;
+  const convertSubtotal = Number(convertForm.price || 0) + addonsTotal(convertForm.addons, addonCatalogItems);
+  const convertDiscount = getDiscountById(convertForm.discount);
+  const convertDiscountAmount = calculateDiscountAmount(convertSubtotal, convertDiscount);
+  const convertTotal = calculateDiscountedTotal(convertSubtotal, convertDiscount);
 
   const editTrial = (row) => {
     const { status, ...editableRow } = row;
@@ -236,6 +244,7 @@ export default function TrialsPage() {
       price: Number(trial.price || 0),
       payment_amount: Number(trial.price || 0),
       start_date: todayIso(),
+      payment_date: todayIso(),
     });
     setPaymentTouched(false);
   };
@@ -274,23 +283,30 @@ export default function TrialsPage() {
     const service = services.find((item) => String(item.id) === String(value));
     const startDate = convertForm.start_date || todayIso();
     const basePrice = Number(service?.price || 0);
-    const nextTotal = basePrice + addonsTotal(convertForm.addons, addonCatalogItems);
+    const nextSubtotal = basePrice + addonsTotal(convertForm.addons, addonCatalogItems);
     updateConvertForm({
       service: value,
       subscription_type: service?.name || '',
       total_visits: service?.lessons_count || 0,
       price: basePrice,
-      payment_amount: paymentTouched ? convertForm.payment_amount : nextTotal,
+      payment_amount: paymentTouched ? convertForm.payment_amount : calculateDiscountedTotal(nextSubtotal, getDiscountById(convertForm.discount)),
       start_date: startDate,
       end_date: calculateEndDateFromService(startDate, service),
     });
   };
 
   const setConvertAddons = (value) => {
-    const nextTotal = Number(convertForm.price || 0) + addonsTotal(value, addonCatalogItems);
+    const nextSubtotal = Number(convertForm.price || 0) + addonsTotal(value, addonCatalogItems);
     updateConvertForm({
       addons: value,
-      payment_amount: paymentTouched ? convertForm.payment_amount : nextTotal,
+      payment_amount: paymentTouched ? convertForm.payment_amount : calculateDiscountedTotal(nextSubtotal, getDiscountById(convertForm.discount)),
+    });
+  };
+
+  const setConvertDiscount = (value) => {
+    updateConvertForm({
+      discount: value,
+      payment_amount: paymentTouched ? convertForm.payment_amount : calculateDiscountedTotal(convertSubtotal, getDiscountById(value)),
     });
   };
 
@@ -385,15 +401,19 @@ export default function TrialsPage() {
             onCatalogItemsChange={setAddonCatalogItems}
             onChange={setConvertAddons}
           />
+          <DiscountSelect value={convertForm.discount} onChange={setConvertDiscount} branch={convertTrial?.branch || ''} />
           <Input label="Дата начала" type="date" value={convertForm.start_date} onChange={(event) => setConvertStartDate(event.target.value)} />
           <Input label="Дата окончания" type="date" value={convertForm.end_date} onChange={(event) => updateConvertForm({ end_date: event.target.value })} />
           <Input label="Количество занятий" type="number" value={convertForm.total_visits} onChange={(event) => updateConvertForm({ total_visits: Number(event.target.value) })} />
           <Input label="Цена" type="number" value={convertForm.price} onChange={(event) => updateConvertForm({ price: Number(event.target.value) })} />
           <Input label="Сумма оплаты" type="number" value={convertForm.payment_amount} onChange={(event) => { setPaymentTouched(true); updateConvertForm({ payment_amount: Number(event.target.value) }); }} />
+          <Input label="Дата оплаты" type="date" value={convertForm.payment_date} onChange={(event) => updateConvertForm({ payment_date: event.target.value })} />
           <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700 md:col-span-2">
             <p>Основная услуга: {money(convertForm.price)}</p>
             <p>Дополнительные услуги: {money(addonsTotal(convertForm.addons, addonCatalogItems))}</p>
-            <p className="mt-1 text-base text-slate-900">Итого: {money(Number(convertForm.price || 0) + addonsTotal(convertForm.addons, addonCatalogItems))}</p>
+            <p>Промежуточный итог: {money(convertSubtotal)}</p>
+            <p className="text-emerald-700">Скидка: −{money(convertDiscountAmount)}</p>
+            <p className="mt-1 text-base text-slate-900">Итого: {money(convertTotal)}</p>
           </div>
           <SelectField
             label="Способ оплаты"

@@ -6,9 +6,12 @@ import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../au
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
 import { todayLocalDate } from '../utils/dateTime.js';
+import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
+import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const empty = {
@@ -25,6 +28,7 @@ const empty = {
   branch: '',
   service: '',
   addons: [],
+  discount: '',
   payment_method: '',
   comment: '',
 };
@@ -35,7 +39,7 @@ const baseFields = [
   { name: 'title', label: 'Название' },
   { name: 'start_date', label: 'Дата начала', type: 'date' },
   { name: 'end_date', label: 'Дата окончания', type: 'date' },
-  { name: 'purchase_date', label: 'Дата покупки', type: 'date' },
+  { name: 'purchase_date', label: 'Дата оплаты', type: 'date' },
   { name: 'total_visits', label: 'Всего занятий', type: 'number' },
   { name: 'remaining_visits', label: 'Осталось занятий', type: 'number' },
   { name: 'price', label: 'Стоимость', type: 'number' },
@@ -90,7 +94,11 @@ export default function SubscriptionsPage() {
   }));
   const selectedService = services.find((item) => String(item.id) === String(form.service));
   const currentAddonsTotal = addonsTotal(form.addons, addonCatalogItems);
-  const currentTotalPrice = Number(form.price || 0) + currentAddonsTotal;
+  const subtotalPrice = Number(form.price || 0) + currentAddonsTotal;
+  const { getDiscountById } = useDiscounts({ branch: form.branch });
+  const selectedDiscount = getDiscountById(form.discount);
+  const currentDiscountAmount = calculateDiscountAmount(subtotalPrice, selectedDiscount);
+  const currentTotalPrice = calculateDiscountedTotal(subtotalPrice, selectedDiscount);
   const hasService = Boolean(form.service);
   const selectedAddons = addonPayload(form.addons);
   const calculateEndDate = (startDate, service) => calculateEndDateFromService(startDate, service);
@@ -105,17 +113,26 @@ export default function SubscriptionsPage() {
       price: service?.price ?? 0,
       total_visits: service?.lessons_count ?? 0,
       remaining_visits: service ? (current.id ? current.remaining_visits : (service?.lessons_count ?? current.remaining_visits)) : 0,
-      paid_amount: current.id || paymentTouched ? current.paid_amount : (Number(service?.price || 0) + addonsTotal(current.addons, addonCatalogItems)),
+      paid_amount: current.id || paymentTouched ? current.paid_amount : calculateDiscountedTotal(Number(service?.price || 0) + addonsTotal(current.addons, addonCatalogItems), getDiscountById(current.discount)),
       start_date: startDate,
       end_date: service ? endDate : '',
     });
   };
   const changeAddons = (value, current, update) => {
-    const nextTotal = Number(current.price || 0) + addonsTotal(value, addonCatalogItems);
+    const nextSubtotal = Number(current.price || 0) + addonsTotal(value, addonCatalogItems);
     update({
       ...current,
       addons: value,
-      paid_amount: current.id || paymentTouched ? current.paid_amount : nextTotal,
+      paid_amount: current.id || paymentTouched ? current.paid_amount : calculateDiscountedTotal(nextSubtotal, getDiscountById(current.discount)),
+    });
+  };
+  const changeDiscount = (value, current, update) => {
+    const discount = getDiscountById(value);
+    const subtotal = Number(current.price || 0) + addonsTotal(current.addons, addonCatalogItems);
+    update({
+      ...current,
+      discount: value,
+      paid_amount: current.id || paymentTouched ? current.paid_amount : calculateDiscountedTotal(subtotal, discount),
     });
   };
   const changeStartDate = (value, current, update) => {
@@ -162,6 +179,7 @@ export default function SubscriptionsPage() {
         branch: numericBranchOrNull(current.branch),
         payment_method: current.payment_method ? Number(current.payment_method) : null,
         sale_date: current.purchase_date || todayIso(),
+        discount: current.discount ? Number(current.discount) : null,
         items: addons,
         payment_amount: current.paid_amount,
         comment: current.comment || '',
@@ -190,6 +208,14 @@ export default function SubscriptionsPage() {
           onCatalogItemsChange={setAddonCatalogItems}
           onChange={(value) => changeAddons(value, current, update)}
         />
+      ),
+    },
+    {
+      name: 'discount',
+      type: 'custom',
+      className: '',
+      render: (current, update) => (
+        <DiscountSelect value={current.discount} onChange={(value) => changeDiscount(value, current, update)} branch={current.branch} />
       ),
     },
     ...baseFields
@@ -224,6 +250,8 @@ export default function SubscriptionsPage() {
           <p className="mb-2 text-slate-900">Стоимость</p>
           <p>Основная услуга: {money(form.price)}</p>
           <p>Дополнительные услуги: {money(currentAddonsTotal)}</p>
+          <p>Промежуточный итог: {money(subtotalPrice)}</p>
+          <p className="text-emerald-700">Скидка: −{money(currentDiscountAmount)}</p>
           <p className="mt-2 text-base text-slate-900">Итого: {money(currentTotalPrice)}</p>
         </div>
       ),

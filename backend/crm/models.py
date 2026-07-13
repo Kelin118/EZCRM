@@ -50,6 +50,27 @@ class Client(TimeStampedModel):
         return full_name or self.phone or f'Client #{self.pk}'
 
 
+class Discount(TimeStampedModel):
+    class Type(models.TextChoices):
+        PERCENTAGE = 'percentage', 'Percentage'
+        FIXED = 'fixed', 'Fixed'
+
+    name = models.CharField(max_length=150)
+    discount_type = models.CharField(max_length=20, choices=Type.choices)
+    value = models.DecimalField(max_digits=10, decimal_places=2)
+    description = models.TextField(blank=True)
+    valid_from = models.DateField(null=True, blank=True)
+    valid_until = models.DateField(null=True, blank=True)
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='discounts')
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ('name',)
+
+    def __str__(self):
+        return self.name
+
+
 class Subscription(TimeStampedModel):
     class Status(models.TextChoices):
         ACTIVE = 'active', 'Active'
@@ -75,6 +96,11 @@ class Subscription(TimeStampedModel):
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     purchase_date = models.DateField(null=True, blank=True)
+    discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='subscriptions')
+    discount_name = models.CharField(max_length=150, blank=True, default='')
+    discount_type = models.CharField(max_length=20, blank=True, default='')
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     finance_transaction = models.OneToOneField(
         'FinanceTransaction',
@@ -138,6 +164,11 @@ class AddonSale(TimeStampedModel):
     total_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     sale_date = models.DateField(default=timezone.localdate)
+    discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='addon_sales')
+    discount_name = models.CharField(max_length=150, blank=True, default='')
+    discount_type = models.CharField(max_length=20, blank=True, default='')
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     comment = models.TextField(blank=True)
     finance_transaction = models.OneToOneField(
         'FinanceTransaction',
@@ -484,6 +515,11 @@ class MasterClass(TimeStampedModel):
     stage = models.CharField(max_length=20, choices=Stage.choices, default=Stage.PLANNED)
     payment_date = models.DateField(null=True, blank=True)
     payment_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
+    discount_name = models.CharField(max_length=150, blank=True, default='')
+    discount_type = models.CharField(max_length=20, blank=True, default='')
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     capacity = models.PositiveIntegerField(default=0)
     participants = models.ManyToManyField(Client, blank=True, related_name='master_classes')
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -541,6 +577,16 @@ class FinanceTransaction(TimeStampedModel):
     transaction_type = models.CharField(max_length=20, choices=Type.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     source = models.CharField(max_length=100, blank=True)
+    subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount = models.ForeignKey(
+        Discount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='finance_transactions',
+    )
+    discount_name = models.CharField(max_length=150, blank=True, default='')
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_method = models.ForeignKey(
         'PaymentMethod',
         on_delete=models.SET_NULL,
@@ -677,6 +723,10 @@ class AuditLog(models.Model):
         PAYMENT_METHOD_UPDATE = 'payment_method_update', 'Payment method update'
         PAYMENT_METHOD_DISABLE = 'payment_method_disable', 'Payment method disable'
         PAYMENT_METHOD_ENABLE = 'payment_method_enable', 'Payment method enable'
+        DISCOUNT_CREATE = 'discount_create', 'Discount create'
+        DISCOUNT_UPDATE = 'discount_update', 'Discount update'
+        DISCOUNT_DISABLE = 'discount_disable', 'Discount disable'
+        DISCOUNT_ENABLE = 'discount_enable', 'Discount enable'
         GROUP_UPDATE = 'group_update', 'Group update'
         GROUP_DISABLE = 'group_disable', 'Group disable'
         GROUP_ENABLE = 'group_enable', 'Group enable'

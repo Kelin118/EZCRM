@@ -39,6 +39,7 @@ from .models import (
     CatalogItem,
     ChatMessage,
     Client,
+    Discount,
     FinanceTransaction,
     GroupMembership,
     Lesson,
@@ -65,6 +66,7 @@ from .permissions import (
     ChatPermission,
     ClientPermission,
     DashboardPermission,
+    DiscountPermission,
     ExcelImportPermission,
     EducationPermission,
     BackupPermission,
@@ -90,6 +92,7 @@ from .serializers import (
     CatalogItemSerializer,
     ChatMessageSerializer,
     ClientSerializer,
+    DiscountSerializer,
     FinanceTransactionSerializer,
     GroupMembershipSerializer,
     LessonSerializer,
@@ -105,7 +108,8 @@ from .serializers import (
     TrialSerializer,
     VisitSerializer,
 )
-from .subscription_addons import addons_comment, sync_subscription_addons, total_price, validate_addons_payload
+from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
+from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
 from users.role_hierarchy import manageable_by_manager
 
@@ -179,12 +183,33 @@ def _resolve_payment_method(value, *, required=False):
     return method
 
 
-def _create_income_transaction(*, client, amount, source, paid_at, comment, created_by=None, subscription=None, payment_method=None, branch=None):
+def _create_income_transaction(
+    *,
+    client,
+    amount,
+    source,
+    paid_at=None,
+    payment_date=None,
+    comment,
+    created_by=None,
+    subscription=None,
+    payment_method=None,
+    branch=None,
+    discount=None,
+    discount_name='',
+    discount_amount=0,
+    subtotal_amount=None,
+):
+    paid_at = paid_at or _paid_at_from_date(payment_date or timezone.localdate())
     return FinanceTransaction.objects.create(
         branch=branch,
         transaction_type=FinanceTransaction.Type.INCOME,
         amount=amount,
         source=source,
+        subtotal_amount=subtotal_amount if subtotal_amount is not None else amount,
+        discount=discount,
+        discount_name=discount_name or (discount.name if discount else ''),
+        discount_amount=discount_amount or 0,
         client=client,
         subscription=subscription,
         created_by=created_by,
@@ -1238,12 +1263,15 @@ class LessonViewSet(EducationBaseViewSet):
                     return Response({'detail': 'Количество занятий должно быть больше 0.'}, status=status.HTTP_400_BAD_REQUEST)
                 price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else service.price))
                 addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
-                full_price = price + addons_sum
-                payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
+                branch = lesson.branch or lesson.group.branch or client.branch
+                discount = Discount.objects.filter(pk=request.data.get('discount')).first() if request.data.get('discount') else None
+                discount_result = calculate_discount(price + addons_sum, discount, branch=branch, calculation_date=parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate())
+                payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price']))
                 try:
                     payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
                 except ValueError as error:
                     return Response({'payment_method': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+                purchase_date = parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate()
                 end_date = parse_date(request.data.get('end_date') or '') or calculate_subscription_end_date(
                     start_date,
                     lessons_count=total_visits,
@@ -1252,7 +1280,7 @@ class LessonViewSet(EducationBaseViewSet):
                     service_schedule_days=service.schedule_days,
                 )
                 created_subscription = Subscription.objects.create(
-                    branch=lesson.branch or lesson.group.branch or client.branch,
+                    branch=branch,
                     service=service,
                     client=client,
                     title=service.name,
@@ -1262,7 +1290,12 @@ class LessonViewSet(EducationBaseViewSet):
                     remaining_visits=remaining_visits,
                     price=price,
                     paid_amount=payment_amount,
-                    purchase_date=start_date,
+                    purchase_date=purchase_date,
+                    discount=discount_result['discount'],
+                    discount_name=discount_result['discount_name'],
+                    discount_type=discount_result['discount_type'],
+                    discount_value=discount_result['discount_value'],
+                    discount_amount=discount_result['discount_amount'],
                     status=Subscription.Status.ACTIVE,
                 )
                 sync_subscription_addons(created_subscription, addons)
@@ -1271,11 +1304,15 @@ class LessonViewSet(EducationBaseViewSet):
                         client=client,
                         amount=payment_amount,
                         source='subscription',
-                        paid_at=_paid_at_from_date(start_date),
+                        payment_date=purchase_date,
                         comment=addons_comment(created_subscription, 'Оплата абонемента из посещений'),
                         created_by=request.user,
                         subscription=created_subscription,
                         payment_method=payment_method,
+                        discount=created_subscription.discount,
+                        discount_name=created_subscription.discount_name,
+                        discount_amount=created_subscription.discount_amount,
+                        subtotal_amount=price + addons_sum,
                     )
                     created_subscription.finance_transaction = finance_transaction
                     created_subscription.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1478,7 +1515,7 @@ class ClientViewSet(BaseAuthenticatedViewSet):
 
 class SubscriptionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, SubscriptionPermission)
-    queryset = Subscription.objects.select_related('client', 'service', 'finance_transaction').prefetch_related('subscription_addons').all()
+    queryset = Subscription.objects.select_related('client', 'service', 'discount', 'finance_transaction').prefetch_related('subscription_addons').all()
     serializer_class = SubscriptionSerializer
     audit_entity_type = 'Subscription'
     audit_update_description = 'Изменён абонемент'
@@ -1497,7 +1534,11 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                 for addon in subscription.subscription_addons.all()
             ],
             'addons_total': str(total_price(subscription) - Decimal(subscription.price or 0)),
+            'discount_name': subscription.discount_name,
+            'discount_amount': str(subscription.discount_amount),
             'total_price': str(total_price(subscription)),
+            'payment_amount': str(subscription.paid_amount),
+            'payment_date': str(subscription.purchase_date or ''),
         })
         return changes
 
@@ -1536,11 +1577,15 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     client=subscription.client,
                     amount=subscription.paid_amount,
                     source='subscription',
-                    paid_at=_paid_at_from_date(subscription.purchase_date),
+                    payment_date=subscription.purchase_date,
                     comment=addons_comment(subscription),
                     created_by=self.request.user,
                     subscription=subscription,
                     payment_method=payment_method,
+                    discount=subscription.discount,
+                    discount_name=subscription.discount_name,
+                    discount_amount=subscription.discount_amount,
+                    subtotal_amount=Decimal(subscription.price or 0) + addons_total(subscription),
                 )
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1740,8 +1785,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
         price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
         addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
-        full_price = price + addons_sum
-        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else full_price))
+        branch = trial.branch or trial.client.branch
+        discount = Discount.objects.filter(pk=request.data.get('discount')).first() if request.data.get('discount') else None
+        discount_result = calculate_discount(price + addons_sum, discount, branch=branch, calculation_date=purchase_date)
+        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price']))
         try:
             payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
         except ValueError as error:
@@ -1773,7 +1820,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
         with transaction.atomic():
             subscription = Subscription.objects.create(
-                branch=trial.branch or trial.client.branch,
+                branch=branch,
                 service=service,
                 client=trial.client,
                 title=title,
@@ -1784,6 +1831,11 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 price=price,
                 paid_amount=payment_amount,
                 purchase_date=purchase_date,
+                discount=discount_result['discount'],
+                discount_name=discount_result['discount_name'],
+                discount_type=discount_result['discount_type'],
+                discount_value=discount_result['discount_value'],
+                discount_amount=discount_result['discount_amount'],
                 status=Subscription.Status.ACTIVE,
             )
             sync_subscription_addons(subscription, addons)
@@ -1798,6 +1850,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     created_by=request.user,
                     subscription=subscription,
                     payment_method=payment_method,
+                    discount=subscription.discount,
+                    discount_name=subscription.discount_name,
+                    discount_amount=subscription.discount_amount,
+                    subtotal_amount=price + addons_sum,
                 )
                 subscription.finance_transaction = finance_transaction
                 subscription.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1833,7 +1889,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
-    queryset = MasterClass.objects.select_related('manager', 'teacher').prefetch_related('participants').all()
+    queryset = MasterClass.objects.select_related('manager', 'teacher', 'discount').prefetch_related('participants').all()
     serializer_class = MasterClassSerializer
     audit_entity_type = 'MasterClass'
     audit_update_description = 'Изменён МК'
@@ -1873,6 +1929,9 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
     def perform_create(self, serializer):
         with transaction.atomic():
             master_class = serializer.save()
+            if master_class.payment_amount > 0 and not master_class.payment_date:
+                master_class.payment_date = timezone.localdate()
+                master_class.save(update_fields=('payment_date', 'updated_at'))
             if master_class.payment_amount > 0 and master_class.payment_date and not master_class.finance_transaction_id:
                 payment_method = getattr(master_class, 'selected_payment_method', None)
                 if not payment_method:
@@ -1882,10 +1941,14 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     client=client,
                     amount=master_class.payment_amount,
                     source='master_class',
-                    paid_at=_paid_at_from_date(master_class.payment_date),
+                    payment_date=master_class.payment_date,
                     comment='Оплата МК',
                     created_by=self.request.user,
                     payment_method=payment_method,
+                    discount=master_class.discount,
+                    discount_name=master_class.discount_name,
+                    discount_amount=master_class.discount_amount,
+                    subtotal_amount=master_class.price,
                 )
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1960,7 +2023,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, AddonSalePermission)
     queryset = (
         AddonSale.objects
-        .select_related('client', 'branch', 'created_by', 'payment_method', 'finance_transaction')
+        .select_related('client', 'branch', 'created_by', 'payment_method', 'discount', 'finance_transaction')
         .prefetch_related('items')
         .all()
     )
@@ -2021,6 +2084,8 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                 for item in sale.items.all()
             ],
             'total_price': str(sale.total_price),
+            'discount_name': sale.discount_name,
+            'discount_amount': str(sale.discount_amount),
             'payment_amount': str(sale.payment_amount),
             'payment_method': sale.payment_method_id,
             'payment_method_name': sale.payment_method_name,
@@ -2036,11 +2101,15 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     client=sale.client,
                     amount=sale.payment_amount,
                     source='addon',
-                    paid_at=_paid_at_from_date(sale.sale_date),
+                    payment_date=sale.sale_date,
                     comment=self._sale_comment(sale),
                     created_by=self.request.user,
                     payment_method=sale.payment_method,
                     branch=sale.branch,
+                    discount=sale.discount,
+                    discount_name=sale.discount_name,
+                    discount_amount=sale.discount_amount,
+                    subtotal_amount=sale.total_price + sale.discount_amount,
                 )
                 sale.finance_transaction = finance_transaction
                 sale.save(update_fields=('finance_transaction', 'updated_at'))
@@ -2053,6 +2122,10 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
             if sale.payment_amount and sale.payment_amount > 0:
                 if finance_transaction:
                     finance_transaction.amount = sale.payment_amount
+                    finance_transaction.subtotal_amount = sale.total_price + sale.discount_amount
+                    finance_transaction.discount = sale.discount
+                    finance_transaction.discount_name = sale.discount_name
+                    finance_transaction.discount_amount = sale.discount_amount
                     finance_transaction.client = sale.client
                     finance_transaction.branch = sale.branch
                     finance_transaction.payment_method = sale.payment_method
@@ -2061,6 +2134,10 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.comment = self._sale_comment(sale)
                     finance_transaction.save(update_fields=(
                         'amount',
+                        'subtotal_amount',
+                        'discount',
+                        'discount_name',
+                        'discount_amount',
                         'client',
                         'branch',
                         'payment_method',
@@ -2074,11 +2151,15 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         client=sale.client,
                         amount=sale.payment_amount,
                         source='addon',
-                        paid_at=_paid_at_from_date(sale.sale_date),
+                        payment_date=sale.sale_date,
                         comment=self._sale_comment(sale),
                         created_by=self.request.user,
                         payment_method=sale.payment_method,
                         branch=sale.branch,
+                        discount=sale.discount,
+                        discount_name=sale.discount_name,
+                        discount_amount=sale.discount_amount,
+                        subtotal_amount=sale.total_price + sale.discount_amount,
                     )
                     sale.finance_transaction = finance_transaction
                     sale.save(update_fields=('finance_transaction', 'updated_at'))
@@ -2087,7 +2168,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'addon_sale').prefetch_related('addon_sale__items').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('addon_sale__items').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -2109,6 +2190,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         transaction_type = self.request.query_params.get('transaction_type') or self.request.query_params.get('type')
         source = self.request.query_params.get('source')
         payment_method = self.request.query_params.get('payment_method')
+        discount = self.request.query_params.get('discount')
         client = self.request.query_params.get('client')
         manager = self.request.query_params.get('manager')
         search = self.request.query_params.get('search')
@@ -2121,6 +2203,8 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(source=source)
         if payment_method and payment_method != 'all':
             queryset = queryset.filter(payment_method__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_method_id=payment_method)
+        if discount and discount != 'all':
+            queryset = queryset.filter(discount__isnull=True) if discount == 'unassigned' else queryset.filter(discount_id=discount)
         if manager and manager != 'all':
             queryset = queryset.filter(created_by__isnull=True) if manager == 'unassigned' else queryset.filter(created_by_id=manager)
         if client:
@@ -2161,6 +2245,57 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             'transactions_count': queryset.count(),
             'average_income': income / income_count if income_count else Decimal('0'),
         })
+
+
+class DiscountViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, DiscountPermission)
+    queryset = Discount.objects.select_related('branch').all()
+    serializer_class = DiscountSerializer
+    audit_entity_type = 'Discount'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        branch = self.request.query_params.get('branch')
+        active = self.request.query_params.get('is_active')
+        available = self.request.query_params.get('available')
+        search = self.request.query_params.get('search')
+        today = timezone.localdate()
+        if branch and branch != 'all':
+            if branch == 'unassigned':
+                queryset = queryset.filter(branch__isnull=True)
+            else:
+                queryset = queryset.filter(Q(branch__isnull=True) | Q(branch_id=branch))
+        if active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        if available in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True).filter(
+                Q(valid_from__isnull=True) | Q(valid_from__lte=today),
+                Q(valid_until__isnull=True) | Q(valid_until__gte=today),
+            )
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(description__icontains=search))
+        return queryset.order_by('name')
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.DISCOUNT_CREATE, instance, 'Создана скидка', self._audit_changes())
+
+    def perform_update(self, serializer):
+        was_active = serializer.instance.is_active
+        instance = serializer.save()
+        action_value, description = AuditLog.Action.DISCOUNT_UPDATE, 'Изменена скидка'
+        if was_active and not instance.is_active:
+            action_value, description = AuditLog.Action.DISCOUNT_DISABLE, 'Отключена скидка'
+        elif not was_active and instance.is_active:
+            action_value, description = AuditLog.Action.DISCOUNT_ENABLE, 'Восстановлена скидка'
+        self._log_instance(action_value, instance, description, self._audit_changes())
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=('is_active', 'updated_at'))
+        self._log_instance(AuditLog.Action.DISCOUNT_DISABLE, instance, 'Отключена скидка', {'is_active': False})
 
 
 class PaymentMethodViewSet(BaseAuthenticatedViewSet):

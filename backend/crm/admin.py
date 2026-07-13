@@ -8,6 +8,7 @@ from .models import (
     CatalogItem,
     ChatMessage,
     Client,
+    Discount,
     FinanceTransaction,
     GroupMembership,
     Lesson,
@@ -64,6 +65,13 @@ class AddonSaleAdmin(admin.ModelAdmin):
 class AddonSaleItemAdmin(admin.ModelAdmin):
     list_display = ('sale', 'name', 'unit_price', 'quantity', 'total_price')
     search_fields = ('sale__client__first_name', 'sale__client__last_name', 'name')
+
+
+@admin.register(Discount)
+class DiscountAdmin(admin.ModelAdmin):
+    list_display = ('name', 'discount_type', 'value', 'branch', 'valid_from', 'valid_until', 'is_active')
+    list_filter = ('discount_type', 'is_active', 'branch')
+    search_fields = ('name', 'description')
 
 
 @admin.register(Subject)

@@ -18,6 +18,7 @@ from .models import (
     Branch,
     CatalogItem,
     Client,
+    Discount,
     FinanceTransaction,
     GroupMembership,
     Lesson,
@@ -421,6 +422,127 @@ class AddonSaleApiTests(APITestCase):
 
         self.assertEqual(SubscriptionAddon.objects.filter(subscription=subscription).count(), 1)
         self.assertEqual(AddonSale.objects.count(), 0)
+
+
+class DiscountApiAndSalesTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='discount-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='discount-manager', password='pass', role='manager', roles=['manager'])
+        self.branch = Branch.objects.create(name='Discount Branch')
+        self.other_branch = Branch.objects.create(name='Other Discount Branch')
+        self.client_obj = Client.objects.create(first_name='Discount', last_name='Client', branch=self.branch)
+        self.payment_method = PaymentMethod.objects.create(name='Discount cash', code='discount_cash')
+        self.service = CatalogItem.objects.create(name='AB-8', price='45000.00', category=CatalogItem.Category.SERVICE, lessons_count=8, validity_days=30)
+        self.addon = CatalogItem.objects.create(name='Учебники', price='15000.00', category=CatalogItem.Category.ADDON)
+
+    def test_admin_can_create_percentage_and_fixed_discounts(self):
+        self.client.force_authenticate(self.admin)
+
+        percent = self.client.post('/api/discounts/', {'name': 'Скидка 10%', 'discount_type': 'percentage', 'value': '10'}, format='json')
+        fixed = self.client.post('/api/discounts/', {'name': 'Минус 5000', 'discount_type': 'fixed', 'value': '5000'}, format='json')
+
+        self.assertEqual(percent.status_code, 201)
+        self.assertEqual(fixed.status_code, 201)
+        self.assertEqual(Discount.objects.count(), 2)
+
+    def test_discount_validation_and_permissions(self):
+        self.client.force_authenticate(self.admin)
+        too_large = self.client.post('/api/discounts/', {'name': 'Bad', 'discount_type': 'percentage', 'value': '101'}, format='json')
+        zero_fixed = self.client.post('/api/discounts/', {'name': 'Zero', 'discount_type': 'fixed', 'value': '0'}, format='json')
+        self.assertEqual(too_large.status_code, 400)
+        self.assertEqual(zero_fixed.status_code, 400)
+
+        self.client.force_authenticate(self.manager)
+        response = self.client.post('/api/discounts/', {'name': 'Manager', 'discount_type': 'fixed', 'value': '1000'}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_available_filter_excludes_expired_disabled_and_other_branch(self):
+        today = timezone.localdate()
+        active = Discount.objects.create(name='Active', discount_type=Discount.Type.PERCENTAGE, value=10, branch=self.branch)
+        Discount.objects.create(name='Expired', discount_type=Discount.Type.PERCENTAGE, value=10, valid_until=today - timedelta(days=1))
+        Discount.objects.create(name='Disabled', discount_type=Discount.Type.PERCENTAGE, value=10, is_active=False)
+        Discount.objects.create(name='Other branch', discount_type=Discount.Type.PERCENTAGE, value=10, branch=self.other_branch)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/discounts/', {'available': 'true', 'branch': self.branch.id})
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item['id'] for item in response.data}
+        self.assertEqual(ids, {active.id})
+
+    def test_subscription_percentage_discount_creates_snapshot_and_finance(self):
+        discount = Discount.objects.create(name='Скидка 10%', discount_type=Discount.Type.PERCENTAGE, value=10, branch=self.branch)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': self.client_obj.id,
+                'branch': self.branch.id,
+                'service': self.service.id,
+                'addons': [{'catalog_item': self.addon.id, 'quantity': 1}],
+                'discount': discount.id,
+                'payment_method': self.payment_method.id,
+                'start_date': '2026-07-14',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(subscription.discount_name, 'Скидка 10%')
+        self.assertEqual(subscription.discount_amount, Decimal('6000.00'))
+        self.assertEqual(subscription.paid_amount, Decimal('54000.00'))
+        self.assertEqual(response.data['subtotal'], Decimal('60000.00'))
+        self.assertEqual(response.data['total_price'], Decimal('54000.00'))
+        self.assertEqual(transaction.subtotal_amount, Decimal('60000.00'))
+        self.assertEqual(transaction.discount_name, 'Скидка 10%')
+        self.assertEqual(transaction.discount_amount, Decimal('6000.00'))
+        self.assertEqual(transaction.amount, Decimal('54000.00'))
+        self.assertEqual(transaction.paid_at.date(), timezone.localdate())
+
+    def test_fixed_discount_is_capped_by_subtotal_and_snapshot_survives_edit(self):
+        discount = Discount.objects.create(name='Большая скидка', discount_type=Discount.Type.FIXED, value=999999)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/addon-sales/', {
+            'client': self.client_obj.id,
+            'payment_method': self.payment_method.id,
+            'discount': discount.id,
+            'items': [{'catalog_item': self.addon.id, 'quantity': 1}],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        sale = AddonSale.objects.get(pk=response.data['id'])
+        self.assertEqual(sale.discount_amount, Decimal('15000.00'))
+        self.assertEqual(sale.total_price, Decimal('0.00'))
+        self.assertEqual(FinanceTransaction.objects.count(), 0)
+        discount.value = Decimal('5000.00')
+        discount.save(update_fields=('value', 'updated_at'))
+        sale.refresh_from_db()
+        self.assertEqual(sale.discount_amount, Decimal('15000.00'))
+
+    def test_finance_discount_filter_works(self):
+        discount = Discount.objects.create(name='Минус 5000', discount_type=Discount.Type.FIXED, value=5000)
+        FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('10000.00'),
+            subtotal_amount=Decimal('15000.00'),
+            discount=discount,
+            discount_name=discount.name,
+            discount_amount=Decimal('5000.00'),
+            payment_method=self.payment_method,
+        )
+        FinanceTransaction.objects.create(transaction_type=FinanceTransaction.Type.INCOME, amount=Decimal('1000.00'))
+        self.client.force_authenticate(self.manager)
+
+        with_discount = self.client.get('/api/finance/', {'discount': discount.id})
+        without_discount = self.client.get('/api/finance/', {'discount': 'unassigned'})
+
+        self.assertEqual(len(with_discount.data), 1)
+        self.assertEqual(len(without_discount.data), 1)
 
 
 class ClientPhoneDuplicateTests(APITestCase):

@@ -2,10 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 
 import api from '../../api/axios.js';
 import useBranches from '../../hooks/useBranches.js';
+import useDiscounts from '../../hooks/useDiscounts.js';
 import usePaymentMethods from '../../hooks/usePaymentMethods.js';
 import { todayLocalDate } from '../../utils/dateTime.js';
+import { calculateDiscountAmount, calculateDiscountedTotal } from '../../utils/discounts.js';
 import ClientSelectWithCreate from '../clients/ClientSelectWithCreate.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../subscriptions/SubscriptionAddonsSelect.jsx';
+import DiscountSelect from './DiscountSelect.jsx';
 import Button from '../ui/Button.jsx';
 import Input from '../ui/Input.jsx';
 import Modal from '../ui/Modal.jsx';
@@ -39,6 +42,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
   const [branch, setBranch] = useState('');
   const [saleDate, setSaleDate] = useState(todayLocalDate());
   const [paymentMethod, setPaymentMethod] = useState('');
+  const [discount, setDiscount] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [comment, setComment] = useState('');
   const [addons, setAddons] = useState([]);
@@ -47,6 +51,10 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
   const [saving, setSaving] = useState(false);
 
   const total = useMemo(() => addonsTotal(addons, catalogItems), [addons, catalogItems]);
+  const { getDiscountById } = useDiscounts({ branch });
+  const selectedDiscount = getDiscountById(discount);
+  const discountAmount = calculateDiscountAmount(total, selectedDiscount);
+  const discountedTotal = calculateDiscountedTotal(total, selectedDiscount);
   const selectedItems = addonPayload(addons);
 
   useEffect(() => {
@@ -55,6 +63,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
     setBranch('');
     setSaleDate(todayLocalDate());
     setPaymentMethod('');
+    setDiscount('');
     setPaymentAmount('');
     setComment('');
     setAddons([]);
@@ -64,8 +73,8 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
 
   useEffect(() => {
     if (!open || paymentTouched) return;
-    setPaymentAmount(total ? String(total) : '');
-  }, [open, total, paymentTouched]);
+    setPaymentAmount(discountedTotal ? String(discountedTotal) : '');
+  }, [open, discountedTotal, paymentTouched]);
 
   const handlePaymentAmount = (event) => {
     setPaymentTouched(true);
@@ -91,6 +100,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
         branch: branch ? Number(branch) : null,
         payment_method: paymentMethod ? Number(paymentMethod) : null,
         sale_date: saleDate,
+        discount: discount ? Number(discount) : null,
         items: selectedItems,
         payment_amount: paymentAmount === '' ? undefined : paymentAmount,
         comment,
@@ -142,7 +152,8 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
         <div className="md:col-span-2">
           <SubscriptionAddonsSelect value={addons} onChange={setAddons} onCatalogItemsChange={setCatalogItems} />
         </div>
-        <Input label="Дата продажи" type="date" value={saleDate} onChange={(event) => setSaleDate(event.target.value)} />
+        <DiscountSelect value={discount} onChange={setDiscount} branch={branch} />
+        <Input label="Дата оплаты" type="date" value={saleDate} onChange={(event) => setSaleDate(event.target.value)} />
         <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
           Способ оплаты
           <select
@@ -159,7 +170,9 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
         </label>
         <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Итог</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{money(total)}</p>
+          <p className="mt-1 text-sm font-semibold text-slate-600">Промежуточный итог: {money(total)}</p>
+          <p className="mt-1 text-sm font-semibold text-emerald-700">Скидка: −{money(discountAmount)}</p>
+          <p className="mt-1 text-2xl font-bold text-slate-900">{money(discountedTotal)}</p>
         </div>
         <Input label="Оплата" type="number" min="0" step="0.01" value={paymentAmount} onChange={handlePaymentAmount} />
         <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">

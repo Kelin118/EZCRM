@@ -1,4 +1,4 @@
-import { Ban, Building2, CheckCircle2, CreditCard, Edit, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
+import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -33,6 +33,7 @@ const emptyCatalogForm = {
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
 const emptyPaymentMethodForm = { name: '', code: '', description: '', is_active: true, sort_order: 0 };
+const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
 
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
@@ -81,6 +82,9 @@ export default function SettingsPage() {
   const { paymentMethods, refreshPaymentMethods } = usePaymentMethods({ activeOnly: false });
   const [paymentMethodModal, setPaymentMethodModal] = useState({ open: false, item: null });
   const [paymentMethodForm, setPaymentMethodForm] = useState(emptyPaymentMethodForm);
+  const [discounts, setDiscounts] = useState([]);
+  const [discountModal, setDiscountModal] = useState({ open: false, item: null });
+  const [discountForm, setDiscountForm] = useState(emptyDiscountForm);
 
   const activeSection = useMemo(
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
@@ -97,7 +101,33 @@ export default function SettingsPage() {
     });
     loadCatalogItems();
     loadBranches();
+    loadDiscounts();
   }, []);
+
+  const loadDiscounts = async () => {
+    const { data } = await api.get('discounts/');
+    setDiscounts(Array.isArray(data) ? data : data.results || []);
+  };
+
+  const saveDiscount = async () => {
+    const payload = {
+      ...discountForm,
+      value: Number(discountForm.value),
+      branch: discountForm.branch || null,
+      valid_from: discountForm.valid_from || null,
+      valid_until: discountForm.valid_until || null,
+    };
+    if (discountModal.item) await api.patch(`discounts/${discountModal.item.id}/`, payload);
+    else await api.post('discounts/', payload);
+    setDiscountModal({ open: false, item: null });
+    setDiscountForm(emptyDiscountForm);
+    await loadDiscounts();
+  };
+
+  const toggleDiscount = async (discount) => {
+    await api.patch(`discounts/${discount.id}/`, { is_active: !discount.is_active });
+    await loadDiscounts();
+  };
 
   const loadBranches = async () => {
     const { data } = await api.get('branches/');
@@ -316,6 +346,28 @@ export default function SettingsPage() {
             </table>
           </div>
         </SettingsCard>
+        <SettingsCard icon={BadgePercent} title="Скидки" subtitle="Процентные и фиксированные скидки для продаж">
+          {canEditCatalog && <Button className="mb-4" onClick={() => { setDiscountForm(emptyDiscountForm); setDiscountModal({ open: true, item: null }); }}><Plus size={16} />Добавить скидку</Button>}
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="min-w-[900px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
+                <th className="px-4 py-3">Название</th><th className="px-4 py-3">Тип</th><th className="px-4 py-3">Значение</th><th className="px-4 py-3">Филиал</th><th className="px-4 py-3">Действует</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" />
+              </tr></thead>
+              <tbody>{discounts.map((item) => <tr key={item.id} className="border-t border-slate-100">
+                <td className="px-4 py-3 font-semibold">{item.name}</td>
+                <td className="px-4 py-3">{item.discount_type === 'percentage' ? 'Процент' : 'Фикс.'}</td>
+                <td className="px-4 py-3">{item.discount_type === 'percentage' ? `${Number(item.value)}%` : `${money(item.value)} ₸`}</td>
+                <td className="px-4 py-3">{item.branch_name || 'Все филиалы'}</td>
+                <td className="px-4 py-3">{[item.valid_from || '—', item.valid_until || '—'].join(' — ')}</td>
+                <td className="px-4 py-3">{item.is_active ? 'Активна' : 'Отключена'}</td>
+                <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                  {canEditCatalog && <Button variant="secondary" onClick={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
+                  {canEditCatalog && <Button variant="secondary" onClick={() => toggleDiscount(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
+                </div></td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </SettingsCard>
         {catalogSections.map((section) => (
           <CatalogSection
             key={section.category}
@@ -419,6 +471,36 @@ export default function SettingsPage() {
           <Input label="Порядок" type="number" value={paymentMethodForm.sort_order ?? 0} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
+        </div>
+      </Modal>
+
+      <Modal
+        title={discountModal.item ? 'Редактировать скидку' : 'Новая скидка'}
+        open={discountModal.open}
+        onClose={() => setDiscountModal({ open: false, item: null })}
+        footer={<><Button variant="secondary" onClick={() => setDiscountModal({ open: false, item: null })}>Отмена</Button><Button onClick={saveDiscount}>Сохранить</Button></>}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <Input label="Название" value={discountForm.name} onChange={(event) => setDiscountForm({ ...discountForm, name: event.target.value })} />
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            Тип скидки
+            <select value={discountForm.discount_type} onChange={(event) => setDiscountForm({ ...discountForm, discount_type: event.target.value })} className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none">
+              <option value="percentage">Процентная</option>
+              <option value="fixed">Фиксированная</option>
+            </select>
+          </label>
+          <Input label={discountForm.discount_type === 'percentage' ? 'Значение, %' : 'Значение, ₸'} type="number" min="0" value={discountForm.value} onChange={(event) => setDiscountForm({ ...discountForm, value: event.target.value })} />
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            Филиал
+            <select value={discountForm.branch || ''} onChange={(event) => setDiscountForm({ ...discountForm, branch: event.target.value })} className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none">
+              <option value="">Все филиалы</option>
+              {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
+          <Input label="Действует с" type="date" value={discountForm.valid_from || ''} onChange={(event) => setDiscountForm({ ...discountForm, valid_from: event.target.value })} />
+          <Input label="Действует до" type="date" value={discountForm.valid_until || ''} onChange={(event) => setDiscountForm({ ...discountForm, valid_until: event.target.value })} />
+          <Input label="Описание" className="md:col-span-2" value={discountForm.description || ''} onChange={(event) => setDiscountForm({ ...discountForm, description: event.target.value })} />
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={discountForm.is_active} onChange={(event) => setDiscountForm({ ...discountForm, is_active: event.target.checked })} />Активна</label>
         </div>
       </Modal>
 

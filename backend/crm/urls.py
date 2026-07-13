@@ -12,6 +12,7 @@ from .views import (
     ClientViewSet,
     CurrentUserView,
     DashboardStatsView,
+    DiscountViewSet,
     ExcelImportView,
     ClientsExportView,
     FinanceExportView,
@@ -56,6 +57,7 @@ router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
 router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
+router.register('discounts', DiscountViewSet, basename='discount')
 router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')

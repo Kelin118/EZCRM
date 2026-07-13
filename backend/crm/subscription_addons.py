@@ -90,7 +90,9 @@ def addons_total(subscription):
 
 
 def total_price(subscription):
-    return Decimal(subscription.price or 0) + addons_total(subscription)
+    subtotal = Decimal(subscription.price or 0) + addons_total(subscription)
+    discount_amount = Decimal(getattr(subscription, 'discount_amount', 0) or 0)
+    return max(subtotal - discount_amount, Decimal('0'))
 
 
 def addons_comment(subscription, base_comment='Оплата абонемента'):

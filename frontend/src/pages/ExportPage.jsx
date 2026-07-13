@@ -6,9 +6,10 @@ import { getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import { Filters, Input, PageHeader } from './pageUtils.jsx';
 import { downloadBlobFile, formatExportFilename, handleExportError } from './exportUtils.jsx';
+import { normalizeDateForInput } from '../utils/dateTime.js';
 
 function isoDate(date) {
-  return date.toISOString().slice(0, 10);
+  return normalizeDateForInput(date);
 }
 
 function period(days) {

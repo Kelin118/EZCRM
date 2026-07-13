@@ -7,6 +7,7 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
+import { canAssignRoleSet, canManageEmployee, getStoredUser } from '../auth.js';
 import { ActionButton, PageHeader } from './pageUtils.jsx';
 import { SelectField } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
@@ -21,6 +22,7 @@ const roles = [
 const emptyEmployee = {
   username: '',
   full_name: '',
+  email: '',
   phone: '',
   roles: ['manager'],
   is_active: true,
@@ -45,6 +47,8 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const { branchOptions, branchFilterOptions } = useBranches();
+  const user = getStoredUser();
+  const availableRoles = roles.filter((roleItem) => canAssignRoleSet([roleItem.value], user));
 
   const filteredEmployees = useMemo(() => employees, [employees]);
 
@@ -69,6 +73,7 @@ export default function EmployeesPage() {
       id: employee.id,
       username: employee.username || '',
       full_name: employee.full_name || '',
+      email: employee.email || '',
       phone: employee.phone || '',
       roles: getEmployeeRoles(employee),
       is_active: Boolean(employee.is_active),
@@ -82,7 +87,7 @@ export default function EmployeesPage() {
     setSaving(true);
     setError('');
     try {
-      const selectedRoles = getEmployeeRoles(editing);
+      const selectedRoles = getEmployeeRoles(editing).filter((roleValue) => availableRoles.some((item) => item.value === roleValue));
       if (!selectedRoles.length) {
         setError('Выберите хотя бы одну роль.');
         return;
@@ -214,12 +219,16 @@ export default function EmployeesPage() {
             header: '',
             render: (row) => (
               <div className="flex justify-end gap-2">
-                <ActionButton icon={Pencil} label="Редактировать" onClick={() => openEdit(row)} />
-                <ActionButton icon={KeyRound} label="Сменить пароль" onClick={() => openPassword(row)} />
-                {row.is_active ? (
-                  <ActionButton icon={Lock} label="Деактивировать" onClick={() => deactivate(row)} variant="danger" />
-                ) : (
-                  <ActionButton icon={UserCheck} label="Активировать" onClick={() => activate(row)} variant="accent" />
+                {canManageEmployee(row, user) && (
+                  <>
+                    <ActionButton icon={Pencil} label="Редактировать" onClick={() => openEdit(row)} />
+                    <ActionButton icon={KeyRound} label="Сменить пароль" onClick={() => openPassword(row)} />
+                    {row.is_active ? (
+                      <ActionButton icon={Lock} label="Деактивировать" onClick={() => deactivate(row)} variant="danger" />
+                    ) : (
+                      <ActionButton icon={UserCheck} label="Активировать" onClick={() => activate(row)} variant="accent" />
+                    )}
+                  </>
                 )}
               </div>
             ),
@@ -242,6 +251,8 @@ export default function EmployeesPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="ФИО" value={editing.full_name} onChange={(event) => setEditingField('full_name', event.target.value)} />
             <Input label="Логин" value={editing.username} onChange={(event) => setEditingField('username', event.target.value)} />
+            <Input label="Email" type="email" value={editing.email || ''} onChange={(event) => setEditingField('email', event.target.value)} />
+            <Input label="Телефон" value={editing.phone || ''} onChange={(event) => setEditingField('phone', event.target.value)} />
             <SelectField label="Филиал" value={editing.branch || ''} onChange={(value) => setEditingField('branch', value)} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
             <Input
               label={editing.id ? 'Новый пароль' : 'Пароль'}
@@ -252,7 +263,7 @@ export default function EmployeesPage() {
             <div className="grid gap-2 md:col-span-2">
               <p className="text-sm font-semibold text-slate-700">Роли</p>
               <div className="grid gap-2 md:grid-cols-2">
-                {roles.map((roleItem) => (
+                {availableRoles.map((roleItem) => (
                   <label key={roleItem.value} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700">
                     <input type="checkbox" checked={getEmployeeRoles(editing).includes(roleItem.value)} onChange={() => toggleRole(roleItem.value)} />
                     {roleItem.label}

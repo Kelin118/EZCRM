@@ -8,10 +8,16 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
+import { formatDateTimeLocal, normalizeDateForInput, normalizeTimeForApi, normalizeTimeForInput, serializeDateTimeLocal } from '../utils/dateTime.js';
 
 export const money = (value) => `${Number(value || 0).toLocaleString('ru-RU')} ₸`;
 export const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
-export const dateOnly = (value) => (value ? new Date(value).toLocaleDateString('ru-RU') : '—');
+export const dateOnly = (value) => {
+  const dateValue = normalizeDateForInput(value);
+  if (!dateValue) return '—';
+  const [year, month, day] = dateValue.split('-');
+  return [day, month, year].filter(Boolean).join('.');
+};
 
 const nullableFields = new Set([
   'assigned_to',
@@ -71,6 +77,59 @@ const readOnlyFields = new Set([
   'lesson_deducted',
 ]);
 
+const timeFields = new Set(['start_time', 'end_time']);
+const dateFields = new Set([
+  'birth_date',
+  'date_from',
+  'date_to',
+  'end_date',
+  'joined_at',
+  'left_at',
+  'lesson_date',
+  'payment_date',
+  'purchase_date',
+  'start_date',
+]);
+const dateTimeFields = new Set(['due_at', 'paid_at', 'scheduled_at', 'starts_at', 'visited_at']);
+const relationIdFields = new Set([
+  'assigned_to',
+  'branch',
+  'client',
+  'created_by',
+  'finance_transaction',
+  'group',
+  'lesson',
+  'manager',
+  'payment_method',
+  'room',
+  'schedule_slot',
+  'service',
+  'subject',
+  'subscription',
+  'teacher',
+]);
+
+function normalizeFormValue(key, value) {
+  if (value === null || value === undefined) return '';
+  if (timeFields.has(key)) return normalizeTimeForInput(value);
+  if (dateFields.has(key)) return normalizeDateForInput(value);
+  if (dateTimeFields.has(key)) return formatDateTimeLocal(value);
+  if (relationIdFields.has(key)) return value === '' ? '' : String(value);
+  if (key === 'schedule_days' || key === 'roles') return Array.isArray(value) ? [...value] : [];
+  if (key === 'addons') {
+    return (Array.isArray(value) ? value : []).map((addon) => ({
+      ...addon,
+      catalog_item: addon.catalog_item !== undefined && addon.catalog_item !== null ? String(addon.catalog_item) : '',
+      quantity: addon.quantity ?? 1,
+    }));
+  }
+  return value;
+}
+
+export function normalizeItemForForm(item = {}) {
+  return Object.fromEntries(Object.entries(item || {}).map(([key, value]) => [key, normalizeFormValue(key, value)]));
+}
+
 export function normalizePayload(payload) {
   const normalized = {};
 
@@ -82,8 +141,18 @@ export function normalizePayload(payload) {
       return;
     }
 
-    if (typeof value === 'string' && value.includes('T') && value.endsWith('Z')) {
-      normalized[key] = value.slice(0, 16);
+    if (timeFields.has(key)) {
+      normalized[key] = normalizeTimeForApi(value);
+      return;
+    }
+
+    if (dateFields.has(key)) {
+      normalized[key] = normalizeDateForInput(value) || null;
+      return;
+    }
+
+    if (dateTimeFields.has(key)) {
+      normalized[key] = serializeDateTimeLocal(value);
       return;
     }
 
@@ -262,7 +331,7 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
               <Input
                 label={field.label}
                 type={field.type || 'text'}
-                value={form[field.name] ?? ''}
+                value={field.type === 'datetime-local' ? formatDateTimeLocal(form[field.name]) : field.type === 'date' ? normalizeDateForInput(form[field.name]) : field.type === 'time' ? normalizeTimeForInput(form[field.name]) : form[field.name] ?? ''}
                 onChange={(event) => field.onChange ? field.onChange(event.target.value, form, setForm) : setForm({ ...form, [field.name]: event.target.value })}
               />
               {field.help && <p className="mt-1 text-xs font-medium text-slate-500">{field.help}</p>}
@@ -279,8 +348,19 @@ export function useCrudResource(endpoint, initialFilters = {}) {
   const [filters, setFilters] = useState(initialFilters);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [editing, setEditing] = useState(null);
+  const [editing, setEditingState] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
+
+  const setEditing = (value) => {
+    if (typeof value === 'function') {
+      setEditingState((current) => {
+        const next = value(current);
+        return next && typeof next === 'object' ? normalizeItemForForm(next) : next;
+      });
+      return;
+    }
+    setEditingState(value && typeof value === 'object' ? normalizeItemForForm(value) : value);
+  };
 
   const params = useMemo(() => {
     const clean = {};

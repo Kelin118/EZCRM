@@ -11,6 +11,7 @@ import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.j
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
+import { todayLocalDate } from '../utils/dateTime.js';
 
 const trialStages = [
   { value: 'lead', label: 'Лид' },
@@ -21,7 +22,7 @@ const trialStages = [
 ];
 
 const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, payment_method: '', bought_subscription: false, notes: '' };
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = todayLocalDate;
 
 const emptyConvertForm = { service: '', addons: [], subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: '', comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);

@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from .role_hierarchy import can_assign_roles, can_manage_user
+
 
 User = get_user_model()
 
@@ -194,6 +196,8 @@ class EmployeeSerializer(UserPublicSerializer):
     def validate(self, attrs):
         password = attrs.get('password')
         password_confirm = attrs.get('password_confirm')
+        request = self.context.get('request')
+        actor = getattr(request, 'user', None)
 
         if self.instance is None and not password:
             raise serializers.ValidationError({'password': 'Введите пароль'})
@@ -207,6 +211,21 @@ class EmployeeSerializer(UserPublicSerializer):
                 attrs['roles'] = self.instance.get_roles()
             else:
                 raise serializers.ValidationError({'roles': 'Выберите хотя бы одну роль.'})
+        if actor and actor.is_authenticated and not can_assign_roles(actor, attrs['roles']):
+            raise serializers.ValidationError({'roles': ['Менеджер не может назначать роль администратора.']})
+        if actor and actor.is_authenticated and self.instance and not can_manage_user(actor, self.instance):
+            raise serializers.ValidationError({'detail': 'Недостаточно прав для управления этим сотрудником.'})
+        if actor and actor.is_authenticated and self.instance and self.instance.pk == actor.pk and attrs.get('is_active') is False:
+            raise serializers.ValidationError({'is_active': 'Нельзя деактивировать собственный аккаунт.'})
+        if actor and actor.is_authenticated and not actor.has_role('admin'):
+            forbidden_flags = {}
+            for field in ('is_superuser', 'is_staff'):
+                if field in self.initial_data and self.initial_data.get(field) in (True, 'true', 'True', '1', 1):
+                    forbidden_flags[field] = 'Менеджер не может назначать административные права.'
+            if forbidden_flags:
+                raise serializers.ValidationError(forbidden_flags)
+            attrs.pop('is_superuser', None)
+            attrs.pop('is_staff', None)
         attrs['role'] = attrs['roles'][0]
 
         if would_remove_last_active_admin(self.instance, attrs):

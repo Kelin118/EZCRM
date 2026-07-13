@@ -29,6 +29,7 @@ const emptyCatalogForm = {
   validity_days: '',
   schedule_days: [],
   is_active: true,
+  sort_order: 0,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
 const emptyPaymentMethodForm = { name: '', code: '', description: '', is_active: true, sort_order: 0 };
@@ -158,7 +159,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name || '', price: item.price || '', lessons_count: item.lessons_count || '', validity_days: item.validity_days || '', schedule_days: Array.isArray(item.schedule_days) ? item.schedule_days : [], is_active: item.is_active }
+        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }
         : { ...emptyCatalogForm },
     );
   };
@@ -202,6 +203,7 @@ export default function SettingsPage() {
       price,
       category: catalogModal.category,
       is_active: catalogForm.is_active,
+      sort_order: catalogForm.sort_order !== '' ? Number(catalogForm.sort_order) : 0,
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
       validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
       schedule_days: catalogModal.category === 'service' ? catalogForm.schedule_days : [],
@@ -292,7 +294,7 @@ export default function SettingsPage() {
                 <td className="px-4 py-3 font-semibold">{branch.name}</td><td className="px-4 py-3">{branch.address || '—'}</td><td className="px-4 py-3">{branch.phone || '—'}</td>
                 <td className="px-4 py-3">{branch.is_active ? 'Активен' : 'Отключён'}</td>
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditStudio && <Button variant="secondary" onClick={() => { setBranchForm(branch); setBranchModal({ open: true, item: branch }); }}>Изменить</Button>}
+                  {canEditStudio && <Button variant="secondary" onClick={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }}>Изменить</Button>}
                   {canEditStudio && branch.is_active && <Button variant="secondary" onClick={() => disableBranch(branch)}>Отключить</Button>}
                 </div></td>
               </tr>)}</tbody>
@@ -307,7 +309,7 @@ export default function SettingsPage() {
               <tbody>{paymentMethods.map((item) => <tr key={item.id} className="border-t border-slate-100">
                 <td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.description || '—'}</td><td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}</td>
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm(item); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
+                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
                   {canEditCatalog && <Button variant="secondary" onClick={() => togglePaymentMethod(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
                 </div></td>
               </tr>)}</tbody>
@@ -414,6 +416,7 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={paymentMethodForm.name} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, name: event.target.value })} />
           <Input label="Код" value={paymentMethodForm.code || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, code: event.target.value })} />
+          <Input label="Порядок" type="number" value={paymentMethodForm.sort_order ?? 0} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
         </div>
@@ -434,6 +437,7 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
           <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
+          <Input label="Порядок" type="number" min="0" value={catalogForm.sort_order ?? 0} onChange={(event) => setCatalogForm({ ...catalogForm, sort_order: event.target.value })} />
           {catalogModal.category === 'service' && (
             <>
               <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />

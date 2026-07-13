@@ -1404,14 +1404,25 @@ class UserRegistrationAndEmployeeTests(APITestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn('Регистрация закрыта', response.data['detail'])
 
-    def test_manager_cannot_get_employees(self):
+    def test_manager_sees_only_manageable_employees(self):
         User = get_user_model()
-        manager = User.objects.create_user(username='manager', password='password123', role='manager')
+        manager = User.objects.create_user(username='manager', password='password123', role='manager', roles=['manager'])
+        other_manager = User.objects.create_user(username='other-manager', password='password123', role='manager', roles=['manager'])
+        teacher = User.objects.create_user(username='teacher-visible', password='password123', role='teacher', roles=['teacher'])
+        accountant = User.objects.create_user(username='accountant-visible', password='password123', role='accountant', roles=['accountant'])
+        admin = User.objects.create_user(username='hidden-admin', password='password123', role='admin', roles=['admin'])
+        superuser = User.objects.create_superuser(username='hidden-superuser', password='password123')
         self.client.force_authenticate(manager)
 
         response = self.client.get('/api/users/employees/')
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        ids = {item['id'] for item in response.data}
+        self.assertIn(other_manager.id, ids)
+        self.assertIn(teacher.id, ids)
+        self.assertIn(accountant.id, ids)
+        self.assertNotIn(admin.id, ids)
+        self.assertNotIn(superuser.id, ids)
 
     def test_admin_can_create_manager(self):
         User = get_user_model()
@@ -1705,6 +1716,89 @@ class UserRegistrationAndEmployeeTests(APITestCase):
         admin.refresh_from_db()
         self.assertTrue(admin.has_role('admin'))
 
+    def test_manager_can_create_allowed_roles_and_multiple_roles(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='creator-manager', password='password123', role='manager', roles=['manager'])
+        self.client.force_authenticate(manager)
+
+        for username, roles in (
+            ('created-manager', ['manager']),
+            ('created-teacher', ['teacher']),
+            ('created-accountant', ['accountant']),
+            ('created-teacher-manager', ['teacher', 'manager']),
+        ):
+            response = self.client.post(
+                '/api/users/employees/',
+                {'username': username, 'password': '1234', 'roles': roles, 'is_active': True},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(User.objects.get(username=username).roles, roles)
+
+    def test_manager_cannot_create_admin_or_assign_admin_flags(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='limited-manager', password='password123', role='manager', roles=['manager'])
+        self.client.force_authenticate(manager)
+
+        admin_role = self.client.post('/api/users/employees/', {'username': 'bad-admin', 'password': '1234', 'roles': ['admin']}, format='json')
+        mixed_roles = self.client.post('/api/users/employees/', {'username': 'bad-mixed', 'password': '1234', 'roles': ['manager', 'admin']}, format='json')
+        super_flag = self.client.post('/api/users/employees/', {'username': 'bad-super', 'password': '1234', 'roles': ['manager'], 'is_superuser': True}, format='json')
+        unknown_role = self.client.post('/api/users/employees/', {'username': 'bad-unknown', 'password': '1234', 'roles': ['owner']}, format='json')
+
+        self.assertEqual(admin_role.status_code, 400)
+        self.assertEqual(mixed_roles.status_code, 400)
+        self.assertEqual(super_flag.status_code, 400)
+        self.assertEqual(unknown_role.status_code, 400)
+        self.assertFalse(User.objects.filter(username__in=['bad-admin', 'bad-mixed', 'bad-super', 'bad-unknown']).exists())
+
+    def test_manager_cannot_retrieve_or_edit_admin_and_cannot_escalate_employee(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='manager-editor', password='password123', role='manager', roles=['manager'])
+        admin = User.objects.create_user(username='admin-hidden-direct', password='password123', role='admin', roles=['admin'])
+        teacher = User.objects.create_user(username='editable-teacher', password='password123', role='teacher', roles=['teacher'])
+        self.client.force_authenticate(manager)
+
+        admin_detail = self.client.get(f'/api/users/employees/{admin.id}/')
+        admin_patch = self.client.patch(f'/api/users/employees/{admin.id}/', {'roles': ['manager']}, format='json')
+        teacher_patch = self.client.patch(f'/api/users/employees/{teacher.id}/', {'full_name': 'Edited Teacher', 'roles': ['teacher']}, format='json')
+        escalation = self.client.patch(f'/api/users/employees/{teacher.id}/', {'roles': ['admin']}, format='json')
+
+        self.assertEqual(admin_detail.status_code, 404)
+        self.assertEqual(admin_patch.status_code, 404)
+        self.assertEqual(teacher_patch.status_code, 200)
+        self.assertEqual(escalation.status_code, 400)
+
+    def test_manager_cannot_deactivate_self(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='self-manager', password='password123', role='manager', roles=['manager'], is_active=True)
+        self.client.force_authenticate(manager)
+
+        response = self.client.patch(f'/api/users/employees/{manager.id}/', {'is_active': False, 'roles': ['manager']}, format='json')
+        delete_response = self.client.delete(f'/api/users/employees/{manager.id}/')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(delete_response.status_code, 400)
+        manager.refresh_from_db()
+        self.assertTrue(manager.is_active)
+
+    def test_staff_options_and_global_search_hide_admin_from_manager(self):
+        User = get_user_model()
+        manager = User.objects.create_user(username='search-manager', password='password123', role='manager', roles=['manager'])
+        admin = User.objects.create_user(username='search-admin', first_name='Secret', password='password123', role='admin', roles=['admin'])
+        teacher = User.objects.create_user(username='search-teacher', first_name='Visible', password='password123', role='teacher', roles=['teacher'])
+        self.client.force_authenticate(manager)
+
+        staff = self.client.get('/api/users/staff-options/?active=1')
+        search = self.client.get('/api/search/', {'q': 'search'})
+
+        self.assertEqual(staff.status_code, 200)
+        self.assertEqual(search.status_code, 200)
+        self.assertNotIn(admin.id, {item['id'] for item in staff.data})
+        self.assertIn(teacher.id, {item['id'] for item in staff.data})
+        employee_ids = {item['id'] for item in search.data['results'] if item['type'] == 'employee'}
+        self.assertNotIn(admin.id, employee_ids)
+        self.assertIn(teacher.id, employee_ids)
+
 
 class AdminApiSmokeTests(APITestCase):
     def setUp(self):
@@ -1852,6 +1946,29 @@ class GroupScheduleTests(APITestCase):
         self.assertEqual(group.schedule_days, ['tuesday', 'thursday'])
         self.assertEqual(str(group.start_time), '12:30:00')
         self.assertEqual(str(group.end_time), '14:00:00')
+
+    def test_group_time_round_trip_does_not_shift(self):
+        response = self.client.post(
+            '/api/study-groups/',
+            self.group_payload(start_time='17:00', end_time='18:00'),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        group_id = response.data['id']
+        group = StudyGroup.objects.get(pk=group_id)
+        slots = ScheduleSlot.objects.filter(group=group, is_active=True)
+        detail = self.client.get(f'/api/study-groups/{group_id}/')
+        patch = self.client.patch(f'/api/study-groups/{group_id}/', {'name': 'Renamed group'}, format='json')
+
+        group.refresh_from_db()
+        self.assertEqual(str(group.start_time), '17:00:00')
+        self.assertEqual(str(group.end_time), '18:00:00')
+        self.assertEqual(detail.data['start_time'], '17:00:00')
+        self.assertEqual(patch.status_code, 200)
+        self.assertEqual(str(group.start_time), '17:00:00')
+        self.assertEqual(str(group.end_time), '18:00:00')
+        self.assertTrue(all(str(slot.start_time) == '17:00:00' and str(slot.end_time) == '18:00:00' for slot in slots))
 
     def test_schedule_display_returns_human_text(self):
         group = StudyGroup.objects.create(
@@ -2624,6 +2741,47 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
         self.assertEqual(response.data['created_by_roles'], ['manager'])
         self.assertEqual(response.data['payment_method_name'], self.method.name)
 
+    def test_manager_can_create_expense_and_summary_counts_it(self):
+        self.client.force_authenticate(self.manager_b)
+        response = self.client.post('/api/finance/', {
+            'transaction_type': 'expense',
+            'amount': '25000.00',
+            'source': 'other',
+            'payment_method': self.method.id,
+            'comment': 'Покупка канцелярии',
+        }, format='json')
+        summary = self.client.get('/api/finance/summary/')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['transaction_type'], FinanceTransaction.Type.EXPENSE)
+        self.assertEqual(response.data['created_by'], self.manager_b.id)
+        self.assertEqual(Decimal(summary.data['expense']), Decimal('30000'))
+        self.assertEqual(Decimal(summary.data['balance']), Decimal('15000'))
+
+    def test_teacher_without_manager_cannot_create_expense_but_teacher_manager_can(self):
+        User = get_user_model()
+        teacher_manager = User.objects.create_user(
+            username='payment-teacher-manager',
+            password='pass',
+            role='teacher',
+            roles=['teacher', 'manager'],
+        )
+        payload = {
+            'transaction_type': 'expense',
+            'amount': '7000.00',
+            'source': 'other',
+            'payment_method': self.method.id,
+        }
+
+        self.client.force_authenticate(self.teacher)
+        denied = self.client.post('/api/finance/', payload, format='json')
+        self.client.force_authenticate(teacher_manager)
+        allowed = self.client.post('/api/finance/', payload, format='json')
+
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(allowed.status_code, 201)
+        self.assertEqual(allowed.data['created_by'], teacher_manager.id)
+
     def test_payment_method_admin_crud_soft_delete_and_permissions(self):
         self.client.force_authenticate(self.admin)
         created = self.client.post('/api/payment-methods/', {'name': 'Новый метод'}, format='json')
@@ -2646,6 +2804,20 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
         old = self.client.get(f'/api/finance/{self.operation.id}/')
         self.assertEqual(old.data['payment_method_name'], 'Kaspi Test')
 
+    def test_finance_edit_keeps_payment_method_and_datetime_round_trip(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.patch(
+            f'/api/finance/{self.operation.id}/',
+            {'comment': 'Updated comment', 'paid_at': '2026-07-13T12:00:00.000Z'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.operation.refresh_from_db()
+        self.assertEqual(self.operation.payment_method_id, self.method.id)
+        self.assertEqual(self.operation.comment, 'Updated comment')
+        self.assertEqual(self.operation.paid_at.isoformat().replace('+00:00', 'Z'), '2026-07-13T12:00:00Z')
+
     def test_method_manager_unassigned_filters_and_summary_match(self):
         by_method = self.list_as(self.accountant, payment_method=self.method.id)
         self.assertEqual({item['id'] for item in by_method.data}, {self.operation.id})
@@ -2659,3 +2831,60 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
         self.assertEqual(summary.status_code, 200)
         self.assertEqual(summary.data['transactions_count'], 1)
         self.assertEqual(Decimal(summary.data['income']), Decimal('45000'))
+
+
+class SubscriptionEditRoundTripTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='subscription-edit-admin', password='pass', role='admin', roles=['admin'])
+        self.client.force_authenticate(self.admin)
+        self.student = Client.objects.create(first_name='Snapshot', last_name='Student')
+        self.service = CatalogItem.objects.create(
+            name='AB Snapshot',
+            category=CatalogItem.Category.SERVICE,
+            price=Decimal('100000'),
+            lessons_count=8,
+        )
+        self.addon = CatalogItem.objects.create(
+            name='Workbook Snapshot',
+            category=CatalogItem.Category.ADDON,
+            price=Decimal('5000'),
+        )
+        self.payment_method = PaymentMethod.objects.create(name='Subscription edit cash', code='subscription_edit_cash')
+
+    def test_subscription_edit_does_not_overwrite_price_or_addons(self):
+        create = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': self.student.id,
+                'service': self.service.id,
+                'start_date': '2026-07-13',
+                'end_date': '2026-08-13',
+                'total_visits': 8,
+                'remaining_visits': 8,
+                'price': '75000.00',
+                'paid_amount': '75000.00',
+                'payment_method': self.payment_method.id,
+                'addons': [{'catalog_item': self.addon.id, 'quantity': 2}],
+                'status': Subscription.Status.ACTIVE,
+            },
+            format='json',
+        )
+        self.assertEqual(create.status_code, 201)
+        subscription = Subscription.objects.get(pk=create.data['id'])
+        self.service.price = Decimal('120000')
+        self.service.save(update_fields=('price', 'updated_at'))
+
+        update = self.client.patch(
+            f'/api/subscriptions/{subscription.id}/',
+            {'status': Subscription.Status.PAUSED},
+            format='json',
+        )
+
+        self.assertEqual(update.status_code, 200)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.price, Decimal('75000.00'))
+        self.assertEqual(subscription.subscription_addons.count(), 1)
+        addon = subscription.subscription_addons.first()
+        self.assertEqual(addon.quantity, 2)
+        self.assertEqual(addon.unit_price, Decimal('5000.00'))

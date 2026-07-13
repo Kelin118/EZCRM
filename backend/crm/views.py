@@ -104,6 +104,7 @@ from .serializers import (
 )
 from .subscription_addons import addons_comment, sync_subscription_addons, total_price, validate_addons_payload
 from .subscription_dates import calculate_subscription_end_date
+from users.role_hierarchy import manageable_by_manager
 
 
 User = get_user_model()
@@ -800,11 +801,13 @@ class GlobalSearchView(APIView):
                 f'/groups?group={group.id}',
             ))
 
-        if is_admin(user):
+        if is_admin(user) or has_role(user, MANAGER):
             employee_ids = []
             lowered = query.casefold()
             role_labels = {'admin': 'администратор', 'manager': 'менеджер', 'teacher': 'преподаватель', 'accountant': 'бухгалтер'}
             for employee in User.objects.select_related('branch').all():
+                if not is_admin(user) and not manageable_by_manager(employee):
+                    continue
                 role_values = employee.get_roles()
                 haystack = ' '.join([
                     employee.first_name, employee.last_name, employee.username, employee.email,

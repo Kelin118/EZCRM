@@ -20,9 +20,10 @@ import StatCard from '../components/ui/StatCard.jsx';
 import { Filters, Input, money, PageHeader, SelectField } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { useBranchFilter } from '../contexts/BranchFilterContext.jsx';
+import { normalizeDateForInput } from '../utils/dateTime.js';
 
 function isoDate(date) {
-  return date.toISOString().slice(0, 10);
+  return normalizeDateForInput(date);
 }
 
 function period(days) {

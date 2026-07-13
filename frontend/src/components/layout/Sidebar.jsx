@@ -36,7 +36,7 @@ export const navItems = [
   { group: 'Управление', to: '/reports', label: 'Отчёты', icon: PieChart, roles: [ROLES.ACCOUNTANT] },
   { group: 'Управление', to: '/export', label: 'Экспорт', icon: Download, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { group: 'Управление', to: '/dictionaries', label: 'Справочники', icon: Library, roles: [ROLES.MANAGER] },
-  { group: 'Администрирование', to: '/employees', label: 'Сотрудники', icon: UserCog, roles: [ROLES.ADMIN] },
+  { group: 'Администрирование', to: '/employees', label: 'Сотрудники', icon: UserCog, roles: [ROLES.ADMIN, ROLES.MANAGER] },
   { group: 'Администрирование', to: '/audit-logs', label: 'Журнал действий', icon: ClipboardClock, roles: [ROLES.ADMIN] },
   { group: 'Администрирование', to: '/settings', label: 'Настройки', icon: Settings, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { group: 'Администрирование', to: '/chat', label: 'Чат', icon: MessageSquare, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },

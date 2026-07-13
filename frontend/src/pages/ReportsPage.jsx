@@ -6,9 +6,10 @@ import Button from '../components/ui/Button.jsx';
 import StatCard from '../components/ui/StatCard.jsx';
 import { Filters, Input, PageHeader, SelectField, Table, dateOnly, money } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
+import { normalizeDateForInput } from '../utils/dateTime.js';
 
 function isoDate(date) {
-  return date.toISOString().slice(0, 10);
+  return normalizeDateForInput(date);
 }
 
 function period(days) {

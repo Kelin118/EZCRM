@@ -382,17 +382,18 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         initial_data = getattr(self, 'initial_data', {})
         addons = attrs.get('addons')
         service = attrs.get('service', self.instance.service if self.instance else None)
+        service_changed = self.instance is None or 'service' in initial_data
         if service:
-            attrs['title'] = service.name
-            if 'price' not in initial_data:
+            if service_changed:
+                attrs['title'] = service.name
+            if service_changed and 'price' not in initial_data:
                 attrs['price'] = service.price
             if 'paid_amount' not in initial_data and self.instance is None and attrs.get('payment_method'):
                 addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (addons or [])), Decimal('0'))
                 attrs['paid_amount'] = service.price + addons_sum
-            if service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
+            if service_changed and service.lessons_count and ('total_visits' not in initial_data or initial_data.get('total_visits') in (None, '')):
                 attrs['total_visits'] = service.lessons_count
             if service.lessons_count:
-                service_changed = self.instance is None or attrs.get('service') is not None
                 if self.instance is None:
                     attrs['remaining_visits'] = service.lessons_count
                 elif service_changed and ('remaining_visits' not in initial_data or initial_data.get('remaining_visits') in (None, '')):
@@ -402,7 +403,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
             if self.instance is None and not attrs.get('start_date'):
                 attrs['start_date'] = timezone.localdate()
 
-            should_calculate_end_date = 'end_date' not in initial_data
+            should_calculate_end_date = self.instance is None and 'end_date' not in initial_data
             if should_calculate_end_date:
                 start_date = attrs.get('start_date') or (self.instance.start_date if self.instance else None)
                 lessons_count = attrs.get('total_visits') or getattr(service, 'lessons_count', None)

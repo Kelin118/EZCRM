@@ -6,6 +6,7 @@ import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectFie
 import { useClientOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
+import { todayLocalDate } from '../utils/dateTime.js';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
@@ -26,7 +27,7 @@ const empty = {
   payment_method: '',
 };
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = todayLocalDate;
 
 const baseFields = [
   { name: 'title', label: 'Название' },

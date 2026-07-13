@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -10,7 +10,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from crm.audit import log_action
 from crm.branch_filters import apply_branch_filter
 from crm.models import AuditLog
-from crm.permissions import IsAdminRole
+from crm.permissions import has_role, is_admin
+
+from .role_hierarchy import can_manage_user, manageable_by_manager
 
 from .serializers import (
     EmployeeSerializer,
@@ -23,6 +25,14 @@ from .serializers import (
 
 
 User = get_user_model()
+
+
+class EmployeePermission(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and (is_admin(request.user) or has_role(request.user, 'manager')))
+
+    def has_object_permission(self, request, view, obj):
+        return can_manage_user(request.user, obj)
 
 
 class AuditTokenObtainPairView(TokenObtainPairView):
@@ -71,7 +81,7 @@ class RegisterView(APIView):
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
-    permission_classes = (IsAdminRole,)
+    permission_classes = (EmployeePermission,)
     serializer_class = EmployeeSerializer
 
     def get_queryset(self):
@@ -87,6 +97,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 | Q(email__icontains=search)
             )
         queryset = apply_branch_filter(queryset, branch)
+        if not is_admin(self.request.user):
+            allowed_ids = [user.id for user in queryset if manageable_by_manager(user)]
+            queryset = queryset.filter(id__in=allowed_ids)
         return queryset
 
     def perform_create(self, serializer):
@@ -98,7 +111,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             entity_id=user.id,
             entity_name=user.get_full_name() or user.username,
             description='Создан сотрудник',
-            changes={'username': user.username, 'role': user.role, 'roles': user.get_roles(), 'is_active': user.is_active},
+            changes={'username': user.username, 'role': user.role, 'roles': user.get_roles(), 'is_active': user.is_active, 'branch': user.branch_id},
         )
 
     def perform_update(self, serializer):
@@ -137,6 +150,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
+        if user.pk == request.user.pk:
+            return Response(
+                {'detail': 'Нельзя деактивировать собственный аккаунт.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if user.is_active and user.has_role('admin') and active_admins().exclude(pk=user.pk).count() == 0:
             return Response(
                 {'detail': 'Нельзя заблокировать последнего активного администратора.'},
@@ -187,6 +205,9 @@ class StaffOptionViewSet(viewsets.ReadOnlyModelViewSet):
         elif active in ('0', 'false', 'False', 'no'):
             queryset = queryset.filter(is_active=False)
         queryset = apply_branch_filter(queryset, branch)
+        if not is_admin(self.request.user):
+            allowed_ids = [user.id for user in queryset if manageable_by_manager(user)]
+            queryset = queryset.filter(id__in=allowed_ids)
 
         return queryset
 

@@ -26,7 +26,12 @@ const toDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const toIso = (date) => date.toISOString().slice(0, 10);
+const pad = (value) => String(value).padStart(2, '0');
+const toIso = (date) => [
+  date.getFullYear(),
+  pad(date.getMonth() + 1),
+  pad(date.getDate()),
+].join('-');
 
 export function formatScheduleDays(days = []) {
   return (Array.isArray(days) ? days : []).map((day) => weekdayLabels[day]).filter(Boolean).join(', ');

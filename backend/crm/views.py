@@ -1838,6 +1838,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
         client = self.request.query_params.get('client')
+        search = self.request.query_params.get('search')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
 
@@ -1847,6 +1848,15 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(manager_id=manager)
         if client:
             queryset = queryset.filter(participants__id=client)
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(participants__first_name__icontains=search)
+                | Q(participants__last_name__icontains=search)
+                | Q(participants__parent_name__icontains=search)
+                | Q(participants__phone__icontains=search)
+            )
         if _my_param(self.request):
             queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
         if payment_date_from:

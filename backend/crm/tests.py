@@ -19,6 +19,7 @@ from .models import (
     FinanceTransaction,
     GroupMembership,
     Lesson,
+    MasterClass,
     PaymentMethod,
     Room,
     ScheduleSlot,
@@ -2699,6 +2700,64 @@ class BranchFilterAndAuditTests(APITestCase):
         attached.refresh_from_db()
         self.assertIsNone(attached.branch)
         self.assertFalse(Branch.objects.filter(pk=fake.pk).exists())
+
+
+class MasterClassClientDisplayTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='master-client-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='master-client-manager', password='pass', role='manager', roles=['manager'])
+        self.client.force_authenticate(self.admin)
+        self.student = Client.objects.create(
+            first_name='Алихан',
+            last_name='Сатыбалдин',
+            parent_name='Айнур',
+            phone='87070000000',
+        )
+
+    def create_master_class(self, title='Робототехника', client=None):
+        master_class = MasterClass.objects.create(
+            title=title,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            stage=MasterClass.Stage.BOOKED,
+        )
+        if client:
+            master_class.participants.add(client)
+        return master_class
+
+    def test_master_class_with_client_returns_client_names(self):
+        master_class = self.create_master_class(client=self.student)
+
+        response = self.client.get(f'/api/master-classes/{master_class.id}/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['client'], self.student.id)
+        self.assertEqual(response.data['client_name'], 'Алихан Сатыбалдин')
+        self.assertEqual(response.data['client_display_name'], 'Алихан Сатыбалдин · Айнур · 87070000000')
+
+    def test_master_class_without_client_serializes_nullable_client(self):
+        master_class = self.create_master_class()
+
+        response = self.client.get(f'/api/master-classes/{master_class.id}/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data['client'])
+        self.assertIsNone(response.data['client_name'])
+        self.assertIsNone(response.data['client_display_name'])
+
+    def test_master_class_search_by_client_name_and_phone(self):
+        master_class = self.create_master_class(client=self.student)
+        other = self.create_master_class(title='Шахматы')
+
+        by_name = self.client.get('/api/master-classes/', {'search': 'Алихан'})
+        by_phone = self.client.get('/api/master-classes/', {'search': '87070000000'})
+
+        self.assertEqual(by_name.status_code, 200)
+        self.assertEqual(by_phone.status_code, 200)
+        self.assertIn(master_class.id, {item['id'] for item in by_name.data})
+        self.assertIn(master_class.id, {item['id'] for item in by_phone.data})
+        self.assertNotIn(other.id, {item['id'] for item in by_name.data})
 
 
 class FinanceJournalAndPaymentMethodTests(APITestCase):

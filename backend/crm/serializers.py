@@ -545,6 +545,7 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
 
 class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
+    client_display_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
@@ -560,12 +561,27 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = MasterClass
         fields = '__all__'
 
+    def _primary_client(self, obj):
+        return obj.participants.first()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        client = self._primary_client(instance)
+        data['client'] = client.id if client else None
+        return data
+
     def get_client_name(self, obj):
-        client = obj.participants.first()
-        return str(client) if client else ''
+        client = self._primary_client(obj)
+        return str(client) if client else None
+
+    def get_client_display_name(self, obj):
+        client = self._primary_client(obj)
+        if not client:
+            return None
+        return ' · '.join(filter(None, [str(client), client.parent_name, client.phone]))
 
     def get_client_phone(self, obj):
-        client = obj.participants.first()
+        client = self._primary_client(obj)
         return client.phone if client else ''
 
     def get_manager_name(self, obj):

@@ -48,6 +48,13 @@ const baseFields = [
 const stageLabel = (value) => masterClassStages.find((stage) => stage.value === value)?.label || value || '—';
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
 const dash = (value) => value || '—';
+const clientDisplay = (item) => item.client_display_name || item.client_name || item.client?.display_name || item.client?.full_name || 'Не указан';
+const clientSecondary = (item) => {
+  const display = clientDisplay(item);
+  if (!item.client_display_name || display === item.client_name) return item.client_phone || '';
+  const parts = item.client_display_name.split(' · ').slice(1);
+  return parts.join(' · ');
+};
 const masterClassColumnId = (item) => {
   if (item.stage === 'planned') return 'lead';
   if (item.stage === 'completed') return 'attended';
@@ -76,14 +83,15 @@ function ViewToggle({ value, onChange }) {
 }
 
 function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
-  const clientName = item.client_name || (item.client ? `Клиент #${item.client}` : '—');
+  const clientName = clientDisplay(item);
+  const clientInfo = clientSecondary(item);
 
   return (
     <KanbanCard draggable={canEdit} {...dragProps}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="font-semibold text-slate-900">{clientName}</p>
-          <p className="mt-1 text-xs font-medium text-slate-500">Телефон: {dash(item.client_phone)}</p>
+          {clientInfo && <p className="mt-1 text-xs font-medium text-slate-500">{clientInfo}</p>}
         </div>
         <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
       </div>
@@ -102,7 +110,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
@@ -145,6 +153,7 @@ export default function MasterClassesPage() {
         <ViewToggle value={viewMode} onChange={setViewMode} />
       </PageHeader>
       <Filters>
+        <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
@@ -161,6 +170,12 @@ export default function MasterClassesPage() {
         />
       ) : (
         <Table data={crud.items} columns={[
+          { key: 'client', header: 'Клиент', render: (row) => (
+            <div>
+              <p className="font-semibold text-slate-900">{clientDisplay(row)}</p>
+              {clientSecondary(row) && <p className="text-xs font-medium text-slate-500">{clientSecondary(row)}</p>}
+            </div>
+          ) },
           { key: 'title', header: 'Предмет' },
           { key: 'starts_at', header: 'Дата', render: (row) => dateTime(row.starts_at) },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },

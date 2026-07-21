@@ -132,8 +132,8 @@ class TaskPermission(RolePermission):
 
 class FinancePermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
-        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'reconcile_cash_balance'},
+        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'reconcile_cash_balance'},
     }
 
 

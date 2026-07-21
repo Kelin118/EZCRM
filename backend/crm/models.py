@@ -57,7 +57,7 @@ class Discount(TimeStampedModel):
 
     name = models.CharField(max_length=150)
     discount_type = models.CharField(max_length=20, choices=Type.choices)
-    value = models.DecimalField(max_digits=10, decimal_places=2)
+    value = models.DecimalField(max_digits=10, decimal_places=5)
     description = models.TextField(blank=True)
     valid_from = models.DateField(null=True, blank=True)
     valid_until = models.DateField(null=True, blank=True)
@@ -99,7 +99,7 @@ class Subscription(TimeStampedModel):
     discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='subscriptions')
     discount_name = models.CharField(max_length=150, blank=True, default='')
     discount_type = models.CharField(max_length=20, blank=True, default='')
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=5, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     finance_transaction = models.OneToOneField(
@@ -167,7 +167,7 @@ class AddonSale(TimeStampedModel):
     discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='addon_sales')
     discount_name = models.CharField(max_length=150, blank=True, default='')
     discount_type = models.CharField(max_length=20, blank=True, default='')
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=5, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     comment = models.TextField(blank=True)
     finance_transaction = models.OneToOneField(
@@ -518,7 +518,7 @@ class MasterClass(TimeStampedModel):
     discount = models.ForeignKey(Discount, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
     discount_name = models.CharField(max_length=150, blank=True, default='')
     discount_type = models.CharField(max_length=20, blank=True, default='')
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=5, default=0)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     capacity = models.PositiveIntegerField(default=0)
     participants = models.ManyToManyField(Client, blank=True, related_name='master_classes')
@@ -636,6 +636,7 @@ class PaymentMethod(TimeStampedModel):
     name = models.CharField(max_length=150, unique=True)
     code = models.SlugField(max_length=80, blank=True)
     description = models.TextField(blank=True)
+    is_cash = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)
 
@@ -644,6 +645,27 @@ class PaymentMethod(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+
+class CashRegisterSnapshot(TimeStampedModel):
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='cash_register_snapshots')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    recorded_at = models.DateTimeField(default=timezone.now)
+    comment = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cash_register_snapshots',
+    )
+
+    class Meta:
+        ordering = ('-recorded_at', '-created_at')
+
+    def __str__(self):
+        branch_name = self.branch.name if self.branch else 'Без филиала'
+        return f'{branch_name}: {self.amount}'
 
 
 class ChatMessage(TimeStampedModel):
@@ -740,6 +762,7 @@ class AuditLog(models.Model):
         GROUP_MEMBER_RESTORE = 'group_member_restore', 'Group member restore'
         ADDON_SALE_CREATE = 'addon_sale_create', 'Addon sale create'
         ADDON_SALE_UPDATE = 'addon_sale_update', 'Addon sale update'
+        CASH_RECONCILIATION = 'cash_reconciliation', 'Cash reconciliation'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

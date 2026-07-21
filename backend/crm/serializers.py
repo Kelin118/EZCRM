@@ -92,6 +92,11 @@ class DiscountSerializer(BranchNameMixin, serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('created_at', 'updated_at')
 
+    def to_internal_value(self, data):
+        if isinstance(data, dict) and isinstance(data.get('value'), str):
+            data = {**data, 'value': data.get('value').replace(',', '.')}
+        return super().to_internal_value(data)
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         discount_type = attrs.get('discount_type', self.instance.discount_type if self.instance else None)

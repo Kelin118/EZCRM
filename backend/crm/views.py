@@ -36,6 +36,7 @@ from .models import (
     AddonSale,
     AuditLog,
     Branch,
+    CashRegisterSnapshot,
     CatalogItem,
     ChatMessage,
     Client,
@@ -218,6 +219,13 @@ def _create_income_transaction(
         paid_at=paid_at,
         comment=comment,
     )
+
+
+def subscription_finance_source(subscription_or_service):
+    service = getattr(subscription_or_service, 'service', subscription_or_service)
+    if service and getattr(service, 'service_type', None) == CatalogItem.ServiceType.CAMP:
+        return 'camp'
+    return 'subscription'
 
 
 def _lesson_visited_at(lesson):
@@ -1305,7 +1313,7 @@ class LessonViewSet(EducationBaseViewSet):
                     finance_transaction = _create_income_transaction(
                         client=client,
                         amount=payment_amount,
-                        source='subscription',
+                        source=subscription_finance_source(created_subscription),
                         payment_date=purchase_date,
                         comment=addons_comment(created_subscription, 'Оплата абонемента из посещений'),
                         created_by=request.user,
@@ -1582,7 +1590,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                 finance_transaction = _create_income_transaction(
                     client=subscription.client,
                     amount=subscription.paid_amount,
-                    source='subscription',
+                    source=subscription_finance_source(subscription),
                     payment_date=subscription.purchase_date,
                     comment=addons_comment(subscription),
                     created_by=self.request.user,
@@ -1851,7 +1859,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                 finance_transaction = _create_income_transaction(
                     client=trial.client,
                     amount=payment_amount,
-                    source='subscription',
+                    source=subscription_finance_source(subscription),
                     paid_at=_paid_at_from_date(purchase_date),
                     comment=comment or addons_comment(subscription, 'Оплата абонемента после пробного'),
                     created_by=request.user,
@@ -2341,6 +2349,146 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         instance = serializer.save()
         self._log_instance(AuditLog.Action.UPDATE, instance, self.audit_update_description, self._finance_audit_changes(instance))
+
+    def _cash_scope(self, queryset, branch):
+        if branch and branch != 'all':
+            if branch == 'unassigned':
+                return queryset.filter(branch__isnull=True)
+            return queryset.filter(branch_id=branch)
+        return queryset
+
+    def _cash_balance_for_scope(self, branch):
+        snapshots = self._cash_scope(
+            CashRegisterSnapshot.objects.select_related('branch', 'created_by').all(),
+            branch,
+        )
+        last_snapshot = snapshots.order_by('-recorded_at', '-created_at').first()
+        opening_balance = last_snapshot.amount if last_snapshot else Decimal('0.00')
+
+        transactions = self._cash_scope(
+            FinanceTransaction.objects.select_related('payment_method')
+            .filter(payment_method__is_cash=True),
+            branch,
+        )
+        if last_snapshot:
+            transactions = transactions.filter(paid_at__gt=last_snapshot.recorded_at)
+
+        cash_income = _decimal(
+            transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total']
+        )
+        cash_expense = _decimal(
+            transactions.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total']
+        )
+        expected_balance = opening_balance + cash_income - cash_expense
+
+        return {
+            'opening_balance': opening_balance,
+            'cash_income': cash_income,
+            'cash_expense': cash_expense,
+            'expected_balance': expected_balance,
+            'last_reconciliation': {
+                'id': last_snapshot.id,
+                'branch': last_snapshot.branch_id,
+                'branch_name': last_snapshot.branch.name if last_snapshot.branch else None,
+                'amount': last_snapshot.amount,
+                'recorded_at': last_snapshot.recorded_at,
+                'comment': last_snapshot.comment,
+                'created_by': last_snapshot.created_by_id,
+                'created_by_name': _person_name(last_snapshot.created_by),
+            } if last_snapshot else None,
+        }
+
+    def _cash_balance_payload(self, branch):
+        if branch == 'all':
+            branch_ids = set(
+                CashRegisterSnapshot.objects.values_list('branch_id', flat=True)
+            ) | set(
+                FinanceTransaction.objects.filter(payment_method__is_cash=True).values_list('branch_id', flat=True)
+            )
+            payload = {
+                'opening_balance': Decimal('0.00'),
+                'cash_income': Decimal('0.00'),
+                'cash_expense': Decimal('0.00'),
+                'expected_balance': Decimal('0.00'),
+                'last_reconciliation': None,
+            }
+            for branch_id in branch_ids:
+                scoped = self._cash_balance_for_scope(str(branch_id) if branch_id else 'unassigned')
+                payload['opening_balance'] += scoped['opening_balance']
+                payload['cash_income'] += scoped['cash_income']
+                payload['cash_expense'] += scoped['cash_expense']
+                payload['expected_balance'] += scoped['expected_balance']
+
+            last_snapshot = CashRegisterSnapshot.objects.select_related('branch', 'created_by').order_by('-recorded_at', '-created_at').first()
+            if last_snapshot:
+                payload['last_reconciliation'] = {
+                    'id': last_snapshot.id,
+                    'branch': last_snapshot.branch_id,
+                    'branch_name': last_snapshot.branch.name if last_snapshot.branch else None,
+                    'amount': last_snapshot.amount,
+                    'recorded_at': last_snapshot.recorded_at,
+                    'comment': last_snapshot.comment,
+                    'created_by': last_snapshot.created_by_id,
+                    'created_by_name': _person_name(last_snapshot.created_by),
+                }
+            return payload
+        return self._cash_balance_for_scope(branch)
+
+    @action(detail=False, methods=['get'], url_path='cash-balance')
+    def cash_balance(self, request):
+        branch = request.query_params.get('branch') or 'all'
+        return Response(self._cash_balance_payload(branch))
+
+    @action(detail=False, methods=['post'], url_path='cash-balance/reconcile')
+    def reconcile_cash_balance(self, request):
+        if not (is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})):
+            return Response({'detail': 'Нет доступа к сверке кассы.'}, status=status.HTTP_403_FORBIDDEN)
+
+        amount = request.data.get('amount')
+        if amount in (None, ''):
+            return Response({'amount': 'Укажите фактическую сумму.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            amount = Decimal(str(amount)).quantize(Decimal('0.01'))
+        except Exception:
+            return Response({'amount': 'Укажите корректную сумму.'}, status=status.HTTP_400_BAD_REQUEST)
+        if amount < 0:
+            return Response({'amount': 'Сумма не может быть отрицательной.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        branch_value = request.data.get('branch')
+        branch = None
+        if branch_value not in (None, '', 'all', 'unassigned'):
+            try:
+                branch = Branch.objects.get(pk=branch_value)
+            except (Branch.DoesNotExist, TypeError, ValueError):
+                return Response({'branch': 'Филиал не найден.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        branch_param = str(branch.id) if branch else 'unassigned'
+        expected_before = self._cash_balance_payload(branch_param)['expected_balance']
+        snapshot = CashRegisterSnapshot.objects.create(
+            branch=branch,
+            amount=amount,
+            comment=request.data.get('comment', ''),
+            created_by=request.user,
+        )
+        difference = amount - expected_before
+        log_action(
+            request,
+            AuditLog.Action.CASH_RECONCILIATION,
+            'CashRegisterSnapshot',
+            entity_id=snapshot.id,
+            entity_name=str(snapshot),
+            description='Сверка кассы',
+            changes={
+                'branch': snapshot.branch_id,
+                'amount': str(snapshot.amount),
+                'expected_balance': str(expected_before),
+                'difference': str(difference),
+                'comment': snapshot.comment,
+            },
+        )
+        payload = self._cash_balance_payload(branch_param)
+        payload['difference'] = difference
+        return Response(payload, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
@@ -3120,6 +3268,7 @@ class ReportsSummaryView(APIView):
             'subscription': 'Абонементы',
             'trial': 'Пробники',
             'master_class': 'МК',
+            'camp': '\u041b\u0430\u0433\u0435\u0440\u044c',
             'addon': 'Дополнительные услуги',
             'product': '\u0422\u043e\u0432\u0430\u0440\u044b',
             'retail': '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438',

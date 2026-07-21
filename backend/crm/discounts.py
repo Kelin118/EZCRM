@@ -13,6 +13,10 @@ def money(value):
     return Decimal(value or 0).quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
+def decimal_value(value):
+    return Decimal(str(value or 0))
+
+
 def is_discount_available(discount, *, branch=None, calculation_date=None):
     if not discount or not discount.is_active:
         return False
@@ -43,16 +47,18 @@ def calculate_discount(subtotal, discount=None, *, branch=None, calculation_date
             'discount': None,
             'discount_name': '',
             'discount_type': '',
-            'discount_value': Decimal('0.00'),
+            'discount_value': Decimal('0'),
             'discount_amount': Decimal('0.00'),
             'total_price': subtotal,
         }
 
     validate_discount_for_sale(discount, branch=branch, calculation_date=calculation_date)
-    value = money(discount.value)
+    raw_value = decimal_value(discount.value)
     if discount.discount_type == Discount.Type.PERCENTAGE:
+        value = raw_value
         discount_amount = money(subtotal * value / Decimal('100'))
     else:
+        value = money(raw_value)
         discount_amount = value
     discount_amount = min(discount_amount, subtotal)
 

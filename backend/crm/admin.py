@@ -5,6 +5,7 @@ from .models import (
     AddonSaleItem,
     AuditLog,
     Branch,
+    CashRegisterSnapshot,
     CatalogItem,
     ChatMessage,
     Client,
@@ -153,9 +154,16 @@ class FinanceTransactionAdmin(admin.ModelAdmin):
 
 @admin.register(PaymentMethod)
 class PaymentMethodAdmin(admin.ModelAdmin):
-    list_display = ('name', 'code', 'is_active', 'sort_order')
-    list_filter = ('is_active',)
+    list_display = ('name', 'code', 'is_cash', 'is_active', 'sort_order')
+    list_filter = ('is_cash', 'is_active')
     search_fields = ('name', 'code', 'description')
+
+
+@admin.register(CashRegisterSnapshot)
+class CashRegisterSnapshotAdmin(admin.ModelAdmin):
+    list_display = ('branch', 'amount', 'recorded_at', 'created_by', 'created_at')
+    list_filter = ('branch', 'recorded_at')
+    search_fields = ('branch__name', 'comment', 'created_by__username')
 
 
 @admin.register(ChatMessage)

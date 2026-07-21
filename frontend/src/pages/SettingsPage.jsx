@@ -8,6 +8,7 @@ import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { PageHeader } from './pageUtils.jsx';
 import { formatScheduleDays, weekdayOptions } from '../utils/subscriptionDates.js';
+import { formatDiscountValue, normalizeDecimalString, parseDecimal } from '../utils/discounts.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const empty = {
@@ -33,7 +34,7 @@ const emptyCatalogForm = {
   sort_order: 0,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
-const emptyPaymentMethodForm = { name: '', code: '', description: '', is_active: true, sort_order: 0 };
+const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true, sort_order: 0 };
 const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
 
 const catalogSections = [
@@ -111,9 +112,25 @@ export default function SettingsPage() {
   };
 
   const saveDiscount = async () => {
+    const normalizedValue = normalizeDecimalString(discountForm.value);
+    const maxDecimals = discountForm.discount_type === 'percentage' ? 5 : 2;
+    const decimalPattern = new RegExp(`^\\d+(\\.\\d{1,${maxDecimals}})?$`);
+    if (!decimalPattern.test(normalizedValue)) {
+      window.dispatchEvent(new CustomEvent('api-error', { detail: `Укажите корректное значение скидки: больше 0, до ${maxDecimals} знаков после запятой.` }));
+      return;
+    }
+    const numericValue = parseDecimal(normalizedValue);
+    if (numericValue <= 0) {
+      window.dispatchEvent(new CustomEvent('api-error', { detail: `Укажите корректное значение скидки: больше 0, до ${maxDecimals} знаков после запятой.` }));
+      return;
+    }
+    if (discountForm.discount_type === 'percentage' && numericValue > 100) {
+      window.dispatchEvent(new CustomEvent('api-error', { detail: 'Процентная скидка не может быть больше 100%.' }));
+      return;
+    }
     const payload = {
       ...discountForm,
-      value: Number(discountForm.value),
+      value: normalizedValue,
       branch: discountForm.branch || null,
       valid_from: discountForm.valid_from || null,
       valid_until: discountForm.valid_until || null,
@@ -336,12 +353,12 @@ export default function SettingsPage() {
         <SettingsCard icon={CreditCard} title="Способы оплаты" subtitle="Доступные способы при оформлении оплат">
           {canEditCatalog && <Button className="mb-4" onClick={() => { setPaymentMethodForm(emptyPaymentMethodForm); setPaymentMethodModal({ open: true, item: null }); }}><Plus size={16} />Добавить способ оплаты</Button>}
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="min-w-[680px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
+            <table className="min-w-[760px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Наличные</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
               <tbody>{paymentMethods.map((item) => <tr key={item.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.description || '—'}</td><td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}</td>
+                <td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.description || '—'}</td><td className="px-4 py-3">{item.is_cash ? 'Да' : 'Нет'}</td><td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}</td>
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
+                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
                   {canEditCatalog && <Button variant="secondary" onClick={() => togglePaymentMethod(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
                 </div></td>
               </tr>)}</tbody>
@@ -358,7 +375,7 @@ export default function SettingsPage() {
               <tbody>{discounts.map((item) => <tr key={item.id} className="border-t border-slate-100">
                 <td className="px-4 py-3 font-semibold">{item.name}</td>
                 <td className="px-4 py-3">{item.discount_type === 'percentage' ? 'Процент' : 'Фикс.'}</td>
-                <td className="px-4 py-3">{item.discount_type === 'percentage' ? `${Number(item.value)}%` : `${money(item.value)} ₸`}</td>
+                <td className="px-4 py-3">{item.discount_type === 'percentage' ? `${formatDiscountValue(item.value)}%` : `${money(item.value)} ₸`}</td>
                 <td className="px-4 py-3">{item.branch_name || 'Все филиалы'}</td>
                 <td className="px-4 py-3">{[item.valid_from || '—', item.valid_until || '—'].join(' — ')}</td>
                 <td className="px-4 py-3">{item.is_active ? 'Активна' : 'Отключена'}</td>
@@ -472,6 +489,7 @@ export default function SettingsPage() {
           <Input label="Код" value={paymentMethodForm.code || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, code: event.target.value })} />
           <Input label="Порядок" type="number" value={paymentMethodForm.sort_order ?? 0} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_cash} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_cash: event.target.checked })} />Наличные</label>
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>
@@ -491,7 +509,7 @@ export default function SettingsPage() {
               <option value="fixed">Фиксированная</option>
             </select>
           </label>
-          <Input label={discountForm.discount_type === 'percentage' ? 'Значение, %' : 'Значение, ₸'} type="number" min="0" value={discountForm.value} onChange={(event) => setDiscountForm({ ...discountForm, value: event.target.value })} />
+          <Input label={discountForm.discount_type === 'percentage' ? 'Значение, %' : 'Значение, ₸'} type="text" inputMode="decimal" value={discountForm.value} onChange={(event) => setDiscountForm({ ...discountForm, value: event.target.value })} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Филиал
             <select value={discountForm.branch || ''} onChange={(event) => setDiscountForm({ ...discountForm, branch: event.target.value })} className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none">

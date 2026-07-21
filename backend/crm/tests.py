@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from unittest.mock import patch
-from io import StringIO
+from io import BytesIO, StringIO
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
@@ -9,6 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.db import connection
 from django.utils import timezone
+from openpyxl import load_workbook
 from rest_framework.test import APITestCase
 
 from .models import (
@@ -16,6 +17,7 @@ from .models import (
     AddonSaleItem,
     AuditLog,
     Branch,
+    CashRegisterSnapshot,
     CatalogItem,
     Client,
     Discount,
@@ -35,8 +37,10 @@ from .models import (
     Visit,
 )
 from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
+from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
 from .views import _client_active_subscription
+from .export_excel import export_finance
 
 
 class SubscriptionDateHelperTests(APITestCase):
@@ -217,6 +221,134 @@ class FinanceTransactionApiTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         transaction = FinanceTransaction.objects.get(pk=response.data['id'])
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.EXPENSE)
+
+
+class CashBalanceApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='cash-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='cash-manager', password='pass', role='manager', roles=['manager'])
+        self.accountant = User.objects.create_user(username='cash-accountant', password='pass', role='accountant', roles=['accountant'])
+        self.teacher = User.objects.create_user(username='cash-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.branch = Branch.objects.create(name='Cash Branch')
+        self.other_branch = Branch.objects.create(name='Other Cash Branch')
+        self.cash = PaymentMethod.objects.create(name='Cash', code='cash', is_cash=True)
+        self.card = PaymentMethod.objects.create(name='Card', code='card', is_cash=False)
+
+    def cash_balance(self, branch='all'):
+        response = self.client.get('/api/finance/cash-balance/', {'branch': branch})
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def create_transaction(self, amount, transaction_type=FinanceTransaction.Type.INCOME, *, branch=None, payment_method=None):
+        return FinanceTransaction.objects.create(
+            transaction_type=transaction_type,
+            amount=Decimal(amount),
+            source='manual',
+            branch=branch,
+            payment_method=payment_method or self.cash,
+            paid_at=timezone.now(),
+        )
+
+    def test_cash_income_increases_balance_and_expense_decreases_it(self):
+        self.client.force_authenticate(self.accountant)
+        self.create_transaction('1000.00', FinanceTransaction.Type.INCOME, branch=self.branch)
+        self.create_transaction('250.00', FinanceTransaction.Type.EXPENSE, branch=self.branch)
+
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(Decimal(data['cash_income']), Decimal('1000.00'))
+        self.assertEqual(Decimal(data['cash_expense']), Decimal('250.00'))
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('750.00'))
+
+    def test_non_cash_transaction_does_not_affect_cash_balance(self):
+        self.client.force_authenticate(self.accountant)
+        self.create_transaction('1000.00', branch=self.branch, payment_method=self.card)
+
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('0.00'))
+
+    def test_branch_balances_are_not_mixed(self):
+        self.client.force_authenticate(self.accountant)
+        self.create_transaction('1000.00', branch=self.branch)
+        self.create_transaction('3000.00', branch=self.other_branch)
+
+        first = self.cash_balance(str(self.branch.id))
+        second = self.cash_balance(str(self.other_branch.id))
+
+        self.assertEqual(Decimal(first['expected_balance']), Decimal('1000.00'))
+        self.assertEqual(Decimal(second['expected_balance']), Decimal('3000.00'))
+
+    def test_first_reconciliation_sets_opening_balance(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/cash-balance/reconcile/',
+            {'branch': self.branch.id, 'amount': '125000.00', 'comment': 'Evening count'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        data = self.cash_balance(str(self.branch.id))
+        self.assertEqual(Decimal(data['opening_balance']), Decimal('125000.00'))
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('125000.00'))
+
+    def test_operations_after_reconciliation_are_added_and_subtracted(self):
+        self.client.force_authenticate(self.accountant)
+        CashRegisterSnapshot.objects.create(branch=self.branch, amount=Decimal('1000.00'), created_by=self.accountant)
+        self.create_transaction('500.00', FinanceTransaction.Type.INCOME, branch=self.branch)
+        self.create_transaction('200.00', FinanceTransaction.Type.EXPENSE, branch=self.branch)
+
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(Decimal(data['opening_balance']), Decimal('1000.00'))
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('1300.00'))
+
+    def test_editing_cash_transaction_recalculates_balance(self):
+        self.client.force_authenticate(self.accountant)
+        transaction = self.create_transaction('1000.00', branch=self.branch)
+
+        response = self.client.patch(f'/api/finance/{transaction.id}/', {'amount': '1500.00'}, format='json')
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('1500.00'))
+
+    def test_deleting_cash_transaction_recalculates_balance(self):
+        self.client.force_authenticate(self.accountant)
+        transaction = self.create_transaction('1000.00', branch=self.branch)
+
+        response = self.client.delete(f'/api/finance/{transaction.id}/')
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('0.00'))
+
+    def test_teacher_cannot_access_cash_balance(self):
+        self.client.force_authenticate(self.teacher)
+
+        response = self.client.get('/api/finance/cash-balance/')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_reconciliation_is_written_to_audit_log(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/finance/cash-balance/reconcile/',
+            {'branch': self.branch.id, 'amount': '125000.00', 'comment': 'Evening count'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditLog.Action.CASH_RECONCILIATION,
+                entity_type='CashRegisterSnapshot',
+                description='Сверка кассы',
+            ).exists()
+        )
 
 
 class AddonSaleApiTests(APITestCase):
@@ -511,11 +643,32 @@ class DiscountApiAndSalesTests(APITestCase):
         self.assertEqual(fixed.status_code, 201)
         self.assertEqual(Discount.objects.count(), 2)
 
+    def test_percentage_discount_accepts_high_precision_and_comma(self):
+        self.client.force_authenticate(self.admin)
+
+        three_decimals = self.client.post(
+            '/api/discounts/',
+            {'name': 'High precision 23.333', 'discount_type': 'percentage', 'value': '23.333'},
+            format='json',
+        )
+        comma_value = self.client.post(
+            '/api/discounts/',
+            {'name': 'High precision comma', 'discount_type': 'percentage', 'value': '23,33333'},
+            format='json',
+        )
+
+        self.assertEqual(three_decimals.status_code, 201)
+        self.assertEqual(comma_value.status_code, 201)
+        self.assertEqual(Discount.objects.get(pk=three_decimals.data['id']).value, Decimal('23.33300'))
+        self.assertEqual(Discount.objects.get(pk=comma_value.data['id']).value, Decimal('23.33333'))
+
     def test_discount_validation_and_permissions(self):
         self.client.force_authenticate(self.admin)
         too_large = self.client.post('/api/discounts/', {'name': 'Bad', 'discount_type': 'percentage', 'value': '101'}, format='json')
+        slightly_too_large = self.client.post('/api/discounts/', {'name': 'Too precise bad', 'discount_type': 'percentage', 'value': '100.00001'}, format='json')
         zero_fixed = self.client.post('/api/discounts/', {'name': 'Zero', 'discount_type': 'fixed', 'value': '0'}, format='json')
         self.assertEqual(too_large.status_code, 400)
+        self.assertEqual(slightly_too_large.status_code, 400)
         self.assertEqual(zero_fixed.status_code, 400)
 
         self.client.force_authenticate(self.manager)
@@ -535,6 +688,45 @@ class DiscountApiAndSalesTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         ids = {item['id'] for item in response.data}
         self.assertEqual(ids, {active.id})
+
+    def test_percentage_discount_calculation_uses_full_precision_then_rounds_money(self):
+        discount = Discount.objects.create(
+            name='High precision',
+            discount_type=Discount.Type.PERCENTAGE,
+            value=Decimal('23.33333'),
+        )
+
+        result = calculate_discount(Decimal('30000.00'), discount)
+
+        self.assertEqual(result['discount_value'], Decimal('23.33333'))
+        self.assertEqual(result['discount_amount'], Decimal('7000.00'))
+        self.assertEqual(result['total_price'], Decimal('23000.00'))
+
+    def test_percentage_discount_three_decimals_rounds_money_to_tiin(self):
+        discount = Discount.objects.create(
+            name='Three decimals',
+            discount_type=Discount.Type.PERCENTAGE,
+            value=Decimal('23.333'),
+        )
+
+        result = calculate_discount(Decimal('30000.00'), discount)
+
+        self.assertEqual(result['discount_value'], Decimal('23.333'))
+        self.assertEqual(result['discount_amount'], Decimal('6999.90'))
+        self.assertEqual(result['total_price'], Decimal('23000.10'))
+
+    def test_fixed_discount_is_still_rounded_as_money(self):
+        discount = Discount.objects.create(
+            name='Fixed with extra decimals',
+            discount_type=Discount.Type.FIXED,
+            value=Decimal('1234.567'),
+        )
+
+        result = calculate_discount(Decimal('30000.00'), discount)
+
+        self.assertEqual(result['discount_value'], Decimal('1234.57'))
+        self.assertEqual(result['discount_amount'], Decimal('1234.57'))
+        self.assertEqual(result['total_price'], Decimal('28765.43'))
 
     def test_subscription_percentage_discount_creates_snapshot_and_finance(self):
         discount = Discount.objects.create(name='Скидка 10%', discount_type=Discount.Type.PERCENTAGE, value=10, branch=self.branch)
@@ -568,8 +760,41 @@ class DiscountApiAndSalesTests(APITestCase):
         self.assertEqual(transaction.amount, Decimal('54000.00'))
         self.assertEqual(transaction.paid_at.date(), timezone.localdate())
 
+    def test_subscription_percentage_discount_stores_exact_snapshot(self):
+        self.service.price = Decimal('30000.00')
+        self.service.save(update_fields=('price',))
+        discount = Discount.objects.create(
+            name='High precision subscription',
+            discount_type=Discount.Type.PERCENTAGE,
+            value=Decimal('23.33333'),
+            branch=self.branch,
+        )
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': self.client_obj.id,
+                'branch': self.branch.id,
+                'service': self.service.id,
+                'discount': discount.id,
+                'payment_method': self.payment_method.id,
+                'start_date': '2026-07-14',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(subscription.discount_value, Decimal('23.33333'))
+        self.assertEqual(subscription.discount_amount, Decimal('7000.00'))
+        self.assertEqual(subscription.paid_amount, Decimal('23000.00'))
+        self.assertEqual(transaction.discount_amount, Decimal('7000.00'))
+        self.assertEqual(transaction.amount, Decimal('23000.00'))
+
     def test_fixed_discount_is_capped_by_subtotal_and_snapshot_survives_edit(self):
-        discount = Discount.objects.create(name='Большая скидка', discount_type=Discount.Type.FIXED, value=999999)
+        discount = Discount.objects.create(name='Большая скидка', discount_type=Discount.Type.FIXED, value=99999)
         self.client.force_authenticate(self.manager)
 
         response = self.client.post('/api/addon-sales/', {
@@ -2868,6 +3093,113 @@ class TrialConversionTests(APITestCase):
                 description='Пробник переведен в абонемент',
             ).exists()
         )
+
+
+class CampFinanceSourceTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='camp-source-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='camp-source-manager', password='pass', role='manager', roles=['manager'])
+        self.teacher = User.objects.create_user(username='camp-source-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.branch = Branch.objects.create(name='Camp Source Branch')
+        self.client_obj = Client.objects.create(first_name='Camp', last_name='Client', branch=self.branch)
+        self.payment_method = PaymentMethod.objects.create(name='Camp cash', code='cash')
+        self.course = CatalogItem.objects.create(
+            name='AB-8', price='45000.00', category=CatalogItem.Category.SERVICE,
+            service_type=CatalogItem.ServiceType.COURSE, lessons_count=8, validity_days=30,
+        )
+        self.camp = CatalogItem.objects.create(
+            name='Summer camp', price='90000.00', category=CatalogItem.Category.SERVICE,
+            service_type=CatalogItem.ServiceType.CAMP, lessons_count=5, validity_days=14,
+        )
+
+    def create_subscription_payment(self, service):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            '/api/subscriptions/',
+            {
+                'client': self.client_obj.id,
+                'service': service.id,
+                'start_date': '2026-07-01',
+                'paid_amount': str(service.price),
+                'payment_method': self.payment_method.id,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return Subscription.objects.get(pk=response.data['id'])
+
+    def test_camp_subscription_payment_uses_camp_source(self):
+        subscription = self.create_subscription_payment(self.camp)
+
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(transaction.source, 'camp')
+
+    def test_course_subscription_payment_keeps_subscription_source(self):
+        subscription = self.create_subscription_payment(self.course)
+
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+        self.assertEqual(transaction.source, 'subscription')
+
+    def test_trial_conversion_to_camp_uses_camp_source(self):
+        trial = Trial.objects.create(
+            client=self.client_obj, manager=self.manager, teacher=self.teacher,
+            scheduled_at=timezone.now(), status=Trial.Status.ATTENDED,
+        )
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            f'/api/trials/{trial.id}/convert-to-subscription/',
+            {'service': self.camp.id, 'start_date': '2026-07-01', 'payment_method': self.payment_method.id},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction']['id'])
+        self.assertEqual(transaction.source, 'camp')
+
+    def test_attendance_created_camp_subscription_uses_camp_source(self):
+        group = StudyGroup.objects.create(name='Camp group', branch=self.branch)
+        lesson = Lesson.objects.create(
+            group=group, teacher=self.teacher, lesson_date=date(2026, 7, 1),
+            start_time=time(10, 0), end_time=time(11, 0),
+        )
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            f'/api/lessons/{lesson.id}/add-student/',
+            {
+                'client': self.client_obj.id,
+                'status': Visit.Status.PLANNED,
+                'create_subscription': True,
+                'service': self.camp.id,
+                'total_visits': 5,
+                'remaining_visits': 5,
+                'payment_method': self.payment_method.id,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        transaction = FinanceTransaction.objects.get(pk=response.data['finance_transaction'])
+        self.assertEqual(transaction.source, 'camp')
+
+    def test_finance_filter_summary_and_export_show_camp_source(self):
+        subscription = self.create_subscription_payment(self.camp)
+        transaction = FinanceTransaction.objects.get(subscription=subscription)
+
+        filtered = self.client.get('/api/finance/', {'source': 'camp'})
+        summary = self.client.get('/api/reports/summary/')
+        workbook = load_workbook(export_finance(FinanceTransaction.objects.filter(pk=transaction.pk)))
+        sheet = workbook.active
+
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual([item['id'] for item in filtered.data], [transaction.id])
+        self.assertEqual(summary.status_code, 200)
+        sources = {item['source']: item for item in summary.data['income_by_source']}
+        self.assertIn('camp', sources)
+        self.assertEqual(sources['camp']['source_display'], '\u041b\u0430\u0433\u0435\u0440\u044c')
+        self.assertEqual(sheet['D2'].value, '\u041b\u0430\u0433\u0435\u0440\u044c')
 
 
 class BranchIntegrationTests(APITestCase):

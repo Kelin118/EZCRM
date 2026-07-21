@@ -28,6 +28,7 @@ const emptyCatalogForm = {
   lessons_count: '',
   validity_days: '',
   schedule_days: [],
+  service_type: 'course',
   is_active: true,
   sort_order: 0,
 };
@@ -189,7 +190,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }
+        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], service_type: item.service_type || 'course', is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }
         : { ...emptyCatalogForm },
     );
   };
@@ -234,6 +235,7 @@ export default function SettingsPage() {
       category: catalogModal.category,
       is_active: catalogForm.is_active,
       sort_order: catalogForm.sort_order !== '' ? Number(catalogForm.sort_order) : 0,
+      service_type: catalogModal.category === 'service' ? catalogForm.service_type : 'course',
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
       validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
       schedule_days: catalogModal.category === 'service' ? catalogForm.schedule_days : [],
@@ -522,7 +524,18 @@ export default function SettingsPage() {
           <Input label="Порядок" type="number" min="0" value={catalogForm.sort_order ?? 0} onChange={(event) => setCatalogForm({ ...catalogForm, sort_order: event.target.value })} />
           {catalogModal.category === 'service' && (
             <>
-              <Input label="Количество занятий" type="number" min="1" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
+              <label className="block text-sm font-semibold text-slate-700">
+                Тип услуги
+                <select
+                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-brand"
+                  value={catalogForm.service_type}
+                  onChange={(event) => setCatalogForm({ ...catalogForm, service_type: event.target.value })}
+                >
+                  <option value="course">Учебный курс</option>
+                  <option value="camp">Лагерь</option>
+                </select>
+              </label>
+              <Input label="Количество занятий" type="number" min="0" value={catalogForm.lessons_count} onChange={(event) => setCatalogForm({ ...catalogForm, lessons_count: event.target.value })} />
               <Input label="Срок действия, дней" type="number" min="1" value={catalogForm.validity_days} onChange={(event) => setCatalogForm({ ...catalogForm, validity_days: event.target.value })} />
               <div className="grid gap-2 md:col-span-2">
                 <p className="text-sm font-semibold text-slate-700">Дни недели</p>
@@ -602,6 +615,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
               {section.category === 'service' && (
                 <>
+                  <th className="border-b border-slate-100 px-4 py-3 font-bold">??? ??????</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Занятий</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Срок действия</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Дни недели</th>
@@ -613,9 +627,9 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={section.category === 'service' ? 7 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 8 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={section.category === 'service' ? 7 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
+              <tr><td colSpan={section.category === 'service' ? 8 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
@@ -623,6 +637,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
                   <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
                   {section.category === 'service' && (
                     <>
+                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.service_type === 'camp' ? '??????' : '??????? ????'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.lessons_count || '—'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.validity_days ? `${item.validity_days} дн.` : '—'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{formatScheduleDays(item.schedule_days) || '—'}</td>

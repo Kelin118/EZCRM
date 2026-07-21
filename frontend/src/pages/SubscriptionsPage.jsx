@@ -59,6 +59,9 @@ const baseFields = [
 
 function Progress({ row }) {
   const total = Number(row.lessons_total ?? row.total_visits ?? 0);
+  if (total <= 0) {
+    return <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">Абонемент по сроку</span>;
+  }
   const left = Number(row.lessons_left ?? row.remaining_visits ?? 0);
   const used = Number(row.used_lessons ?? Math.max(total - left, 0));
   const percent = total ? Math.min((used / total) * 100, 100) : 0;
@@ -74,7 +77,7 @@ function Progress({ row }) {
 }
 
 export default function SubscriptionsPage() {
-  const crud = useCrudResource('subscriptions/', { status: '', client: '', date_from: '', date_to: '', branch: '' });
+  const crud = useCrudResource('subscriptions/', { status: '', client: '', service_type: '', date_from: '', date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
@@ -90,7 +93,7 @@ export default function SubscriptionsPage() {
   const totalPaid = crud.items.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
   const serviceOptions = services.map((service) => ({
     value: String(service.id),
-    label: `${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸${service.lessons_count ? ` · ${service.lessons_count} зан.` : ''}${service.validity_days ? ` · ${service.validity_days} дн.` : ''}`,
+    label: `${service.service_type === 'camp' ? '?????? ? ' : ''}${service.name} · ${Number(service.price || 0).toLocaleString('ru-RU')} ₸${service.lessons_count ? ` · ${service.lessons_count} зан.` : ''}${service.validity_days ? ` · ${service.validity_days} дн.` : ''}`,
   }));
   const selectedService = services.find((item) => String(item.id) === String(form.service));
   const currentAddonsTotal = addonsTotal(form.addons, addonCatalogItems);
@@ -266,6 +269,7 @@ export default function SubscriptionsPage() {
       </PageHeader>
       <Filters>
         <SelectField label="Статус" value={crud.filters.status} onChange={(value) => crud.setFilters({ ...crud.filters, status: value })} options={[{ value: '', label: 'Все' }, { value: 'active', label: 'Активные' }, { value: 'paused', label: 'Пауза' }, { value: 'expired', label: 'Истёк' }, { value: 'cancelled', label: 'Отменён' }]} />
+        <SelectField label="??? ??????" value={crud.filters.service_type} onChange={(value) => crud.setFilters({ ...crud.filters, service_type: value })} options={[{ value: '', label: '???' }, { value: 'course', label: '??????? ????' }, { value: 'camp', label: '??????' }]} />
         <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все' }, ...clientOptions]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Дата от" type="date" value={crud.filters.date_from} onChange={(e) => crud.setFilters({ ...crud.filters, date_from: e.target.value })} />
@@ -279,8 +283,10 @@ export default function SubscriptionsPage() {
             {row.addons?.length ? <p className="text-xs font-semibold text-slate-500">+ {row.addons.length} доп. услуги</p> : null}
           </div>
         ) },
+        { key: 'service_type', header: '???', render: (row) => <Badge value={row.service_type}>{row.service_type === 'camp' ? '??????' : '??????? ????'}</Badge> },
         { key: 'lessons_total', header: 'Всего', render: (row) => row.lessons_total ?? row.total_visits },
         { key: 'lessons_left', header: 'Осталось', render: (row) => row.lessons_left ?? row.remaining_visits },
+        { key: 'progress', header: '????????', render: (row) => <Progress row={row} /> },
         { key: 'start_date', header: 'Дата начала' },
         { key: 'end_date', header: 'Дата окончания' },
         { key: 'status', header: 'Статус', render: (row) => {

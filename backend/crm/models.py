@@ -683,12 +683,17 @@ class CatalogItem(TimeStampedModel):
         ADDON = 'addon', 'Доп. услуги'
         EXTRA_SERVICE = 'extra_service', 'Доп. услуги'
 
+    class ServiceType(models.TextChoices):
+        COURSE = 'course', 'Course'
+        CAMP = 'camp', 'Camp'
+
     name = models.CharField(max_length=150)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     lessons_count = models.PositiveIntegerField(null=True, blank=True)
     validity_days = models.PositiveIntegerField(null=True, blank=True)
     schedule_days = models.JSONField(default=list, blank=True)
     category = models.CharField(max_length=30, choices=Category.choices)
+    service_type = models.CharField(max_length=20, choices=ServiceType.choices, default=ServiceType.COURSE)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)
 

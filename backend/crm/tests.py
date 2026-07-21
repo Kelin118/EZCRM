@@ -19,11 +19,14 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateTemplate,
+    CertificateRedemption,
     Client,
     Discount,
     FinanceTransaction,
     FinancePaymentPart,
     GroupMembership,
+    GiftCertificate,
     Lesson,
     MasterClass,
     PaymentMethod,
@@ -4073,3 +4076,118 @@ class SubscriptionEditRoundTripTests(APITestCase):
         addon = subscription.subscription_addons.first()
         self.assertEqual(addon.quantity, 2)
         self.assertEqual(addon.unit_price, Decimal('5000.00'))
+
+
+class CertificateApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='cert-admin', password='pass')
+        self.manager = User.objects.create_user(username='cert-manager', password='pass', role='manager', roles=['manager'])
+        self.accountant = User.objects.create_user(username='cert-accountant', password='pass', role='accountant', roles=['accountant'])
+        self.teacher = User.objects.create_user(username='cert-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.client_obj = Client.objects.create(first_name='Алия', last_name='Сатыпова', parent_name='Анара', phone='87071234567')
+        self.cash = PaymentMethod.objects.create(name='Cert cash', code='cert_cash', is_cash=True)
+        self.card = PaymentMethod.objects.create(name='Cert card', code='cert_card')
+        self.template = CertificateTemplate.objects.create(
+            name='МК',
+            title='Мастер-класс',
+            subtitle='Для оплаты услуг',
+            amount_type=CertificateTemplate.AmountType.RANGE,
+            min_amount=Decimal('10000.00'),
+            max_amount=Decimal('50000.00'),
+            validity_days=365,
+            sale_discount_percent=Decimal('10.00000'),
+        )
+        self.client.force_authenticate(self.admin)
+
+    def payload(self, **overrides):
+        data = {
+            'template': self.template.id,
+            'purchaser_client': self.client_obj.id,
+            'recipient_name': 'Алия',
+            'recipient_phone': '87071234567',
+            'face_value': '50000.00',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '45000.00'}],
+        }
+        data.update(overrides)
+        return data
+
+    def test_manager_and_accountant_can_create_teacher_forbidden(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.get('/api/certificates/')
+        self.assertEqual(response.status_code, 200)
+        self.client.force_authenticate(self.accountant)
+        response = self.client.post('/api/certificates/', self.payload(recipient_name='Бухгалтер'), format='json')
+        self.assertEqual(response.status_code, 201)
+        self.client.force_authenticate(self.teacher)
+        response = self.client.get('/api/certificates/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_template_validation_rejects_invalid_range(self):
+        response = self.client.post('/api/certificate-templates/', {
+            'name': 'Bad',
+            'title': 'Bad',
+            'amount_type': 'range',
+            'min_amount': '20000.00',
+            'max_amount': '10000.00',
+            'validity_days': 365,
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_paid_certificate_creates_finance_transaction_with_mixed_parts(self):
+        response = self.client.post('/api/certificates/', self.payload(payment_parts=[
+            {'payment_method': self.cash.id, 'amount': '20000.00'},
+            {'payment_method': self.card.id, 'amount': '25000.00'},
+        ]), format='json')
+        self.assertEqual(response.status_code, 201)
+        certificate = GiftCertificate.objects.get(pk=response.data['id'])
+        self.assertEqual(certificate.sale_price, Decimal('45000.00'))
+        self.assertEqual(certificate.remaining_amount, Decimal('50000.00'))
+        transaction = certificate.finance_transaction
+        self.assertEqual(transaction.source, 'certificate')
+        self.assertEqual(transaction.amount, Decimal('45000.00'))
+        self.assertEqual(transaction.payment_method_name, 'Смешанная оплата')
+        self.assertEqual(transaction.payment_parts.count(), 2)
+
+    def test_free_certificate_does_not_create_finance_transaction(self):
+        self.template.sale_discount_percent = Decimal('100.00000')
+        self.template.save()
+        response = self.client.post('/api/certificates/', self.payload(payment_parts=[]), format='json')
+        self.assertEqual(response.status_code, 201)
+        certificate = GiftCertificate.objects.get(pk=response.data['id'])
+        self.assertIsNone(certificate.finance_transaction)
+
+    def test_redeem_updates_remaining_and_status_without_income(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = response.data['id']
+        before = FinanceTransaction.objects.count()
+        response = self.client.post(f'/api/certificates/{certificate_id}/redeem/', {'amount': '15000.00', 'comment': 'Оплата'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        certificate = GiftCertificate.objects.get(pk=certificate_id)
+        self.assertEqual(certificate.remaining_amount, Decimal('35000.00'))
+        self.assertEqual(certificate.status, GiftCertificate.Status.PARTIALLY_USED)
+        self.assertEqual(CertificateRedemption.objects.count(), 1)
+        self.assertEqual(FinanceTransaction.objects.count(), before)
+
+    def test_redeem_more_than_remaining_rejected(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        response = self.client.post(f'/api/certificates/{response.data["id"]}/redeem/', {'amount': '60000.00'}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_public_endpoint_is_safe_and_anonymous(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        token = response.data['public_token']
+        self.client.force_authenticate(user=None)
+        response = self.client.get(f'/api/public/certificates/{token}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('code', response.data)
+        self.assertNotIn('finance_transaction', response.data)
+        self.assertNotIn('payment_parts', response.data)
+
+    def test_mark_sent_saves_phone(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        response = self.client.post(f'/api/certificates/{response.data["id"]}/mark-sent/', {'phone': '77071234567'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        certificate = GiftCertificate.objects.get(pk=response.data['id'])
+        self.assertEqual(certificate.sent_to_phone, '77071234567')
+        self.assertIsNotNone(certificate.sent_at)

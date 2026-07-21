@@ -8,6 +8,7 @@ from .views import (
     BackupCreateView,
     BranchViewSet,
     CatalogItemViewSet,
+    CertificateTemplateViewSet,
     ChatMessageViewSet,
     ClientViewSet,
     CurrentUserView,
@@ -25,6 +26,8 @@ from .views import (
     MasterClassViewSet,
     PaymentMethodViewSet,
     MasterClassesExportView,
+    GiftCertificateViewSet,
+    PublicGiftCertificateView,
     ReportsSummaryView,
     ReportSummaryExportView,
     RoomViewSet,
@@ -62,6 +65,8 @@ router.register('payment-methods', PaymentMethodViewSet, basename='payment-metho
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
 router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')
+router.register('certificate-templates', CertificateTemplateViewSet, basename='certificate-template')
+router.register('certificates', GiftCertificateViewSet, basename='certificate')
 router.register('audit-logs', AuditLogViewSet, basename='audit-log')
 
 urlpatterns = [
@@ -81,6 +86,7 @@ urlpatterns = [
     path('export/lessons/', LessonsExportView.as_view(), name='export-lessons'),
     path('export/report-summary/', ReportSummaryExportView.as_view(), name='export-report-summary'),
     path('backup/create/', BackupCreateView.as_view(), name='backup-create'),
+    path('public/certificates/<uuid:public_token>/', PublicGiftCertificateView.as_view(), name='public-certificate'),
 ]
 
 urlpatterns += router.urls

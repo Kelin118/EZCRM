@@ -6,6 +6,7 @@ import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from '.
 import AppLayout from './components/layout/AppLayout.jsx';
 import AuditLogsPage from './pages/AuditLogsPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
+import CertificatesPage from './pages/CertificatesPage.jsx';
 import ClientDetailPage from './pages/ClientDetailPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
@@ -19,6 +20,7 @@ import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
+import PublicCertificatePage from './pages/PublicCertificatePage.jsx';
 import SchedulePage from './pages/SchedulePage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import SubscriptionsPage from './pages/SubscriptionsPage.jsx';
@@ -82,6 +84,7 @@ export default function App() {
           </PublicRoute>
         }
       />
+      <Route path="/certificate/:token" element={<PublicCertificatePage />} />
       <Route element={<ProtectedRoute />}>
         <Route index element={<DashboardPage />} />
         <Route path="clients" element={<ClientsPage />} />
@@ -90,6 +93,7 @@ export default function App() {
         <Route path="visits" element={<VisitsPage />} />
         <Route path="trials" element={<TrialsPage />} />
         <Route path="master-classes" element={<MasterClassesPage />} />
+        <Route path="certificates" element={<CertificatesPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="dictionaries" element={<DictionariesPage />} />
         <Route path="export" element={<ExportPage />} />

@@ -144,6 +144,13 @@ class AddonSalePermission(RolePermission):
     }
 
 
+class CertificatePermission(RolePermission):
+    allowed_by_role = {
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent'},
+        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent'},
+    }
+
+
 class DiscountPermission(BasePermission):
     def has_permission(self, request, view):
         if not is_authenticated(request.user):

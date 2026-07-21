@@ -6,6 +6,7 @@ import {
   ClipboardList,
   CreditCard,
   Download,
+  Gift,
   Home,
   Library,
   ListChecks,

@@ -7,11 +7,14 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateRedemption,
+    CertificateTemplate,
     ChatMessage,
     Client,
     Discount,
     FinancePaymentPart,
     FinanceTransaction,
+    GiftCertificate,
     GroupMembership,
     Lesson,
     MasterClass,
@@ -158,6 +161,27 @@ class FinancePaymentPartAdmin(admin.ModelAdmin):
     list_display = ('transaction', 'payment_method_name', 'amount')
     list_filter = ('payment_method',)
     search_fields = ('transaction__comment', 'payment_method_name')
+
+
+@admin.register(CertificateTemplate)
+class CertificateTemplateAdmin(admin.ModelAdmin):
+    list_display = ('name', 'amount_type', 'fixed_amount', 'min_amount', 'max_amount', 'validity_days', 'sale_discount_percent', 'is_active')
+    list_filter = ('amount_type', 'is_active')
+    search_fields = ('name', 'title', 'subtitle', 'description')
+
+
+@admin.register(GiftCertificate)
+class GiftCertificateAdmin(admin.ModelAdmin):
+    list_display = ('code', 'template_name', 'recipient_name', 'face_value', 'remaining_amount', 'valid_until', 'status')
+    list_filter = ('status', 'template')
+    search_fields = ('code', 'recipient_name', 'recipient_phone', 'purchaser_client__first_name', 'purchaser_client__last_name', 'purchaser_client__phone')
+    readonly_fields = ('public_token',)
+
+
+@admin.register(CertificateRedemption)
+class CertificateRedemptionAdmin(admin.ModelAdmin):
+    list_display = ('certificate', 'amount', 'redeemed_at', 'created_by')
+    search_fields = ('certificate__code', 'comment', 'created_by__username')
 
 
 @admin.register(PaymentMethod)

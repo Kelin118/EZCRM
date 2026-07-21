@@ -18,6 +18,7 @@ const emptyCashForm = { branch: '', amount: '', comment: '' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
   { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительные услуги' },
+  { value: 'certificate', label: 'Сертификат' },
   { value: 'camp', label: '\u041b\u0430\u0433\u0435\u0440\u044c' },
   { value: 'product', label: '\u0422\u043e\u0432\u0430\u0440' }, { value: 'retail', label: '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438' },
   { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' },

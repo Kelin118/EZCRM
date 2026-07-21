@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -632,6 +634,88 @@ class FinanceTransaction(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
+class CertificateTemplate(TimeStampedModel):
+    class AmountType(models.TextChoices):
+        FIXED = 'fixed', '?????????????'
+        RANGE = 'range', '????????'
+
+    name = models.CharField(max_length=150)
+    title = models.CharField(max_length=150)
+    subtitle = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    amount_type = models.CharField(max_length=20, choices=AmountType.choices, default=AmountType.FIXED)
+    fixed_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    min_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    max_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    validity_days = models.PositiveIntegerField(default=365)
+    sale_discount_percent = models.DecimalField(max_digits=10, decimal_places=5, default=0)
+    background_from = models.CharField(max_length=20, default='#fff7ed')
+    background_to = models.CharField(max_length=20, default='#fef3c7')
+    accent_color = models.CharField(max_length=20, default='#f59e0b')
+    text_color = models.CharField(max_length=20, default='#1f2937')
+    badge_text = models.CharField(max_length=100, blank=True, default='?????????? ??????????')
+    terms = models.TextField(blank=True)
+    background_image_url = models.URLField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ('-is_active', 'name')
+
+    def __str__(self):
+        return self.name
+
+
+class GiftCertificate(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        ACTIVE = 'active', 'Active'
+        PARTIALLY_USED = 'partially_used', 'Partially used'
+        USED = 'used', 'Used'
+        EXPIRED = 'expired', 'Expired'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    template = models.ForeignKey(CertificateTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificates')
+    template_name = models.CharField(max_length=150, blank=True)
+    template_snapshot = models.JSONField(default=dict, blank=True)
+    code = models.CharField(max_length=40, unique=True)
+    public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    purchaser_client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name='purchased_certificates')
+    recipient_name = models.CharField(max_length=150)
+    recipient_phone = models.CharField(max_length=30, blank=True)
+    face_value = models.DecimalField(max_digits=12, decimal_places=2)
+    sale_discount_percent = models.DecimalField(max_digits=10, decimal_places=5, default=0)
+    sale_price = models.DecimalField(max_digits=12, decimal_places=2)
+    remaining_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    issued_at = models.DateField(default=timezone.localdate)
+    valid_until = models.DateField()
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.ACTIVE)
+    finance_transaction = models.ForeignKey(FinanceTransaction, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificates')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_certificates')
+    sent_at = models.DateTimeField(null=True, blank=True)
+    sent_to_phone = models.CharField(max_length=30, blank=True)
+
+    class Meta:
+        ordering = ('-issued_at', '-created_at')
+
+    def __str__(self):
+        return self.code
+
+
+class CertificateRedemption(models.Model):
+    certificate = models.ForeignKey(GiftCertificate, on_delete=models.CASCADE, related_name='redemptions')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    comment = models.TextField(blank=True)
+    redeemed_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificate_redemptions')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-redeemed_at', '-created_at')
+
+    def __str__(self):
+        return f'{self.certificate.code}: {self.amount}'
+
+
 class PaymentMethod(TimeStampedModel):
     name = models.CharField(max_length=150, unique=True)
     code = models.SlugField(max_length=80, blank=True)
@@ -799,6 +883,14 @@ class AuditLog(models.Model):
         ADDON_SALE_CREATE = 'addon_sale_create', 'Addon sale create'
         ADDON_SALE_UPDATE = 'addon_sale_update', 'Addon sale update'
         CASH_RECONCILIATION = 'cash_reconciliation', 'Cash reconciliation'
+        CERTIFICATE_TEMPLATE_CREATE = 'certificate_template_create', 'Certificate template create'
+        CERTIFICATE_TEMPLATE_UPDATE = 'certificate_template_update', 'Certificate template update'
+        CERTIFICATE_TEMPLATE_DISABLE = 'certificate_template_disable', 'Certificate template disable'
+        CERTIFICATE_CREATE = 'certificate_create', 'Certificate create'
+        CERTIFICATE_UPDATE = 'certificate_update', 'Certificate update'
+        CERTIFICATE_REDEEM = 'certificate_redeem', 'Certificate redeem'
+        CERTIFICATE_CANCEL = 'certificate_cancel', 'Certificate cancel'
+        CERTIFICATE_WHATSAPP_OPEN = 'certificate_whatsapp_open', 'Certificate WhatsApp open'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

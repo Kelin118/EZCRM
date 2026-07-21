@@ -1,6 +1,8 @@
 from datetime import datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+import random
 import re
+import string
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -39,10 +41,13 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateRedemption,
+    CertificateTemplate,
     ChatMessage,
     Client,
     Discount,
     FinanceTransaction,
+    GiftCertificate,
     GroupMembership,
     Lesson,
     MasterClass,
@@ -65,6 +70,7 @@ from .permissions import (
     AuditLogPermission,
     BranchPermission,
     CatalogItemPermission,
+    CertificatePermission,
     ChatPermission,
     ClientPermission,
     DashboardPermission,
@@ -92,14 +98,18 @@ from .serializers import (
     AuditLogSerializer,
     BranchSerializer,
     CatalogItemSerializer,
+    CertificateRedemptionSerializer,
+    CertificateTemplateSerializer,
     ChatMessageSerializer,
     ClientSerializer,
     DiscountSerializer,
     FinanceTransactionSerializer,
+    GiftCertificateSerializer,
     GroupMembershipSerializer,
     LessonSerializer,
     MasterClassSerializer,
     PaymentMethodSerializer,
+    PublicGiftCertificateSerializer,
     RoomSerializer,
     ScheduleSlotSerializer,
     StudioSettingsSerializer,
@@ -109,6 +119,7 @@ from .serializers import (
     TaskSerializer,
     TrialSerializer,
     VisitSerializer,
+    refresh_certificate_status,
 )
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
@@ -2237,6 +2248,232 @@ class TaskViewSet(BaseAuthenticatedViewSet):
         return Response(self.get_serializer(task).data)
 
 
+MONEY = Decimal('0.01')
+
+
+def _money(value):
+    return Decimal(value or 0).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+
+def _certificate_code():
+    year = timezone.localdate().year
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        suffix = ''.join(random.choice(alphabet) for _ in range(6))
+        code = f'CERT-{year}-{suffix}'
+        if not GiftCertificate.objects.filter(code=code).exists():
+            return code
+
+
+def _certificate_audit(certificate):
+    return {
+        'code': certificate.code,
+        'template': certificate.template_name,
+        'face_value': str(certificate.face_value),
+        'sale_price': str(certificate.sale_price),
+        'client': _client_name(certificate.purchaser_client),
+        'recipient_name': certificate.recipient_name,
+        'remaining_amount': str(certificate.remaining_amount),
+        'payment_parts': payment_parts_audit(certificate.finance_transaction) if certificate.finance_transaction else [],
+    }
+
+
+class CertificateTemplateViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, CertificatePermission)
+    serializer_class = CertificateTemplateSerializer
+    queryset = CertificateTemplate.objects.all()
+    audit_entity_type = 'CertificateTemplate'
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.CERTIFICATE_TEMPLATE_CREATE, instance, '?????? ?????? ???????????', self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.CERTIFICATE_TEMPLATE_UPDATE, instance, '??????? ?????? ???????????', self._audit_changes())
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=('is_active', 'updated_at'))
+        self._log_instance(AuditLog.Action.CERTIFICATE_TEMPLATE_DISABLE, instance, '?????? ??????????? ????????', {'is_active': False})
+
+
+class GiftCertificateViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, CertificatePermission)
+    serializer_class = GiftCertificateSerializer
+    audit_entity_type = 'GiftCertificate'
+
+    def get_queryset(self):
+        queryset = GiftCertificate.objects.select_related(
+            'template', 'purchaser_client', 'finance_transaction', 'created_by',
+        ).prefetch_related('redemptions__created_by', 'finance_transaction__payment_parts__payment_method')
+        search = self.request.query_params.get('search')
+        status_value = self.request.query_params.get('status')
+        template = self.request.query_params.get('template')
+        client = self.request.query_params.get('client')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+        valid_from = _date_param(self.request, 'valid_until_from')
+        valid_to = _date_param(self.request, 'valid_until_to')
+        if search:
+            queryset = queryset.filter(
+                Q(code__icontains=search)
+                | Q(recipient_name__icontains=search)
+                | Q(recipient_phone__icontains=search)
+                | Q(template_name__icontains=search)
+                | Q(purchaser_client__first_name__icontains=search)
+                | Q(purchaser_client__last_name__icontains=search)
+                | Q(purchaser_client__parent_name__icontains=search)
+                | Q(purchaser_client__phone__icontains=search)
+            )
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if template:
+            queryset = queryset.filter(template_id=template)
+        if client:
+            queryset = queryset.filter(purchaser_client_id=client)
+        if date_from:
+            queryset = queryset.filter(issued_at__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(issued_at__lte=date_to)
+        if valid_from:
+            queryset = queryset.filter(valid_until__gte=valid_from)
+        if valid_to:
+            queryset = queryset.filter(valid_until__lte=valid_to)
+        for certificate in queryset.filter(status__in=[GiftCertificate.Status.ACTIVE, GiftCertificate.Status.PARTIALLY_USED], valid_until__lt=timezone.localdate()):
+            refresh_certificate_status(certificate)
+        return queryset.distinct()
+
+    def _sync_finance(self, certificate, payment_parts):
+        if certificate.sale_price <= 0:
+            return None
+        if certificate.finance_transaction_id:
+            finance_transaction = certificate.finance_transaction
+            finance_transaction.amount = certificate.sale_price
+            finance_transaction.subtotal_amount = certificate.face_value
+            finance_transaction.discount_amount = certificate.face_value - certificate.sale_price
+            finance_transaction.discount_name = f'?????? ??????????? {certificate.sale_discount_percent}%'
+            finance_transaction.client = certificate.purchaser_client
+            finance_transaction.source = 'certificate'
+            finance_transaction.comment = f'??????? ??????????? {certificate.code}'
+            finance_transaction.paid_at = _paid_at_from_date(certificate.issued_at)
+            finance_transaction.save(update_fields=(
+                'amount', 'subtotal_amount', 'discount_amount', 'discount_name',
+                'client', 'source', 'comment', 'paid_at', 'updated_at',
+            ))
+        else:
+            finance_transaction = FinanceTransaction.objects.create(
+                transaction_type=FinanceTransaction.Type.INCOME,
+                source='certificate',
+                amount=certificate.sale_price,
+                subtotal_amount=certificate.face_value,
+                discount_amount=certificate.face_value - certificate.sale_price,
+                discount_name=f'?????? ??????????? {certificate.sale_discount_percent}%',
+                client=certificate.purchaser_client,
+                created_by=self.request.user,
+                paid_at=_paid_at_from_date(certificate.issued_at),
+                comment=f'??????? ??????????? {certificate.code}',
+            )
+            certificate.finance_transaction = finance_transaction
+            certificate.save(update_fields=('finance_transaction', 'updated_at'))
+        if payment_parts is None and finance_transaction.payment_parts.exists():
+            existing_parts = list(finance_transaction.payment_parts.all())
+            if len(existing_parts) == 1:
+                payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': certificate.sale_price}]
+            else:
+                payment_parts = [{'payment_method': part.payment_method_id, 'amount': part.amount} for part in existing_parts]
+        sync_finance_payment_parts(finance_transaction, payment_parts)
+        return finance_transaction
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            template = serializer.validated_data['template']
+            issued_at = serializer.validated_data.get('issued_at') or timezone.localdate()
+            sale_price = serializer.validated_data['_calculated_sale_price']
+            snapshot = serializer.validated_data['_template_snapshot']
+            certificate = serializer.save(
+                code=_certificate_code(),
+                template_name=template.name,
+                template_snapshot=snapshot,
+                sale_discount_percent=template.sale_discount_percent,
+                sale_price=sale_price,
+                remaining_amount=serializer.validated_data['face_value'],
+                issued_at=issued_at,
+                valid_until=issued_at + timedelta(days=template.validity_days),
+                status=GiftCertificate.Status.ACTIVE,
+                created_by=self.request.user,
+            )
+            self._sync_finance(certificate, serializer.validated_data.get('_payment_parts'))
+            self._log_instance(AuditLog.Action.CERTIFICATE_CREATE, certificate, '?????? ??????????', _certificate_audit(certificate))
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            certificate = serializer.save()
+            payment_parts = serializer.validated_data.get('_payment_parts', None)
+            if certificate.sale_price > 0:
+                self._sync_finance(certificate, payment_parts)
+            self._log_instance(AuditLog.Action.CERTIFICATE_UPDATE, certificate, '??????? ??????????', _certificate_audit(certificate))
+
+    @action(detail=True, methods=['post'])
+    def redeem(self, request, pk=None):
+        certificate = refresh_certificate_status(self.get_object())
+        amount = _money(request.data.get('amount'))
+        if certificate.status not in {GiftCertificate.Status.ACTIVE, GiftCertificate.Status.PARTIALLY_USED}:
+            raise drf_serializers.ValidationError({'status': '?????????? ?????? ???????????? ? ??????? ???????.'})
+        if amount <= 0:
+            raise drf_serializers.ValidationError({'amount': '????? ???????? ?????? ???? ?????? ????.'})
+        if amount > certificate.remaining_amount:
+            raise drf_serializers.ValidationError({'amount': '????? ???????? ????????? ??????? ???????????.'})
+        with transaction.atomic():
+            redemption = CertificateRedemption.objects.create(
+                certificate=certificate,
+                amount=amount,
+                comment=request.data.get('comment', ''),
+                created_by=request.user,
+            )
+            certificate.remaining_amount = _money(certificate.remaining_amount - amount)
+            certificate.status = GiftCertificate.Status.USED if certificate.remaining_amount == 0 else GiftCertificate.Status.PARTIALLY_USED
+            certificate.save(update_fields=('remaining_amount', 'status', 'updated_at'))
+            self._log_instance(AuditLog.Action.CERTIFICATE_REDEEM, certificate, '??????????? ??????????', {
+                **_certificate_audit(certificate),
+                'redeemed_amount': str(amount),
+            })
+        return Response({'certificate': self.get_serializer(certificate).data, 'redemption': CertificateRedemptionSerializer(redemption).data})
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        certificate = self.get_object()
+        certificate.status = GiftCertificate.Status.CANCELLED
+        certificate.save(update_fields=('status', 'updated_at'))
+        self._log_instance(AuditLog.Action.CERTIFICATE_CANCEL, certificate, '?????????? ???????', _certificate_audit(certificate))
+        return Response(self.get_serializer(certificate).data)
+
+    @action(detail=True, methods=['post'], url_path='mark-sent')
+    def mark_sent(self, request, pk=None):
+        certificate = self.get_object()
+        phone = request.data.get('phone') or certificate.recipient_phone
+        certificate.sent_at = timezone.now()
+        certificate.sent_to_phone = phone
+        certificate.save(update_fields=('sent_at', 'sent_to_phone', 'updated_at'))
+        self._log_instance(AuditLog.Action.CERTIFICATE_WHATSAPP_OPEN, certificate, '??????? ??? ???????? ? WhatsApp', {
+            'code': certificate.code,
+            'sent_to_phone': phone,
+        })
+        return Response(self.get_serializer(certificate).data)
+
+
+class PublicGiftCertificateView(APIView):
+    permission_classes = ()
+    authentication_classes = ()
+
+    def get(self, request, public_token):
+        certificate = GiftCertificate.objects.filter(public_token=public_token).first()
+        if not certificate:
+            return Response({'detail': '?????????? ?? ??????.'}, status=status.HTTP_404_NOT_FOUND)
+        certificate = refresh_certificate_status(certificate)
+        return Response(PublicGiftCertificateSerializer(certificate).data)
+
+
 class AddonSaleViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, AddonSalePermission)
     queryset = (
@@ -3420,6 +3657,7 @@ class ReportsSummaryView(APIView):
             'trial': 'Пробники',
             'master_class': 'МК',
             'camp': '\u041b\u0430\u0433\u0435\u0440\u044c',
+            'certificate': '\u0421\u0435\u0440\u0442\u0438\u0444\u0438\u043a\u0430\u0442',
             'addon': 'Дополнительные услуги',
             'product': '\u0422\u043e\u0432\u0430\u0440\u044b',
             'retail': '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438',

@@ -1,5 +1,5 @@
 from datetime import datetime, time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 from django.utils import timezone
@@ -22,11 +22,14 @@ from .models import (
     AuditLog,
     Branch,
     CatalogItem,
+    CertificateRedemption,
+    CertificateTemplate,
     ChatMessage,
     Client,
     Discount,
     FinanceTransaction,
     FinancePaymentPart,
+    GiftCertificate,
     GroupMembership,
     Lesson,
     MasterClass,
@@ -958,6 +961,203 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         if payment_parts is not None:
             master_class.selected_payment_parts = payment_parts
         return master_class
+
+
+MONEY = Decimal('0.01')
+
+
+def money(value):
+    return Decimal(value or 0).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+
+def certificate_template_snapshot(template):
+    if not template:
+        return {}
+    return {
+        'name': template.name,
+        'title': template.title,
+        'subtitle': template.subtitle,
+        'description': template.description,
+        'amount_type': template.amount_type,
+        'fixed_amount': str(template.fixed_amount or ''),
+        'min_amount': str(template.min_amount or ''),
+        'max_amount': str(template.max_amount or ''),
+        'validity_days': template.validity_days,
+        'sale_discount_percent': str(template.sale_discount_percent or 0),
+        'background_from': template.background_from,
+        'background_to': template.background_to,
+        'accent_color': template.accent_color,
+        'text_color': template.text_color,
+        'badge_text': template.badge_text,
+        'terms': template.terms,
+        'background_image_url': template.background_image_url,
+    }
+
+
+class CertificateTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CertificateTemplate
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount_type = attrs.get('amount_type', self.instance.amount_type if self.instance else CertificateTemplate.AmountType.FIXED)
+        fixed_amount = attrs.get('fixed_amount', self.instance.fixed_amount if self.instance else None)
+        min_amount = attrs.get('min_amount', self.instance.min_amount if self.instance else None)
+        max_amount = attrs.get('max_amount', self.instance.max_amount if self.instance else None)
+        validity_days = attrs.get('validity_days', self.instance.validity_days if self.instance else None)
+        discount = attrs.get('sale_discount_percent', self.instance.sale_discount_percent if self.instance else 0)
+        if amount_type == CertificateTemplate.AmountType.FIXED and money(fixed_amount) <= 0:
+            raise serializers.ValidationError({'fixed_amount': '??????? ????????????? ??????? ?????? ????.'})
+        if amount_type == CertificateTemplate.AmountType.RANGE:
+            if money(min_amount) <= 0:
+                raise serializers.ValidationError({'min_amount': '??????????? ??????? ?????? ???? ?????? ????.'})
+            if max_amount is not None and money(max_amount) < money(min_amount):
+                raise serializers.ValidationError({'max_amount': '???????????? ??????? ?? ????? ???? ?????? ????????????.'})
+        if not validity_days or int(validity_days) <= 0:
+            raise serializers.ValidationError({'validity_days': '???? ???????? ?????? ???? ?????? ????.'})
+        discount_decimal = Decimal(discount or 0)
+        if discount_decimal < 0 or discount_decimal > 100:
+            raise serializers.ValidationError({'sale_discount_percent': '?????? ?????? ???? ?? 0 ?? 100%.'})
+        return attrs
+
+
+class CertificateRedemptionSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CertificateRedemption
+        fields = ('id', 'certificate', 'amount', 'comment', 'redeemed_at', 'created_by', 'created_by_name', 'created_at')
+        read_only_fields = ('certificate', 'redeemed_at', 'created_by', 'created_at')
+
+    def get_created_by_name(self, obj):
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else ''
+
+
+class GiftCertificateSerializer(serializers.ModelSerializer):
+    payment_parts = serializers.JSONField(required=False, write_only=True)
+    redemptions = CertificateRedemptionSerializer(many=True, read_only=True)
+    purchaser_client_name = serializers.SerializerMethodField()
+    template_title = serializers.SerializerMethodField()
+    public_url = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+    design = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GiftCertificate
+        fields = '__all__'
+        read_only_fields = (
+            'template_name', 'template_snapshot', 'code', 'public_token', 'sale_discount_percent',
+            'sale_price', 'remaining_amount', 'valid_until', 'finance_transaction', 'created_by',
+            'sent_at', 'sent_to_phone', 'created_at', 'updated_at',
+        )
+
+    def get_purchaser_client_name(self, obj):
+        return str(obj.purchaser_client) if obj.purchaser_client else ''
+
+    def get_template_title(self, obj):
+        return obj.template_snapshot.get('title') or obj.template_name
+
+    def get_public_url(self, obj):
+        request = self.context.get('request')
+        path = f'/certificate/{obj.public_token}'
+        return request.build_absolute_uri(path) if request else path
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+    def get_design(self, obj):
+        return obj.template_snapshot or certificate_template_snapshot(obj.template)
+
+    def to_representation(self, instance):
+        instance = refresh_certificate_status(instance)
+        data = super().to_representation(instance)
+        transaction = instance.finance_transaction
+        data['payment_parts'] = payment_parts_representation(transaction) if transaction else []
+        return data
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        template = attrs.get('template', self.instance.template if self.instance else None)
+        face_value = attrs.get('face_value', self.instance.face_value if self.instance else None)
+        initial_data = getattr(self, 'initial_data', {})
+        if self.instance is None:
+            if not template:
+                raise serializers.ValidationError({'template': '???????? ??????.'})
+            if not template.is_active:
+                raise serializers.ValidationError({'template': '?????? ???????????? ?????????? ??????.'})
+        if money(face_value) <= 0:
+            raise serializers.ValidationError({'face_value': '??????? ?????? ???? ?????? ????.'})
+        if template:
+            if template.amount_type == CertificateTemplate.AmountType.FIXED and money(face_value) != money(template.fixed_amount):
+                raise serializers.ValidationError({'face_value': '??????? ?????? ????????? ? ????????????? ????????? ???????.'})
+            if template.amount_type == CertificateTemplate.AmountType.RANGE:
+                if money(face_value) < money(template.min_amount):
+                    raise serializers.ValidationError({'face_value': '??????? ?????? ???????????? ???????? ???????.'})
+                if template.max_amount is not None and money(face_value) > money(template.max_amount):
+                    raise serializers.ValidationError({'face_value': '??????? ?????? ????????????? ???????? ???????.'})
+        discount = template.sale_discount_percent if template and self.instance is None else attrs.get('sale_discount_percent', self.instance.sale_discount_percent if self.instance else 0)
+        sale_price = money(money(face_value) * (Decimal('100') - Decimal(discount or 0)) / Decimal('100'))
+        payment_parts = initial_data.get('payment_parts', None)
+        if payment_parts is not None:
+            attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=sale_price)
+        elif self.instance is None and sale_price > 0:
+            raise serializers.ValidationError({'payment_parts': '??????? ???????? ??????.'})
+        attrs['_calculated_sale_price'] = sale_price
+        attrs['_template_snapshot'] = certificate_template_snapshot(template)
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('payment_parts', None)
+        validated_data.pop('_payment_parts', None)
+        validated_data.pop('_calculated_sale_price', None)
+        validated_data.pop('_template_snapshot', None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop('payment_parts', None)
+        validated_data.pop('_payment_parts', None)
+        validated_data.pop('_calculated_sale_price', None)
+        validated_data.pop('_template_snapshot', None)
+        return super().update(instance, validated_data)
+
+
+class PublicGiftCertificateSerializer(serializers.ModelSerializer):
+    title = serializers.SerializerMethodField()
+    subtitle = serializers.SerializerMethodField()
+    terms = serializers.SerializerMethodField()
+    design = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GiftCertificate
+        fields = (
+            'code', 'title', 'subtitle', 'recipient_name', 'face_value', 'remaining_amount',
+            'issued_at', 'valid_until', 'status', 'status_display', 'terms', 'design',
+        )
+
+    def get_title(self, obj):
+        return obj.template_snapshot.get('title') or obj.template_name
+
+    def get_subtitle(self, obj):
+        return obj.template_snapshot.get('subtitle', '')
+
+    def get_terms(self, obj):
+        return obj.template_snapshot.get('terms', '')
+
+    def get_design(self, obj):
+        return obj.template_snapshot
+
+    def get_status_display(self, obj):
+        return obj.get_status_display()
+
+
+def refresh_certificate_status(certificate):
+    if certificate.status in {GiftCertificate.Status.ACTIVE, GiftCertificate.Status.PARTIALLY_USED} and certificate.valid_until < timezone.localdate():
+        certificate.status = GiftCertificate.Status.EXPIRED
+        certificate.save(update_fields=('status', 'updated_at'))
+    return certificate
 
 
 class TaskSerializer(BranchNameMixin, serializers.ModelSerializer):

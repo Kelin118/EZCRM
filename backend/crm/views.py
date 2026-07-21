@@ -235,6 +235,7 @@ def _deduct_subscription_lesson(visit):
         visit.status == Visit.Status.ATTENDED
         and visit.subscription_id
         and not visit.lesson_deducted
+        and visit.subscription.total_visits > 0
         and visit.subscription.remaining_visits > 0
     ):
         visit.subscription.remaining_visits -= 1
@@ -251,6 +252,7 @@ def _active_subscription_queryset(client):
             status=Subscription.Status.ACTIVE,
             remaining_visits__gt=0,
         )
+        .exclude(service__service_type=CatalogItem.ServiceType.CAMP, total_visits=0)
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
     )
 
@@ -1547,6 +1549,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
         status_value = self.request.query_params.get('status')
         client = self.request.query_params.get('client')
         active = self.request.query_params.get('active')
+        service_type = self.request.query_params.get('service_type')
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
 
@@ -1554,11 +1557,14 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(status=status_value)
         if client:
             queryset = queryset.filter(client_id=client)
+        if service_type:
+            queryset = queryset.filter(service__service_type=service_type)
         if active in ('1', 'true', 'True', 'yes'):
             today = timezone.localdate()
             queryset = queryset.filter(
                 status=Subscription.Status.ACTIVE,
-                remaining_visits__gt=0,
+            ).filter(
+                Q(remaining_visits__gt=0) | Q(service__service_type=CatalogItem.ServiceType.CAMP, total_visits=0)
             ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
         if date_from:
             queryset = queryset.filter(start_date__gte=date_from)
@@ -1652,6 +1658,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
             visit.status == Visit.Status.ATTENDED
             and visit.subscription_id
             and not visit.lesson_deducted
+            and visit.subscription.total_visits > 0
             and visit.subscription.remaining_visits > 0
         ):
             visit.subscription.remaining_visits -= 1
@@ -1889,7 +1896,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
-    queryset = MasterClass.objects.select_related('manager', 'teacher', 'discount').prefetch_related('participants').all()
+    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related('participants').all()
     serializer_class = MasterClassSerializer
     audit_entity_type = 'MasterClass'
     audit_update_description = 'Изменён МК'
@@ -1945,6 +1952,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     comment='Оплата МК',
                     created_by=self.request.user,
                     payment_method=payment_method,
+                    branch=master_class.branch,
                     discount=master_class.discount,
                     discount_name=master_class.discount_name,
                     discount_amount=master_class.discount_amount,
@@ -1954,9 +1962,83 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
 
+    def _master_class_payment_comment(self, master_class):
+        return f'Оплата МК: {master_class.title}' if master_class.title else 'Оплата МК'
+
+    def _sync_finance_transaction(self, master_class):
+        finance_transaction = master_class.finance_transaction
+        if master_class.payment_amount <= 0:
+            if finance_transaction:
+                master_class.finance_transaction = None
+                master_class.save(update_fields=('finance_transaction', 'updated_at'))
+                finance_transaction.delete()
+            return
+
+        if not master_class.payment_date:
+            master_class.payment_date = timezone.localdate()
+            master_class.save(update_fields=('payment_date', 'updated_at'))
+
+        payment_method = getattr(master_class, 'selected_payment_method', None)
+        if not payment_method and finance_transaction:
+            payment_method = finance_transaction.payment_method
+        if not payment_method:
+            raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
+
+        client = master_class.participants.first()
+        comment = self._master_class_payment_comment(master_class)
+
+        if finance_transaction:
+            finance_transaction.amount = master_class.payment_amount
+            finance_transaction.subtotal_amount = master_class.price
+            finance_transaction.discount = master_class.discount
+            finance_transaction.discount_name = master_class.discount_name
+            finance_transaction.discount_amount = master_class.discount_amount
+            finance_transaction.client = client
+            finance_transaction.branch = master_class.branch
+            finance_transaction.payment_method = payment_method
+            finance_transaction.payment_method_name = payment_method.name if payment_method else ''
+            finance_transaction.paid_at = _paid_at_from_date(master_class.payment_date)
+            finance_transaction.source = 'master_class'
+            finance_transaction.comment = comment
+            finance_transaction.save(update_fields=(
+                'amount',
+                'subtotal_amount',
+                'discount',
+                'discount_name',
+                'discount_amount',
+                'client',
+                'branch',
+                'payment_method',
+                'payment_method_name',
+                'paid_at',
+                'source',
+                'comment',
+                'updated_at',
+            ))
+            return
+
+        finance_transaction = _create_income_transaction(
+            client=client,
+            amount=master_class.payment_amount,
+            source='master_class',
+            payment_date=master_class.payment_date,
+            comment=comment,
+            created_by=self.request.user,
+            payment_method=payment_method,
+            branch=master_class.branch,
+            discount=master_class.discount,
+            discount_name=master_class.discount_name,
+            discount_amount=master_class.discount_amount,
+            subtotal_amount=master_class.price,
+        )
+        master_class.finance_transaction = finance_transaction
+        master_class.save(update_fields=('finance_transaction', 'updated_at'))
+
     def perform_update(self, serializer):
         previous_stage = serializer.instance.stage
-        master_class = serializer.save()
+        with transaction.atomic():
+            master_class = serializer.save()
+            self._sync_finance_transaction(master_class)
         changes = self._audit_changes()
         if previous_stage != master_class.stage:
             changes['stage'] = {'from': previous_stage, 'to': master_class.stage}
@@ -2382,9 +2464,12 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
         category = self.request.query_params.get('category')
+        service_type = self.request.query_params.get('service_type')
         is_active = self.request.query_params.get('is_active')
         if category:
             queryset = queryset.filter(category=category)
+        if service_type:
+            queryset = queryset.filter(service_type=service_type)
         if is_active in ('1', 'true', 'True', 'yes'):
             queryset = queryset.filter(is_active=True)
         elif is_active in ('0', 'false', 'False', 'no'):
@@ -2396,6 +2481,7 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
             'name': instance.name,
             'price': str(instance.price),
             'category': instance.category,
+            'service_type': instance.service_type,
             'is_active': instance.is_active,
             'lessons_count': instance.lessons_count,
             'validity_days': instance.validity_days,

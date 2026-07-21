@@ -36,6 +36,7 @@ from .models import (
 )
 from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
 from .subscription_dates import calculate_subscription_end_date
+from .views import _client_active_subscription
 
 
 class SubscriptionDateHelperTests(APITestCase):
@@ -742,6 +743,48 @@ class CatalogItemApiTests(APITestCase):
 
         self.assertEqual([item['id'] for item in response.data], [active.id])
 
+    def test_admin_can_create_camp_service(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {
+                'name': 'Summer camp',
+                'price': '90000.00',
+                'category': 'service',
+                'service_type': 'camp',
+                'lessons_count': 0,
+                'validity_days': 14,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['service_type'], 'camp')
+        self.assertEqual(response.data['service_type_display'], 'Лагерь')
+
+    def test_service_type_filter_returns_only_camps(self):
+        camp = CatalogItem.objects.create(name='Camp', price='90000.00', category='service', service_type=CatalogItem.ServiceType.CAMP)
+        CatalogItem.objects.create(name='AB-8', price='45000.00', category='service', service_type=CatalogItem.ServiceType.COURSE)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/catalog-items/', {'category': 'service', 'service_type': 'camp'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.data], [camp.id])
+
+    def test_non_service_catalog_item_resets_service_type_to_course(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {'name': 'Book camp label', 'price': '3500.00', 'category': 'product', 'service_type': 'camp'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['service_type'], 'course')
+
     def test_subscription_from_service_copies_snapshot(self):
         service = CatalogItem.objects.create(
             name='AB-8', price='45000.00', category='service', lessons_count=8, validity_days=30,
@@ -770,6 +813,84 @@ class CatalogItemApiTests(APITestCase):
         subscription.refresh_from_db()
         self.assertEqual(subscription.price, 45000)
         self.assertEqual(subscription.total_visits, 8)
+
+    def test_camp_subscription_without_lessons_is_visible_and_filterable(self):
+        service = CatalogItem.objects.create(
+            name='Summer camp',
+            price='90000.00',
+            category='service',
+            service_type=CatalogItem.ServiceType.CAMP,
+            lessons_count=0,
+            validity_days=14,
+        )
+        student = Client.objects.create(first_name='Camp', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'start_date': '2026-07-01', 'total_visits': 0, 'remaining_visits': 0},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        subscription = Subscription.objects.get(pk=response.data['id'])
+        self.assertEqual(subscription.total_visits, 0)
+        self.assertEqual(subscription.remaining_visits, 0)
+        self.assertEqual(subscription.end_date, date(2026, 7, 14))
+        self.assertEqual(response.data['service_type'], 'camp')
+        self.assertEqual(response.data['service_type_display'], 'Лагерь')
+
+        list_response = self.client.get('/api/subscriptions/')
+        camp_response = self.client.get('/api/subscriptions/', {'service_type': 'camp'})
+
+        self.assertIn(subscription.id, {item['id'] for item in list_response.data})
+        self.assertEqual([item['id'] for item in camp_response.data], [subscription.id])
+
+    def test_course_subscription_still_uses_lessons(self):
+        service = CatalogItem.objects.create(
+            name='AB-4',
+            price='25000.00',
+            category='service',
+            service_type=CatalogItem.ServiceType.COURSE,
+            lessons_count=4,
+            validity_days=30,
+        )
+        student = Client.objects.create(first_name='Course', last_name='Student')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/subscriptions/',
+            {'client': student.id, 'service': service.id, 'start_date': '2026-07-01'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['service_type'], 'course')
+        self.assertEqual(response.data['total_visits'], 4)
+        self.assertEqual(response.data['remaining_visits'], 4)
+
+    def test_camp_subscription_without_lessons_is_not_selected_for_lesson_deduction(self):
+        service = CatalogItem.objects.create(
+            name='Summer camp',
+            price='90000.00',
+            category='service',
+            service_type=CatalogItem.ServiceType.CAMP,
+            lessons_count=0,
+            validity_days=14,
+        )
+        student = Client.objects.create(first_name='Deduct', last_name='Camp')
+        Subscription.objects.create(
+            client=student,
+            service=service,
+            title=service.name,
+            start_date=date(2026, 7, 1),
+            end_date=date(2026, 7, 14),
+            total_visits=0,
+            remaining_visits=0,
+            status=Subscription.Status.ACTIVE,
+        )
+
+        self.assertIsNone(_client_active_subscription(student))
 
     def test_subscription_create_with_paid_amount_creates_income_transaction(self):
         service = CatalogItem.objects.create(
@@ -3088,6 +3209,131 @@ class MasterClassClientDisplayTests(APITestCase):
         self.assertIn(master_class.id, {item['id'] for item in by_name.data})
         self.assertIn(master_class.id, {item['id'] for item in by_phone.data})
         self.assertNotIn(other.id, {item['id'] for item in by_name.data})
+
+
+class MasterClassFinanceSyncTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='master-finance-admin', password='pass', role='admin', roles=['admin'])
+        self.client.force_authenticate(self.admin)
+        self.branch = Branch.objects.create(name='Master finance branch')
+        self.student = Client.objects.create(first_name='Алихан', last_name='МК', branch=self.branch)
+        self.other_student = Client.objects.create(first_name='Айша', last_name='МК', branch=self.branch)
+        self.cash = PaymentMethod.objects.create(name='МК cash', code='mc_cash')
+        self.card = PaymentMethod.objects.create(name='МК card', code='mc_card')
+        self.discount = Discount.objects.create(name='МК 10%', discount_type=Discount.Type.PERCENTAGE, value=10)
+        self.fixed_discount = Discount.objects.create(name='МК fixed', discount_type=Discount.Type.FIXED, value=2000)
+
+    def payload(self, **overrides):
+        data = {
+            'title': 'МК Python',
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'starts_at': timezone.now().isoformat(),
+            'stage': MasterClass.Stage.BOOKED,
+            'price': '10000.00',
+            'payment_amount': '10000.00',
+            'payment_date': '2026-07-20',
+            'payment_method': self.cash.id,
+        }
+        data.update(overrides)
+        return data
+
+    def create_master_class(self, **overrides):
+        response = self.client.post('/api/master-classes/', self.payload(**overrides), format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        return MasterClass.objects.get(pk=response.data['id'])
+
+    def test_create_with_payment_creates_one_finance_transaction_and_get_returns_method(self):
+        master_class = self.create_master_class()
+
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        transaction = FinanceTransaction.objects.get()
+        self.assertEqual(master_class.finance_transaction_id, transaction.id)
+        self.assertEqual(transaction.amount, Decimal('10000.00'))
+        self.assertEqual(transaction.source, 'master_class')
+        self.assertEqual(transaction.payment_method, self.cash)
+
+        response = self.client.get(f'/api/master-classes/{master_class.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['payment_method'], self.cash.id)
+        self.assertEqual(response.data['payment_method_name'], self.cash.name)
+
+    def test_update_amount_method_date_discount_client_and_branch_syncs_same_transaction(self):
+        master_class = self.create_master_class(discount=self.discount.id, payment_amount='9000.00')
+        transaction_id = master_class.finance_transaction_id
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/',
+            {
+                'client': self.other_student.id,
+                'payment_amount': '8000.00',
+                'payment_date': '2026-07-21',
+                'payment_method': self.card.id,
+                'discount': self.fixed_discount.id,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        master_class.refresh_from_db()
+        transaction = FinanceTransaction.objects.get(pk=transaction_id)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        self.assertEqual(master_class.finance_transaction_id, transaction_id)
+        self.assertEqual(master_class.participants.first(), self.other_student)
+        self.assertEqual(transaction.client, self.other_student)
+        self.assertEqual(transaction.branch, self.branch)
+        self.assertEqual(transaction.amount, Decimal('8000.00'))
+        self.assertEqual(transaction.subtotal_amount, Decimal('10000.00'))
+        self.assertEqual(transaction.discount, self.fixed_discount)
+        self.assertEqual(transaction.discount_name, self.fixed_discount.name)
+        self.assertEqual(transaction.discount_amount, Decimal('2000.00'))
+        self.assertEqual(transaction.payment_method, self.card)
+        self.assertEqual(transaction.payment_method_name, self.card.name)
+        self.assertEqual(timezone.localtime(transaction.paid_at).date(), date(2026, 7, 21))
+        self.assertEqual(transaction.source, 'master_class')
+
+    def test_repeated_edit_does_not_create_duplicate_transaction(self):
+        master_class = self.create_master_class()
+        transaction_id = master_class.finance_transaction_id
+
+        for amount in ('9500.00', '9000.00'):
+            response = self.client.patch(
+                f'/api/master-classes/{master_class.id}/',
+                {'payment_amount': amount, 'payment_method': self.cash.id},
+                format='json',
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+
+        master_class.refresh_from_db()
+        self.assertEqual(master_class.finance_transaction_id, transaction_id)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        self.assertEqual(FinanceTransaction.objects.get(pk=transaction_id).amount, Decimal('9000.00'))
+
+    def test_setting_payment_to_zero_deletes_finance_transaction(self):
+        master_class = self.create_master_class()
+        transaction_id = master_class.finance_transaction_id
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/',
+            {'payment_amount': '0.00', 'payment_method': None},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        master_class.refresh_from_db()
+        self.assertIsNone(master_class.finance_transaction_id)
+        self.assertFalse(FinanceTransaction.objects.filter(pk=transaction_id).exists())
+
+    def test_positive_payment_requires_payment_method_when_no_existing_transaction(self):
+        response = self.client.post(
+            '/api/master-classes/',
+            self.payload(payment_method=None, payment_amount='1000.00'),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('payment_method', response.data)
 
 
 class FinanceJournalAndPaymentMethodTests(APITestCase):

@@ -132,7 +132,7 @@ export default function MasterClassesPage() {
   const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
   const changeDiscount = (value) => {
     const discount = getDiscountById(value);
-    setForm({ ...form, discount: value, payment_amount: form.id ? form.payment_amount : calculateDiscountedTotal(form.price, discount) });
+    setForm({ ...form, discount: value, payment_amount: calculateDiscountedTotal(form.price, discount) });
   };
   const fields = [
     baseFields[0],

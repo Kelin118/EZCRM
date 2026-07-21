@@ -513,6 +513,8 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
     expected_end_date = serializers.SerializerMethodField()
     service_name = serializers.CharField(source='service.name', read_only=True, default='')
     service_price = serializers.DecimalField(source='service.price', max_digits=10, decimal_places=2, read_only=True)
+    service_type = serializers.SerializerMethodField()
+    service_type_display = serializers.SerializerMethodField()
     addons = serializers.JSONField(required=False)
     addons_total = serializers.SerializerMethodField()
     subtotal = serializers.SerializerMethodField()
@@ -557,6 +559,13 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_total_price(self, obj):
         return total_price(obj)
+
+    def get_service_type(self, obj):
+        return obj.service.service_type if obj.service_id and obj.service else CatalogItem.ServiceType.COURSE
+
+    def get_service_type_display(self, obj):
+        service_type = self.get_service_type(obj)
+        return 'Лагерь' if service_type == CatalogItem.ServiceType.CAMP else 'Учебный курс'
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -783,6 +792,14 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         data = super().to_representation(instance)
         client = self._primary_client(instance)
         data['client'] = client.id if client else None
+        finance_transaction = instance.finance_transaction
+        payment_method = finance_transaction.payment_method if finance_transaction else None
+        data['payment_method'] = payment_method.id if payment_method else None
+        data['payment_method_name'] = (
+            finance_transaction.payment_method_name
+            if finance_transaction and finance_transaction.payment_method_name
+            else (payment_method.name if payment_method else '')
+        )
         return data
 
     def get_client_name(self, obj):
@@ -818,8 +835,21 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         initial_data = getattr(self, 'initial_data', {})
         if self.instance is None and 'payment_amount' not in initial_data:
             attrs['payment_amount'] = calculation['total_price']
-        if attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0')) < 0:
+        payment_amount = attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0'))
+        if payment_amount < 0:
             raise serializers.ValidationError({'payment_amount': 'Сумма оплаты не может быть отрицательной.'})
+        payment_method = attrs.get('payment_method')
+        payment_method_was_sent = 'payment_method' in initial_data
+        if (
+            payment_amount > 0
+            and not payment_method
+            and not payment_method_was_sent
+            and self.instance
+            and self.instance.finance_transaction_id
+        ):
+            payment_method = self.instance.finance_transaction.payment_method
+        if payment_amount > 0 and not payment_method:
+            raise serializers.ValidationError({'payment_method': 'Payment method is required.'})
         return attrs
 
     def create(self, validated_data):
@@ -834,13 +864,21 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         return master_class
 
     def update(self, instance, validated_data):
-        client = validated_data.pop('client', None)
-        validated_data.pop('payment_method', None)
-        if client and not validated_data.get('branch') and not instance.branch_id:
+        missing = object()
+        client = validated_data.pop('client', missing)
+        payment_method = validated_data.pop('payment_method', missing)
+        if client is not missing and client and not validated_data.get('branch') and not instance.branch_id:
             validated_data['branch'] = client.branch
         master_class = super().update(instance, validated_data)
-        if client:
-            master_class.participants.add(client)
+        if client is not missing:
+            if client:
+                master_class.participants.set([client])
+            else:
+                master_class.participants.clear()
+        if payment_method is not missing:
+            master_class.selected_payment_method = payment_method
+        elif instance.finance_transaction_id:
+            master_class.selected_payment_method = instance.finance_transaction.payment_method
         return master_class
 
 
@@ -960,6 +998,7 @@ class StudioSettingsSerializer(serializers.ModelSerializer):
 
 class CatalogItemSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
+    service_type_display = serializers.SerializerMethodField()
 
     class Meta:
         model = CatalogItem
@@ -970,6 +1009,16 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError('Цена не может быть отрицательной.')
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        category = attrs.get('category', self.instance.category if self.instance else None)
+        if category != CatalogItem.Category.SERVICE:
+            attrs['service_type'] = CatalogItem.ServiceType.COURSE
+        return attrs
+
+    def get_service_type_display(self, obj):
+        return 'Лагерь' if obj.service_type == CatalogItem.ServiceType.CAMP else 'Учебный курс'
 
     def validate_schedule_days(self, value):
         if value in (None, ''):

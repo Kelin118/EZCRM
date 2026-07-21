@@ -237,6 +237,7 @@ class AddonSaleApiTests(APITestCase):
         self.payment_method = PaymentMethod.objects.create(name='Addon cash', code='addon_cash')
         self.books = CatalogItem.objects.create(name='Учебники', price='5000.00', category=CatalogItem.Category.ADDON)
         self.prolongation = CatalogItem.objects.create(name='Продлёнка', price='10000.00', category=CatalogItem.Category.ADDON)
+        self.product = CatalogItem.objects.create(name='Workbook', price='3500.00', category=CatalogItem.Category.PRODUCT)
 
     def payload(self, **overrides):
         data = {
@@ -296,16 +297,51 @@ class AddonSaleApiTests(APITestCase):
         self.assertEqual(item.unit_price, Decimal('5000.00'))
         self.assertEqual(item.total_price, Decimal('5000.00'))
 
-    def test_rejects_service_product_and_inactive_addon(self):
+    def test_rejects_service_and_inactive_item(self):
         self.client.force_authenticate(self.manager)
         service = CatalogItem.objects.create(name='AB-8', price='45000.00', category=CatalogItem.Category.SERVICE)
-        product = CatalogItem.objects.create(name='Book', price='3500.00', category=CatalogItem.Category.PRODUCT)
+        inactive_product = CatalogItem.objects.create(name='Old book', price='1000.00', category=CatalogItem.Category.PRODUCT, is_active=False)
         inactive = CatalogItem.objects.create(name='Old addon', price='1000.00', category=CatalogItem.Category.ADDON, is_active=False)
 
-        for item in (service, product, inactive):
+        for item in (service, inactive_product, inactive):
             with self.subTest(item=item.category):
                 response = self.client.post('/api/addon-sales/', self.payload(items=[{'catalog_item': item.id, 'quantity': 1}]), format='json')
                 self.assertEqual(response.status_code, 400)
+
+    def test_product_sale_creates_product_income_transaction(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/addon-sales/',
+            self.payload(items=[{'catalog_item': self.product.id, 'quantity': 2}]),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        sale = AddonSale.objects.get(pk=response.data['id'])
+        transaction = sale.finance_transaction
+        self.assertEqual(sale.total_price, Decimal('7000.00'))
+        self.assertEqual(transaction.source, 'product')
+        self.assertIn('Workbook', transaction.comment)
+        self.assertIn('?2', transaction.comment)
+
+    def test_mixed_sale_creates_retail_income_transaction(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post(
+            '/api/addon-sales/',
+            self.payload(items=[
+                {'catalog_item': self.product.id, 'quantity': 1},
+                {'catalog_item': self.books.id, 'quantity': 1},
+            ]),
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        transaction = AddonSale.objects.get(pk=response.data['id']).finance_transaction
+        self.assertEqual(transaction.source, 'retail')
+        self.assertIn('Workbook', transaction.comment)
+        self.assertIn(self.books.name, transaction.comment)
 
     def test_payment_amount_zero_does_not_create_finance_transaction(self):
         self.client.force_authenticate(self.manager)
@@ -342,6 +378,34 @@ class AddonSaleApiTests(APITestCase):
         self.assertEqual(transaction.payment_method_name, self.payment_method.name)
         self.assertEqual(transaction.branch, self.branch)
         self.assertIn('Продлёнка', transaction.comment)
+
+
+    def test_edit_sale_updates_existing_finance_transaction_without_duplicate(self):
+        self.client.force_authenticate(self.manager)
+        create = self.client.post('/api/addon-sales/', self.payload(), format='json')
+        self.assertEqual(create.status_code, 201, create.data)
+        sale = AddonSale.objects.get(pk=create.data['id'])
+        transaction_id = sale.finance_transaction_id
+
+        response = self.client.patch(
+            f'/api/addon-sales/{sale.id}/',
+            {
+                'items': [{'catalog_item': self.product.id, 'quantity': 3}],
+                'payment_method': self.payment_method.id,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        sale.refresh_from_db()
+        transaction = FinanceTransaction.objects.get(pk=transaction_id)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        self.assertEqual(sale.finance_transaction_id, transaction_id)
+        self.assertEqual(sale.total_price, Decimal('10500.00'))
+        self.assertEqual(transaction.amount, Decimal('10500.00'))
+        self.assertEqual(transaction.subtotal_amount, Decimal('10500.00'))
+        self.assertEqual(transaction.source, 'product')
+        self.assertIn('Workbook', transaction.comment)
 
     def test_sale_without_client_is_allowed_when_branch_is_explicit(self):
         self.client.force_authenticate(self.manager)

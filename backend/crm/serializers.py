@@ -42,7 +42,7 @@ from .models import (
     Visit,
 )
 from .discounts import calculate_discount, validate_discount_for_sale
-from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload
+from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
 from .subscription_dates import calculate_subscription_end_date
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -345,10 +345,24 @@ class SubscriptionAddonSerializer(serializers.ModelSerializer):
 
 
 class AddonSaleItemSerializer(serializers.ModelSerializer):
+    category = serializers.SerializerMethodField()
+    category_display = serializers.SerializerMethodField()
+
     class Meta:
         model = AddonSaleItem
-        fields = ('id', 'catalog_item', 'name', 'unit_price', 'quantity', 'total_price')
+        fields = ('id', 'catalog_item', 'category', 'category_display', 'name', 'unit_price', 'quantity', 'total_price')
         read_only_fields = fields
+
+    def get_category(self, obj):
+        return obj.catalog_item.category if obj.catalog_item_id and obj.catalog_item else ''
+
+    def get_category_display(self, obj):
+        category = self.get_category(obj)
+        if category == CatalogItem.Category.PRODUCT:
+            return 'Товар'
+        if category == CatalogItem.Category.ADDON:
+            return 'Дополнительная услуга'
+        return category
 
 
 class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -422,10 +436,10 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
         return data
 
     def validate_items(self, value):
-        addons = validate_addons_payload(value)
-        if not addons:
-            raise serializers.ValidationError('Выберите хотя бы одну доп. услугу.')
-        return addons
+        items = validate_retail_sale_items_payload(value)
+        if not items:
+            raise serializers.ValidationError('\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0445\u043e\u0442\u044f \u0431\u044b \u043e\u0434\u0438\u043d \u0442\u043e\u0432\u0430\u0440 \u0438\u043b\u0438 \u0434\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u0443\u044e \u0443\u0441\u043b\u0443\u0433\u0443.')
+        return items
 
     def validate_payment_method(self, value):
         if value and not value.is_active:

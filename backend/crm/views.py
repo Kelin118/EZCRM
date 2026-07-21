@@ -2106,7 +2106,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
     queryset = (
         AddonSale.objects
         .select_related('client', 'branch', 'created_by', 'payment_method', 'discount', 'finance_transaction')
-        .prefetch_related('items')
+        .prefetch_related('items__catalog_item')
         .all()
     )
     serializer_class = AddonSaleSerializer
@@ -2143,10 +2143,30 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(sale_date__lte=date_to)
         return queryset.distinct().order_by('-sale_date', '-created_at')
 
+    def _sale_source(self, sale):
+        categories = {
+            item.catalog_item.category
+            for item in sale.items.all()
+            if item.catalog_item_id and item.catalog_item
+        }
+        has_product = CatalogItem.Category.PRODUCT in categories
+        has_addon = CatalogItem.Category.ADDON in categories
+        if has_product and has_addon:
+            return 'retail'
+        if has_product:
+            return 'product'
+        return 'addon'
+
     def _sale_comment(self, sale):
-        names = [item.name for item in sale.items.all()]
+        names = [f'{item.name} ?{item.quantity}' for item in sale.items.all()]
         details = ', '.join(names)
-        base = f'Доп. услуги: {details}' if details else 'Доп. услуги'
+        source = self._sale_source(sale)
+        labels = {
+            'product': '\u0422\u043e\u0432\u0430\u0440\u044b',
+            'addon': '\u0414\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0435 \u0443\u0441\u043b\u0443\u0433\u0438',
+            'retail': '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438',
+        }
+        base = f'{labels.get(source, "\u041f\u0440\u043e\u0434\u0430\u0436\u0430")}: {details}' if details else labels.get(source, '\u041f\u0440\u043e\u0434\u0430\u0436\u0430')
         return f'{base}. {sale.comment}' if sale.comment else base
 
     def _audit_changes(self, sale=None):
@@ -2182,7 +2202,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                 finance_transaction = _create_income_transaction(
                     client=sale.client,
                     amount=sale.payment_amount,
-                    source='addon',
+                    source=self._sale_source(sale),
                     payment_date=sale.sale_date,
                     comment=self._sale_comment(sale),
                     created_by=self.request.user,
@@ -2213,6 +2233,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.payment_method = sale.payment_method
                     finance_transaction.payment_method_name = sale.payment_method.name if sale.payment_method else finance_transaction.payment_method_name
                     finance_transaction.paid_at = _paid_at_from_date(sale.sale_date)
+                    finance_transaction.source = self._sale_source(sale)
                     finance_transaction.comment = self._sale_comment(sale)
                     finance_transaction.save(update_fields=(
                         'amount',
@@ -2225,6 +2246,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         'payment_method',
                         'payment_method_name',
                         'paid_at',
+                        'source',
                         'comment',
                         'updated_at',
                     ))
@@ -2232,7 +2254,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     finance_transaction = _create_income_transaction(
                         client=sale.client,
                         amount=sale.payment_amount,
-                        source='addon',
+                        source=self._sale_source(sale),
                         payment_date=sale.sale_date,
                         comment=self._sale_comment(sale),
                         created_by=self.request.user,
@@ -2245,12 +2267,16 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     )
                     sale.finance_transaction = finance_transaction
                     sale.save(update_fields=('finance_transaction', 'updated_at'))
+            elif finance_transaction:
+                sale.finance_transaction = None
+                sale.save(update_fields=('finance_transaction', 'updated_at'))
+                finance_transaction.delete()
             self._log_instance(AuditLog.Action.ADDON_SALE_UPDATE, sale, 'Изменена продажа доп. услуг', self._audit_changes(sale))
 
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('addon_sale__items').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('addon_sale__items__catalog_item').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -3095,6 +3121,8 @@ class ReportsSummaryView(APIView):
             'trial': 'Пробники',
             'master_class': 'МК',
             'addon': 'Дополнительные услуги',
+            'product': '\u0422\u043e\u0432\u0430\u0440\u044b',
+            'retail': '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438',
             'manual': 'Ручные операции',
             'other': 'Другое',
             '': 'Другое',

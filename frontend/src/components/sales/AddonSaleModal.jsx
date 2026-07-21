@@ -15,7 +15,7 @@ import Modal from '../ui/Modal.jsx';
 
 function errorMessage(error) {
   const data = error.response?.data;
-  if (!data) return 'Не удалось продать доп. услугу.';
+  if (!data) return 'Не удалось продать товар / услугу.';
   if (typeof data === 'string') return data;
   if (data.detail) return data.detail;
   const firstKey = Object.keys(data)[0];
@@ -85,7 +85,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
     event.preventDefault();
     const amount = Number(paymentAmount || 0);
     if (!selectedItems.length) {
-      notifyError('Выберите хотя бы одну доп. услугу.');
+      notifyError('Выберите хотя бы один товар или дополнительную услугу.');
       return;
     }
     if (amount > 0 && !paymentMethod) {
@@ -106,7 +106,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
         comment,
       };
       const { data } = await api.post('addon-sales/', payload);
-      notifySuccess('Доп. услуга продана.');
+      notifySuccess('Товар / услуга проданы.');
       onSaved?.(data);
       onClose?.();
     } catch (error) {
@@ -118,7 +118,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
 
   return (
     <Modal
-      title="Продать доп. услугу"
+      title="Продать товар / услугу"
       open={open}
       onClose={onClose}
       size="wide"
@@ -150,7 +150,14 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
           </select>
         </label>
         <div className="md:col-span-2">
-          <SubscriptionAddonsSelect value={addons} onChange={setAddons} onCatalogItemsChange={setCatalogItems} />
+          <SubscriptionAddonsSelect
+            value={addons}
+            onChange={setAddons}
+            onCatalogItemsChange={setCatalogItems}
+            categories={['product', 'addon']}
+            title="Товары и дополнительные услуги"
+            emptyText="Товары и дополнительные услуги не добавлены. Добавьте их в Настройки."
+          />
         </div>
         <DiscountSelect value={discount} onChange={setDiscount} branch={branch} />
         <Input label="Дата оплаты" type="date" value={saleDate} onChange={(event) => setSaleDate(event.target.value)} />

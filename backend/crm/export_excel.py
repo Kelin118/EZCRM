@@ -127,12 +127,24 @@ def export_visits(queryset):
 
 def export_finance(queryset):
     headers = ['ID', 'Дата', 'Тип', 'Источник', 'Клиент', 'Сумма', 'Метод оплаты', 'Создал', 'Описание']
+    source_display = {
+        'subscription': '\u0410\u0431\u043e\u043d\u0435\u043c\u0435\u043d\u0442',
+        'trial': '\u041f\u0440\u043e\u0431\u043d\u0438\u043a',
+        'master_class': '\u041c\u0430\u0441\u0442\u0435\u0440-\u043a\u043b\u0430\u0441\u0441',
+        'addon': '\u0414\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0435 \u0443\u0441\u043b\u0443\u0433\u0438',
+        'product': '\u0422\u043e\u0432\u0430\u0440',
+        'retail': '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438',
+        'manual': '\u0420\u0443\u0447\u043d\u0430\u044f \u043e\u043f\u0435\u0440\u0430\u0446\u0438\u044f',
+        'salary': '\u0417\u0430\u0440\u043f\u043b\u0430\u0442\u0430',
+        'rent': '\u0410\u0440\u0435\u043d\u0434\u0430',
+        'other': '\u0414\u0440\u0443\u0433\u043e\u0435',
+    }
     rows = [
         [
             item.id,
             _datetime(item.paid_at),
             item.transaction_type,
-            item.source,
+            source_display.get(item.source, item.source),
             _display_client(item.client),
             _money(item.amount),
             item.payment_method_name or (item.payment_method.name if item.payment_method else ''),

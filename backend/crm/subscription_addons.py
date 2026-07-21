@@ -58,6 +58,22 @@ def validate_addons_payload(value, *, require_active=True):
     return result
 
 
+def validate_retail_sale_items_payload(value, *, require_active=True):
+    normalized = normalize_addons_payload(value)
+    result = []
+    allowed_categories = {CatalogItem.Category.ADDON, CatalogItem.Category.PRODUCT}
+    for item in normalized:
+        catalog_item = CatalogItem.objects.filter(pk=item['catalog_item_id']).first()
+        if not catalog_item:
+            raise serializers.ValidationError('Позиция продажи не найдена.')
+        if catalog_item.category not in allowed_categories:
+            raise serializers.ValidationError('Через эту форму можно продавать только товары и дополнительные услуги.')
+        if require_active and not catalog_item.is_active:
+            raise serializers.ValidationError('Выберите активный товар или дополнительную услугу.')
+        result.append({'catalog_item': catalog_item, 'quantity': item['quantity']})
+    return result
+
+
 def sync_subscription_addons(subscription, addons):
     keep_ids = []
     for item in addons:

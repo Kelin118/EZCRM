@@ -11,10 +11,11 @@ import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } fr
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
-const emptyFilters = { transaction_type: '', payment_method: 'all', discount: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
+const emptyFilters = { transaction_type: '', source: '', payment_method: 'all', discount: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
   { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительные услуги' },
+  { value: 'product', label: '\u0422\u043e\u0432\u0430\u0440' }, { value: 'retail', label: '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438' },
   { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' },
   { value: 'rent', label: 'Аренда' }, { value: 'other', label: 'Другое' },
 ];
@@ -75,7 +76,7 @@ export default function FinancePage() {
         {canEdit && (
           <Button variant="secondary" onClick={() => setAddonSaleOpen(true)}>
             <ShoppingCart size={17} />
-            Продать доп. услугу
+            Продать товар / услугу
           </Button>
         )}
       </PageHeader>
@@ -91,6 +92,7 @@ export default function FinancePage() {
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(event) => crud.setFilters({ ...crud.filters, date_to: event.target.value })} />
         <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <SelectField label="Тип" value={crud.filters.transaction_type} onChange={(value) => crud.setFilters({ ...crud.filters, transaction_type: value })} options={[{ value: '', label: 'Все операции' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
+        <SelectField label={'\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a'} value={crud.filters.source} onChange={(value) => crud.setFilters({ ...crud.filters, source: value })} options={[{ value: '', label: '\u0412\u0441\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438' }, ...sourceOptions]} />
         <SelectField label="Способ оплаты" value={crud.filters.payment_method} onChange={(value) => crud.setFilters({ ...crud.filters, payment_method: value })} options={[{ value: 'all', label: 'Все способы' }, ...paymentOptions, { value: 'unassigned', label: 'Не указан' }]} />
         <SelectField label="Скидка" value={crud.filters.discount} onChange={(value) => crud.setFilters({ ...crud.filters, discount: value })} options={[{ value: 'all', label: 'Все скидки' }, ...discountOptions, { value: 'unassigned', label: 'Без скидки' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: 'all', label: 'Все менеджеры' }, ...managerOptions, { value: 'unassigned', label: 'Не указан' }]} />
@@ -111,7 +113,7 @@ export default function FinancePage() {
         { key: 'payment_method_name', header: 'Способ оплаты', render: (row) => row.payment_method_name || 'Не указан' },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
         { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },
-        { key: 'addon_sale_summary', header: 'Состав', render: (row) => row.source === 'addon' ? (row.addon_sale_summary || row.comment || '—') : '—' },
+        { key: 'addon_sale_summary', header: 'Состав', render: (row) => ['addon', 'product', 'retail'].includes(row.source) ? (row.addon_sale_summary || row.comment || '—') : '—' },
         { key: 'created_by', header: 'Менеджер', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },

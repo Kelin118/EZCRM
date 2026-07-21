@@ -30,6 +30,7 @@ export const navItems = [
   { group: 'Основное', to: '/visits', label: 'Посещения', icon: ListChecks, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/trials', label: 'Пробники', icon: CalendarCheck, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/master-classes', label: 'МК', icon: Sparkles, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
+  { group: 'Продажи', to: '/certificates', label: 'Сертификаты', icon: Gift, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/tasks', label: 'Задачи', icon: ClipboardList, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { group: 'Обучение', to: '/groups', label: 'Группы', icon: UsersRound, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { group: 'Обучение', to: '/schedule', label: 'Расписание', icon: CalendarDays, roles: [ROLES.MANAGER, ROLES.TEACHER] },

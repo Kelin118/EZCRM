@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
 import AddonSaleModal from '../components/sales/AddonSaleModal.jsx';
+import PaymentSplitFields, { partsFromTransaction, paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
@@ -24,6 +25,10 @@ const sourceOptions = [
 ];
 const sourceLabel = (value) => sourceOptions.find((item) => item.value === value)?.label || value || 'Другое';
 const typeLabel = (value) => (value === 'income' ? 'Доход' : value === 'expense' ? 'Расход' : value);
+
+function dispatchError(message) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
+}
 
 export default function FinancePage() {
   const crud = useCrudResource('finance/', emptyFilters);
@@ -72,7 +77,7 @@ export default function FinancePage() {
     { name: 'transaction_type', label: 'Тип', type: 'select', options: [{ value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }] },
     { name: 'amount', label: 'Сумма', type: 'number' },
     { name: 'source', label: 'Источник', type: 'select', options: sourceOptions },
-    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...currentInactiveMethod, ...paymentOptions] },
+    { name: 'payment_parts', type: 'custom', render: (current, update) => <PaymentSplitFields totalAmount={current.amount} value={current.payment_parts} onChange={(payment_parts) => update({ ...current, payment_parts })} /> },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Автоматически' }, ...branchOptions] },
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
     { name: 'subscription', label: 'Абонемент', type: 'select', options: [{ value: '', label: form.client ? 'Без абонемента' : 'Сначала выберите клиента' }, ...subscriptionOptions] },
@@ -82,7 +87,7 @@ export default function FinancePage() {
 
   const editTransaction = (row) => {
     const { type, ...editable } = row;
-    crud.setEditing({ ...editable, transaction_type: row.transaction_type ?? type, payment_method: row.payment_method ? String(row.payment_method) : '' });
+    crud.setEditing({ ...editable, transaction_type: row.transaction_type ?? type, payment_method: row.payment_method ? String(row.payment_method) : '', payment_parts: partsFromTransaction(row) });
     crud.setModalOpen(true);
   };
   const resetFilters = () => crud.setFilters(emptyFilters);
@@ -106,6 +111,13 @@ export default function FinancePage() {
     });
     setCashBalance(data);
     setCashModalOpen(false);
+  };
+  const saveTransaction = async () => {
+    if (Number(form.amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.amount || 0)) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой операции.');
+      return;
+    }
+    await crud.save({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
   };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
 
@@ -175,7 +187,12 @@ export default function FinancePage() {
             <p className="font-bold">Оплачено: {money(row.amount)}</p>
           </div>
         ) },
-        { key: 'payment_method_name', header: 'Способ оплаты', render: (row) => row.payment_method_name || 'Не указан' },
+        { key: 'payment_method_name', header: 'Оплата', render: (row) => row.payment_parts?.length ? (
+          <div className="text-sm">
+            {row.payment_parts.length > 1 && <Badge value="mixed">Смешанная оплата</Badge>}
+            {row.payment_parts.map((part) => <p key={part.id || part.payment_method}>{part.payment_method_name} — {money(part.amount)}</p>)}
+          </div>
+        ) : (row.payment_method_name || 'Не указан') },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
         { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },
         { key: 'addon_sale_summary', header: 'Состав', render: (row) => ['addon', 'product', 'retail'].includes(row.source) ? (row.addon_sale_summary || row.comment || '—') : '—' },
@@ -185,7 +202,7 @@ export default function FinancePage() {
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
-      <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveTransaction} />
       <AddonSaleModal open={addonSaleOpen} onClose={() => setAddonSaleOpen(false)} onSaved={refreshFinance} />
       <Modal
         title="Сверить кассу"

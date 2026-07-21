@@ -140,6 +140,12 @@ def export_finance(queryset):
         'rent': '\u0410\u0440\u0435\u043d\u0434\u0430',
         'other': '\u0414\u0440\u0443\u0433\u043e\u0435',
     }
+    def payment_display(item):
+        parts = list(item.payment_parts.select_related('payment_method').all()) if hasattr(item, 'payment_parts') else []
+        if parts:
+            return '; '.join(f'{part.payment_method_name}: {_money(part.amount)}' for part in parts)
+        return item.payment_method_name or (item.payment_method.name if item.payment_method else '')
+
     rows = [
         [
             item.id,
@@ -148,7 +154,7 @@ def export_finance(queryset):
             source_display.get(item.source, item.source),
             _display_client(item.client),
             _money(item.amount),
-            item.payment_method_name or (item.payment_method.name if item.payment_method else ''),
+            payment_display(item),
             _display_user(item.created_by),
             item.comment,
         ]

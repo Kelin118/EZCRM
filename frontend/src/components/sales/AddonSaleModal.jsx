@@ -3,9 +3,9 @@ import { useEffect, useMemo, useState } from 'react';
 import api from '../../api/axios.js';
 import useBranches from '../../hooks/useBranches.js';
 import useDiscounts from '../../hooks/useDiscounts.js';
-import usePaymentMethods from '../../hooks/usePaymentMethods.js';
 import { todayLocalDate } from '../../utils/dateTime.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../../utils/discounts.js';
+import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../finance/PaymentSplitFields.jsx';
 import ClientSelectWithCreate from '../clients/ClientSelectWithCreate.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../subscriptions/SubscriptionAddonsSelect.jsx';
 import DiscountSelect from './DiscountSelect.jsx';
@@ -37,11 +37,10 @@ const money = (value) => `${Number(value || 0).toLocaleString('ru-RU')} ₸`;
 
 export default function AddonSaleModal({ open, onClose, onSaved, initialClient = '' }) {
   const { branchOptions } = useBranches();
-  const { options: paymentOptions } = usePaymentMethods({ activeOnly: true });
   const [client, setClient] = useState(initialClient ? String(initialClient) : '');
   const [branch, setBranch] = useState('');
   const [saleDate, setSaleDate] = useState(todayLocalDate());
-  const [paymentMethod, setPaymentMethod] = useState('');
+  const [paymentParts, setPaymentParts] = useState([]);
   const [discount, setDiscount] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [comment, setComment] = useState('');
@@ -62,7 +61,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
     setClient(initialClient ? String(initialClient) : '');
     setBranch('');
     setSaleDate(todayLocalDate());
-    setPaymentMethod('');
+    setPaymentParts([]);
     setDiscount('');
     setPaymentAmount('');
     setComment('');
@@ -88,8 +87,9 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
       notifyError('Выберите хотя бы один товар или дополнительную услугу.');
       return;
     }
-    if (amount > 0 && !paymentMethod) {
-      notifyError('Выберите способ оплаты.');
+    const parts = paymentPartsPayload(paymentParts);
+    if (amount > 0 && paymentPartsTotal(parts) !== amount) {
+      notifyError('Сумма частей оплаты должна совпадать с суммой оплаты.');
       return;
     }
 
@@ -98,7 +98,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
       const payload = {
         client: client ? Number(client) : null,
         branch: branch ? Number(branch) : null,
-        payment_method: paymentMethod ? Number(paymentMethod) : null,
+        payment_parts: parts,
         sale_date: saleDate,
         discount: discount ? Number(discount) : null,
         items: selectedItems,
@@ -161,20 +161,7 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
         </div>
         <DiscountSelect value={discount} onChange={setDiscount} branch={branch} />
         <Input label="Дата оплаты" type="date" value={saleDate} onChange={(event) => setSaleDate(event.target.value)} />
-        <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
-          Способ оплаты
-          <select
-            value={paymentMethod}
-            onChange={(event) => setPaymentMethod(event.target.value)}
-            className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
-          >
-            <option value="">Выберите способ</option>
-            {paymentOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          {Number(paymentAmount || 0) > 0 && !paymentMethod && (
-            <span className="text-xs font-semibold text-amber-700">Для оплаченной продажи нужен способ оплаты.</span>
-          )}
-        </label>
+        <PaymentSplitFields totalAmount={paymentAmount} value={paymentParts} onChange={setPaymentParts} />
         <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Итог</p>
           <p className="mt-1 text-sm font-semibold text-slate-600">Промежуточный итог: {money(total)}</p>

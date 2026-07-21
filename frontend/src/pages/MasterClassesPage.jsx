@@ -4,11 +4,11 @@ import api from '../api/axios.js';
 import KanbanBoard from '../components/ui/KanbanBoard.jsx';
 import KanbanCard from '../components/ui/KanbanCard.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
+import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
-import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
 
@@ -34,7 +34,7 @@ const empty = {
   price: 0,
   payment_amount: 0,
   discount: '',
-  payment_method: '',
+  payment_parts: [],
   participants: [],
 };
 
@@ -65,6 +65,10 @@ const masterClassColumnId = (item) => {
   if (item.stage === 'cancelled') return 'lost';
   return item.stage;
 };
+
+function dispatchError(message) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
+}
 
 function ViewToggle({ value, onChange }) {
   return (
@@ -116,7 +120,6 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 export default function MasterClassesPage() {
   const crud = useCrudResource('master-classes/', { search: '', stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
-  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
@@ -153,9 +156,27 @@ export default function MasterClassesPage() {
         </div>
       ),
     },
-    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
+    {
+      name: 'payment_parts',
+      type: 'custom',
+      render: (current, update) => (
+        <PaymentSplitFields
+          totalAmount={current.payment_amount}
+          value={current.payment_parts}
+          onChange={(payment_parts) => update({ ...current, payment_parts })}
+        />
+      ),
+    },
   ];
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
+
+  const saveMasterClass = async () => {
+    if (Number(form.payment_amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.payment_amount || 0)) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
+      return;
+    }
+    await crud.save({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+  };
 
   const moveMasterClass = async (item, nextStage) => {
     if (!canEdit) return;
@@ -209,7 +230,7 @@ export default function MasterClassesPage() {
           { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
         ]} />
       )}
-      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={() => crud.save(form)} />
+      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveMasterClass} />
     </>
   );
 }

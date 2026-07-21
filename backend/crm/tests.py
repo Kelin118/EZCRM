@@ -22,6 +22,7 @@ from .models import (
     Client,
     Discount,
     FinanceTransaction,
+    FinancePaymentPart,
     GroupMembership,
     Lesson,
     MasterClass,
@@ -181,7 +182,9 @@ class FinanceTransactionApiTests(APITestCase):
     def setUp(self):
         User = get_user_model()
         self.accountant = User.objects.create_user(username='finance-accountant', password='pass', role='accountant')
-        self.payment_method = PaymentMethod.objects.create(name='Test cash', code='test_cash')
+        self.payment_method = PaymentMethod.objects.create(name='Test cash', code='test_cash', is_cash=True)
+        self.card_method = PaymentMethod.objects.create(name='Test card', code='test_card')
+        self.inactive_method = PaymentMethod.objects.create(name='Inactive method', code='inactive_method', is_active=False)
 
     def test_manual_create_without_transaction_type_returns_error(self):
         self.client.force_authenticate(self.accountant)
@@ -208,6 +211,8 @@ class FinanceTransactionApiTests(APITestCase):
         transaction = FinanceTransaction.objects.get(pk=response.data['id'])
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.INCOME)
         self.assertEqual(response.data['type'], FinanceTransaction.Type.INCOME)
+        self.assertEqual(transaction.payment_parts.count(), 1)
+        self.assertEqual(transaction.payment_parts.first().amount, Decimal('1200.00'))
 
     def test_manual_create_expense_works(self):
         self.client.force_authenticate(self.accountant)
@@ -221,6 +226,127 @@ class FinanceTransactionApiTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         transaction = FinanceTransaction.objects.get(pk=response.data['id'])
         self.assertEqual(transaction.transaction_type, FinanceTransaction.Type.EXPENSE)
+
+    def test_manual_create_mixed_payment_parts(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [
+                    {'payment_method': self.payment_method.id, 'amount': '20000.00'},
+                    {'payment_method': self.card_method.id, 'amount': '30000.00'},
+                ],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        transaction = FinanceTransaction.objects.get(pk=response.data['id'])
+        self.assertIsNone(transaction.payment_method)
+        self.assertEqual(transaction.payment_method_name, 'Смешанная оплата')
+        self.assertEqual(transaction.payment_parts.count(), 2)
+        self.assertEqual(len(response.data['payment_parts']), 2)
+
+    def test_payment_parts_sum_must_match_amount(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [{'payment_method': self.payment_method.id, 'amount': '20000.00'}],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('payment_parts', response.data)
+
+    def test_payment_parts_reject_duplicate_and_inactive_method(self):
+        self.client.force_authenticate(self.accountant)
+
+        duplicate = self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [
+                    {'payment_method': self.payment_method.id, 'amount': '20000.00'},
+                    {'payment_method': self.payment_method.id, 'amount': '30000.00'},
+                ],
+            },
+            format='json',
+        )
+        inactive = self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [{'payment_method': self.inactive_method.id, 'amount': '50000.00'}],
+            },
+            format='json',
+        )
+
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(inactive.status_code, 400)
+
+    def test_edit_payment_parts_updates_same_transaction(self):
+        self.client.force_authenticate(self.accountant)
+        create = self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [
+                    {'payment_method': self.payment_method.id, 'amount': '20000.00'},
+                    {'payment_method': self.card_method.id, 'amount': '30000.00'},
+                ],
+            },
+            format='json',
+        )
+        transaction_id = create.data['id']
+
+        response = self.client.patch(
+            f'/api/finance/{transaction_id}/',
+            {'payment_parts': [{'payment_method': self.card_method.id, 'amount': '50000.00'}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        transaction = FinanceTransaction.objects.get(pk=transaction_id)
+        self.assertEqual(transaction.payment_parts.count(), 1)
+        self.assertEqual(transaction.payment_method, self.card_method)
+
+    def test_payment_method_filter_uses_payment_parts(self):
+        self.client.force_authenticate(self.accountant)
+        self.client.post(
+            '/api/finance/',
+            {
+                'transaction_type': FinanceTransaction.Type.INCOME,
+                'amount': '50000.00',
+                'source': 'manual',
+                'payment_parts': [
+                    {'payment_method': self.payment_method.id, 'amount': '20000.00'},
+                    {'payment_method': self.card_method.id, 'amount': '30000.00'},
+                ],
+            },
+            format='json',
+        )
+
+        response = self.client.get('/api/finance/', {'payment_method': self.card_method.id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
 
 
 class CashBalanceApiTests(APITestCase):
@@ -241,14 +367,23 @@ class CashBalanceApiTests(APITestCase):
         return response.data
 
     def create_transaction(self, amount, transaction_type=FinanceTransaction.Type.INCOME, *, branch=None, payment_method=None):
-        return FinanceTransaction.objects.create(
+        method = payment_method or self.cash
+        transaction = FinanceTransaction.objects.create(
             transaction_type=transaction_type,
             amount=Decimal(amount),
             source='manual',
             branch=branch,
-            payment_method=payment_method or self.cash,
+            payment_method=method,
+            payment_method_name=method.name,
             paid_at=timezone.now(),
         )
+        FinancePaymentPart.objects.create(
+            transaction=transaction,
+            payment_method=method,
+            payment_method_name=method.name,
+            amount=Decimal(amount),
+        )
+        return transaction
 
     def test_cash_income_increases_balance_and_expense_decreases_it(self):
         self.client.force_authenticate(self.accountant)
@@ -268,6 +403,25 @@ class CashBalanceApiTests(APITestCase):
         data = self.cash_balance(str(self.branch.id))
 
         self.assertEqual(Decimal(data['expected_balance']), Decimal('0.00'))
+
+    def test_mixed_payment_adds_only_cash_part_to_cash_balance(self):
+        self.client.force_authenticate(self.accountant)
+        transaction = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('50000.00'),
+            source='manual',
+            branch=self.branch,
+            payment_method=None,
+            payment_method_name='Смешанная оплата',
+            paid_at=timezone.now(),
+        )
+        FinancePaymentPart.objects.create(transaction=transaction, payment_method=self.cash, payment_method_name=self.cash.name, amount=Decimal('20000.00'))
+        FinancePaymentPart.objects.create(transaction=transaction, payment_method=self.card, payment_method_name=self.card.name, amount=Decimal('30000.00'))
+
+        data = self.cash_balance(str(self.branch.id))
+
+        self.assertEqual(Decimal(data['cash_income']), Decimal('20000.00'))
+        self.assertEqual(Decimal(data['expected_balance']), Decimal('20000.00'))
 
     def test_branch_balances_are_not_mixed(self):
         self.client.force_authenticate(self.accountant)

@@ -5,6 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser, hasAnyRole, ROLES } from '../auth.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
+import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -12,7 +13,6 @@ import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
-import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
@@ -39,7 +39,7 @@ const emptyStudentVisit = {
   price: 0,
   payment_amount: 0,
   payment_date: '',
-  payment_method: '',
+  payment_parts: [],
   discount: '',
   addons: [],
 };
@@ -87,6 +87,10 @@ function lessonTitle(lesson) {
 
 function dispatchToast(message) {
   window.dispatchEvent(new CustomEvent('api-success', { detail: message }));
+}
+
+function dispatchError(message) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
 }
 
 function normalizeRows(items) {
@@ -395,6 +399,15 @@ export default function VisitsPage() {
 
   const addStudentToLesson = async () => {
     if (!selectedLesson || !studentForm.client) return;
+    if (
+      studentForm.create_subscription
+      && !activeStudentSubscription
+      && Number(studentForm.payment_amount || 0) > 0
+      && paymentPartsTotal(studentForm.payment_parts) !== Number(studentForm.payment_amount || 0)
+    ) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
+      return;
+    }
     setAddingStudent(true);
     try {
       const payload = {
@@ -413,7 +426,7 @@ export default function VisitsPage() {
           price: studentForm.price,
           payment_amount: studentForm.payment_amount,
           payment_date: studentForm.payment_date || null,
-          payment_method: studentForm.payment_method,
+          payment_parts: paymentPartsPayload(studentForm.payment_parts),
           discount: studentForm.discount || null,
           addons: addonPayload(studentForm.addons),
         });
@@ -740,7 +753,6 @@ function AddStudentModal({
   onAddonsChange, onDiscountChange, onAddonCatalogItemsChange, addonCatalogItems, onPaymentChange,
   subtotal, discountAmount, total,
 }) {
-  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   if (!lesson) return null;
   const lessonDate = lesson.lesson_date
     ? parseLocalDate(lesson.lesson_date).toLocaleDateString('ru-RU')
@@ -837,7 +849,13 @@ function AddStudentModal({
                   <Input label="Цена" type="number" value={form.price} onChange={(event) => setForm({ ...form, price: Number(event.target.value) })} />
                   <Input label="Оплата" type="number" value={form.payment_amount} onChange={(event) => onPaymentChange(event.target.value)} />
                   <Input label="Дата оплаты" type="date" value={form.payment_date} onChange={(event) => setForm({ ...form, payment_date: event.target.value })} />
-                  <SelectField label="Способ оплаты" value={form.payment_method} onChange={(value) => setForm({ ...form, payment_method: value })} options={[{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions]} />
+                  <div className="md:col-span-2">
+                    <PaymentSplitFields
+                      totalAmount={form.payment_amount}
+                      value={form.payment_parts}
+                      onChange={(payment_parts) => setForm({ ...form, payment_parts })}
+                    />
+                  </div>
                   <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-700 md:col-span-2">
                     <p>Основная услуга: {Number(form.price || 0).toLocaleString('ru-RU')} ₸</p>
                     <p>Дополнительные услуги: {addonsTotal(form.addons, addonCatalogItems).toLocaleString('ru-RU')} ₸</p>

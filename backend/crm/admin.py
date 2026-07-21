@@ -10,6 +10,7 @@ from .models import (
     ChatMessage,
     Client,
     Discount,
+    FinancePaymentPart,
     FinanceTransaction,
     GroupMembership,
     Lesson,
@@ -150,6 +151,13 @@ class FinanceTransactionAdmin(admin.ModelAdmin):
     list_display = ('transaction_type', 'amount', 'client', 'subscription', 'paid_at')
     list_filter = ('transaction_type', 'paid_at')
     search_fields = ('client__first_name', 'client__last_name', 'comment')
+
+
+@admin.register(FinancePaymentPart)
+class FinancePaymentPartAdmin(admin.ModelAdmin):
+    list_display = ('transaction', 'payment_method_name', 'amount')
+    list_filter = ('payment_method',)
+    search_fields = ('transaction__comment', 'payment_method_name')
 
 
 @admin.register(PaymentMethod)

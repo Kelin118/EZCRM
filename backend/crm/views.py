@@ -32,6 +32,7 @@ from .export_excel import (
 )
 from .excel_import import import_excel
 from .group_schedule import sync_group_schedule_slots
+from .payment_parts import payment_parts_audit, sync_finance_payment_parts, validate_payment_parts
 from .models import (
     AddonSale,
     AuditLog,
@@ -195,6 +196,7 @@ def _create_income_transaction(
     created_by=None,
     subscription=None,
     payment_method=None,
+    payment_parts=None,
     branch=None,
     discount=None,
     discount_name='',
@@ -202,7 +204,7 @@ def _create_income_transaction(
     subtotal_amount=None,
 ):
     paid_at = paid_at or _paid_at_from_date(payment_date or timezone.localdate())
-    return FinanceTransaction.objects.create(
+    finance_transaction = FinanceTransaction.objects.create(
         branch=branch,
         transaction_type=FinanceTransaction.Type.INCOME,
         amount=amount,
@@ -219,6 +221,8 @@ def _create_income_transaction(
         paid_at=paid_at,
         comment=comment,
     )
+    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
+    return finance_transaction
 
 
 def subscription_finance_source(subscription_or_service):
@@ -1278,9 +1282,13 @@ class LessonViewSet(EducationBaseViewSet):
                 discount_result = calculate_discount(price + addons_sum, discount, branch=branch, calculation_date=parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate())
                 payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price']))
                 try:
-                    payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
+                    payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0 and request.data.get('payment_parts') is None)
                 except ValueError as error:
                     return Response({'payment_method': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=payment_amount, legacy_payment_method=payment_method)
+                except drf_serializers.ValidationError as error:
+                    return Response(error.detail, status=status.HTTP_400_BAD_REQUEST)
                 purchase_date = parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate()
                 end_date = parse_date(request.data.get('end_date') or '') or calculate_subscription_end_date(
                     start_date,
@@ -1319,6 +1327,7 @@ class LessonViewSet(EducationBaseViewSet):
                         created_by=request.user,
                         subscription=created_subscription,
                         payment_method=payment_method,
+                        payment_parts=payment_parts,
                         discount=created_subscription.discount,
                         discount_name=created_subscription.discount_name,
                         discount_amount=created_subscription.discount_amount,
@@ -1585,7 +1594,8 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
             subscription = serializer.save()
             if subscription.paid_amount > 0 and not subscription.finance_transaction_id:
                 payment_method = getattr(subscription, 'selected_payment_method', None)
-                if not payment_method:
+                payment_parts = getattr(subscription, 'selected_payment_parts', None)
+                if not payment_method and payment_parts is None:
                     raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 finance_transaction = _create_income_transaction(
                     client=subscription.client,
@@ -1596,6 +1606,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     created_by=self.request.user,
                     subscription=subscription,
                     payment_method=payment_method,
+                    payment_parts=payment_parts,
                     discount=subscription.discount,
                     discount_name=subscription.discount_name,
                     discount_amount=subscription.discount_amount,
@@ -1608,6 +1619,59 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         with transaction.atomic():
             subscription = serializer.save()
+            finance_transaction = subscription.finance_transaction
+            payment_method = getattr(subscription, 'selected_payment_method', None) or (finance_transaction.payment_method if finance_transaction else None)
+            payment_parts = getattr(subscription, 'selected_payment_parts', None)
+            if subscription.paid_amount > 0:
+                if finance_transaction:
+                    finance_transaction.amount = subscription.paid_amount
+                    finance_transaction.subtotal_amount = Decimal(subscription.price or 0) + addons_total(subscription)
+                    finance_transaction.discount = subscription.discount
+                    finance_transaction.discount_name = subscription.discount_name
+                    finance_transaction.discount_amount = subscription.discount_amount
+                    finance_transaction.client = subscription.client
+                    finance_transaction.branch = subscription.branch
+                    finance_transaction.source = subscription_finance_source(subscription)
+                    finance_transaction.comment = addons_comment(subscription)
+                    finance_transaction.paid_at = _paid_at_from_date(subscription.purchase_date)
+                    finance_transaction.save(update_fields=(
+                        'amount', 'subtotal_amount', 'discount', 'discount_name', 'discount_amount',
+                        'client', 'branch', 'source', 'comment', 'paid_at', 'updated_at',
+                    ))
+                    if payment_parts is None and finance_transaction.payment_parts.exists():
+                        existing_parts = list(finance_transaction.payment_parts.all())
+                        if len(existing_parts) == 1:
+                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': subscription.paid_amount}]
+                        else:
+                            payment_parts = [
+                                {'payment_method': part.payment_method_id, 'amount': part.amount}
+                                for part in existing_parts
+                            ]
+                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
+                else:
+                    if not payment_method and payment_parts is None:
+                        raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
+                    finance_transaction = _create_income_transaction(
+                        client=subscription.client,
+                        amount=subscription.paid_amount,
+                        source=subscription_finance_source(subscription),
+                        payment_date=subscription.purchase_date,
+                        comment=addons_comment(subscription),
+                        created_by=self.request.user,
+                        subscription=subscription,
+                        payment_method=payment_method,
+                        payment_parts=payment_parts,
+                        discount=subscription.discount,
+                        discount_name=subscription.discount_name,
+                        discount_amount=subscription.discount_amount,
+                        subtotal_amount=Decimal(subscription.price or 0) + addons_total(subscription),
+                    )
+                    subscription.finance_transaction = finance_transaction
+                    subscription.save(update_fields=('finance_transaction', 'updated_at'))
+            elif finance_transaction:
+                subscription.finance_transaction = None
+                subscription.save(update_fields=('finance_transaction', 'updated_at'))
+                finance_transaction.delete()
             self._log_instance(AuditLog.Action.UPDATE, subscription, self.audit_update_description, self._subscription_audit_changes(subscription))
 
 
@@ -1749,7 +1813,8 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             trial = serializer.save()
             if trial.price > 0 and trial.payment_date and not trial.finance_transaction_id:
                 payment_method = getattr(trial, 'selected_payment_method', None)
-                if not payment_method:
+                payment_parts = getattr(trial, 'selected_payment_parts', None)
+                if not payment_method and payment_parts is None:
                     raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 finance_transaction = _create_income_transaction(
                     client=trial.client,
@@ -1759,6 +1824,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     comment='Оплата пробника',
                     created_by=self.request.user,
                     payment_method=payment_method,
+                    payment_parts=payment_parts,
                 )
                 trial.finance_transaction = finance_transaction
                 trial.save(update_fields=('finance_transaction', 'updated_at'))
@@ -1766,7 +1832,48 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
-        trial = serializer.save()
+        with transaction.atomic():
+            trial = serializer.save()
+            finance_transaction = trial.finance_transaction
+            payment_method = getattr(trial, 'selected_payment_method', None) or (finance_transaction.payment_method if finance_transaction else None)
+            payment_parts = getattr(trial, 'selected_payment_parts', None)
+            if trial.price > 0 and trial.payment_date:
+                if finance_transaction:
+                    finance_transaction.amount = trial.price
+                    finance_transaction.subtotal_amount = trial.price
+                    finance_transaction.client = trial.client
+                    finance_transaction.branch = trial.branch
+                    finance_transaction.source = 'trial'
+                    finance_transaction.comment = 'Оплата пробника'
+                    finance_transaction.paid_at = _paid_at_from_date(trial.payment_date)
+                    finance_transaction.save(update_fields=('amount', 'subtotal_amount', 'client', 'branch', 'source', 'comment', 'paid_at', 'updated_at'))
+                    if payment_parts is None and finance_transaction.payment_parts.exists():
+                        existing_parts = list(finance_transaction.payment_parts.all())
+                        if len(existing_parts) == 1:
+                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': trial.price}]
+                        else:
+                            payment_parts = [
+                                {'payment_method': part.payment_method_id, 'amount': part.amount}
+                                for part in existing_parts
+                            ]
+                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
+                elif payment_method or payment_parts is not None:
+                    finance_transaction = _create_income_transaction(
+                        client=trial.client,
+                        amount=trial.price,
+                        source='trial',
+                        paid_at=_paid_at_from_date(trial.payment_date),
+                        comment='Оплата пробника',
+                        created_by=self.request.user,
+                        payment_method=payment_method,
+                        payment_parts=payment_parts,
+                    )
+                    trial.finance_transaction = finance_transaction
+                    trial.save(update_fields=('finance_transaction', 'updated_at'))
+            elif finance_transaction:
+                trial.finance_transaction = None
+                trial.save(update_fields=('finance_transaction', 'updated_at'))
+                finance_transaction.delete()
         changes = self._audit_changes()
         if previous_status != trial.status:
             changes['stage'] = {'from': previous_status, 'to': trial.status}
@@ -1805,9 +1912,13 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         discount_result = calculate_discount(price + addons_sum, discount, branch=branch, calculation_date=purchase_date)
         payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price']))
         try:
-            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0)
+            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0 and request.data.get('payment_parts') is None)
         except ValueError as error:
             return Response({'payment_method': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=payment_amount, legacy_payment_method=payment_method)
+        except drf_serializers.ValidationError as error:
+            return Response(error.detail, status=status.HTTP_400_BAD_REQUEST)
         comment = request.data.get('comment') or 'Оплата абонемента после пробного'
 
         if not title:
@@ -1865,6 +1976,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     created_by=request.user,
                     subscription=subscription,
                     payment_method=payment_method,
+                    payment_parts=payment_parts,
                     discount=subscription.discount,
                     discount_name=subscription.discount_name,
                     discount_amount=subscription.discount_amount,
@@ -1948,8 +2060,10 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 master_class.payment_date = timezone.localdate()
                 master_class.save(update_fields=('payment_date', 'updated_at'))
             if master_class.payment_amount > 0 and master_class.payment_date and not master_class.finance_transaction_id:
-                payment_method = getattr(master_class, 'selected_payment_method', None)
-                if not payment_method:
+                selected_payment_method = getattr(master_class, 'selected_payment_method', None)
+                payment_method = selected_payment_method
+                payment_parts = getattr(master_class, 'selected_payment_parts', None)
+                if not payment_method and payment_parts is None:
                     raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
                 client = master_class.participants.first()
                 finance_transaction = _create_income_transaction(
@@ -1960,6 +2074,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     comment='Оплата МК',
                     created_by=self.request.user,
                     payment_method=payment_method,
+                    payment_parts=payment_parts,
                     branch=master_class.branch,
                     discount=master_class.discount,
                     discount_name=master_class.discount_name,
@@ -1986,10 +2101,12 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             master_class.payment_date = timezone.localdate()
             master_class.save(update_fields=('payment_date', 'updated_at'))
 
-        payment_method = getattr(master_class, 'selected_payment_method', None)
+        selected_payment_method = getattr(master_class, 'selected_payment_method', None)
+        payment_method = selected_payment_method
+        payment_parts = getattr(master_class, 'selected_payment_parts', None)
         if not payment_method and finance_transaction:
             payment_method = finance_transaction.payment_method
-        if not payment_method:
+        if not payment_method and payment_parts is None:
             raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
 
         client = master_class.participants.first()
@@ -2023,6 +2140,16 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 'comment',
                 'updated_at',
             ))
+            if payment_parts is None and not selected_payment_method and finance_transaction.payment_parts.exists():
+                existing_parts = list(finance_transaction.payment_parts.all())
+                if len(existing_parts) == 1:
+                    payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': master_class.payment_amount}]
+                else:
+                    payment_parts = [
+                        {'payment_method': part.payment_method_id, 'amount': part.amount}
+                        for part in existing_parts
+                    ]
+            sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
             return
 
         finance_transaction = _create_income_transaction(
@@ -2033,6 +2160,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             comment=comment,
             created_by=self.request.user,
             payment_method=payment_method,
+            payment_parts=payment_parts,
             branch=master_class.branch,
             discount=master_class.discount,
             discount_name=master_class.discount_name,
@@ -2134,7 +2262,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
         if manager and manager != 'all':
             queryset = queryset.filter(created_by__isnull=True) if manager == 'unassigned' else queryset.filter(created_by_id=manager)
         if payment_method and payment_method != 'all':
-            queryset = queryset.filter(payment_method__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_method_id=payment_method)
+            queryset = queryset.filter(finance_transaction__payment_parts__isnull=True) if payment_method == 'unassigned' else queryset.filter(finance_transaction__payment_parts__payment_method_id=payment_method)
         if search:
             queryset = queryset.filter(
                 Q(client__first_name__icontains=search)
@@ -2215,6 +2343,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     comment=self._sale_comment(sale),
                     created_by=self.request.user,
                     payment_method=sale.payment_method,
+                    payment_parts=getattr(sale, 'selected_payment_parts', None),
                     branch=sale.branch,
                     discount=sale.discount,
                     discount_name=sale.discount_name,
@@ -2258,6 +2387,17 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         'comment',
                         'updated_at',
                     ))
+                    payment_parts = getattr(sale, 'selected_payment_parts', None)
+                    if payment_parts is None and finance_transaction.payment_parts.exists():
+                        existing_parts = list(finance_transaction.payment_parts.all())
+                        if len(existing_parts) == 1:
+                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': sale.payment_amount}]
+                        else:
+                            payment_parts = [
+                                {'payment_method': part.payment_method_id, 'amount': part.amount}
+                                for part in existing_parts
+                            ]
+                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=sale.payment_method)
                 else:
                     finance_transaction = _create_income_transaction(
                         client=sale.client,
@@ -2267,6 +2407,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         comment=self._sale_comment(sale),
                         created_by=self.request.user,
                         payment_method=sale.payment_method,
+                        payment_parts=getattr(sale, 'selected_payment_parts', None),
                         branch=sale.branch,
                         discount=sale.discount,
                         discount_name=sale.discount_name,
@@ -2284,7 +2425,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('addon_sale__items__catalog_item').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -2299,6 +2440,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             'branch': instance.branch_id,
             'created_by': instance.created_by_id,
             'description': instance.comment,
+            'payment_parts': payment_parts_audit(instance),
         }
 
     def get_queryset(self):
@@ -2318,7 +2460,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if source:
             queryset = queryset.filter(source=source)
         if payment_method and payment_method != 'all':
-            queryset = queryset.filter(payment_method__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_method_id=payment_method)
+            queryset = queryset.filter(payment_parts__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_parts__payment_method_id=payment_method)
         if discount and discount != 'all':
             queryset = queryset.filter(discount__isnull=True) if discount == 'unassigned' else queryset.filter(discount_id=discount)
         if manager and manager != 'all':
@@ -2335,7 +2477,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(paid_at__date__gte=date_from)
         if date_to:
             queryset = queryset.filter(paid_at__date__lte=date_to)
-        return queryset.order_by('-paid_at', '-created_at')
+        return queryset.distinct().order_by('-paid_at', '-created_at')
 
     def perform_create(self, serializer):
         finance_transaction = serializer.save(created_by=self.request.user)
@@ -2366,18 +2508,17 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         opening_balance = last_snapshot.amount if last_snapshot else Decimal('0.00')
 
         transactions = self._cash_scope(
-            FinanceTransaction.objects.select_related('payment_method')
-            .filter(payment_method__is_cash=True),
+            FinanceTransaction.objects.filter(payment_parts__payment_method__is_cash=True),
             branch,
         )
         if last_snapshot:
             transactions = transactions.filter(paid_at__gt=last_snapshot.recorded_at)
 
         cash_income = _decimal(
-            transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total']
+            transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('payment_parts__amount'))['total']
         )
         cash_expense = _decimal(
-            transactions.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total']
+            transactions.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('payment_parts__amount'))['total']
         )
         expected_balance = opening_balance + cash_income - cash_expense
 
@@ -2403,7 +2544,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             branch_ids = set(
                 CashRegisterSnapshot.objects.values_list('branch_id', flat=True)
             ) | set(
-                FinanceTransaction.objects.filter(payment_method__is_cash=True).values_list('branch_id', flat=True)
+                FinanceTransaction.objects.filter(payment_parts__payment_method__is_cash=True).values_list('branch_id', flat=True)
             )
             payload = {
                 'opening_balance': Decimal('0.00'),
@@ -2832,7 +2973,7 @@ class FinanceExportView(BaseExportView):
     description = 'Экспорт финансов'
 
     def get(self, request):
-        queryset = FinanceTransaction.objects.select_related('client', 'created_by').all()
+        queryset = FinanceTransaction.objects.select_related('client', 'created_by', 'payment_method').prefetch_related('payment_parts__payment_method').all()
         queryset = _filter_period(queryset, 'paid_at__date', request)
         source = request.query_params.get('source')
         status_value = request.query_params.get('status')
@@ -3045,8 +3186,18 @@ class DashboardStatsView(APIView):
                     paid_at__month=today.month,
                 ).aggregate(total=Sum('amount'))['total']
             )
-            cash = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__code='cash').aggregate(total=Sum('amount'))['total'])
-            card = _decimal(transactions.filter(transaction_type=FinanceTransaction.Type.INCOME, payment_method__code='card').aggregate(total=Sum('amount'))['total'])
+            cash = _decimal(
+                transactions.filter(
+                    transaction_type=FinanceTransaction.Type.INCOME,
+                    payment_parts__payment_method__is_cash=True,
+                ).aggregate(total=Sum('payment_parts__amount'))['total']
+            )
+            card = _decimal(
+                transactions.filter(
+                    transaction_type=FinanceTransaction.Type.INCOME,
+                    payment_parts__payment_method__is_cash=False,
+                ).aggregate(total=Sum('payment_parts__amount'))['total']
+            )
             payment_count = transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).count()
             avg_check = round(float(income_total) / payment_count, 2) if payment_count else 0
 

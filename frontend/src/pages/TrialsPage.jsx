@@ -6,12 +6,12 @@ import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
 import Modal from '../components/ui/Modal.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
+import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
-import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { todayLocalDate } from '../utils/dateTime.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
@@ -24,10 +24,10 @@ const trialStages = [
   { value: 'lost', label: 'Не купил' },
 ];
 
-const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, payment_method: '', bought_subscription: false, notes: '' };
+const empty = { client: '', manager: '', teacher: '', scheduled_at: '', stage: 'lead', payment_date: '', price: 0, payment_parts: [], bought_subscription: false, notes: '' };
 const todayIso = todayLocalDate;
 
-const emptyConvertForm = { service: '', addons: [], discount: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_method: '', payment_date: todayIso(), comment: 'Купил после пробного' };
+const emptyConvertForm = { service: '', addons: [], discount: '', subscription_type: '', start_date: todayIso(), end_date: '', total_visits: 0, price: 0, payment_amount: 0, payment_parts: [], payment_date: todayIso(), comment: 'Купил после пробного' };
 const boughtStages = new Set(['bought', 'purchased', 'subscription_bought']);
 
 const baseFields = [
@@ -70,11 +70,18 @@ function getComment(item) {
 }
 
 function getPaymentMethod(item) {
+  if (item.payment_parts?.length) {
+    return item.payment_parts.map((part) => `${part.payment_method_name} — ${money(part.amount)}`).join(' / ');
+  }
   return item.payment_method || '';
 }
 
 function getTrialDate(item) {
   return item.trial_date || item.scheduled_at;
+}
+
+function dispatchError(message) {
+  window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
 }
 
 function ViewToggle({ value, onChange }) {
@@ -194,7 +201,6 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 export default function TrialsPage() {
   const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
-  const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
@@ -217,7 +223,17 @@ export default function TrialsPage() {
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Преподаватель', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
-    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
+    {
+      name: 'payment_parts',
+      type: 'custom',
+      render: (current, update) => (
+        <PaymentSplitFields
+          totalAmount={current.price}
+          value={current.payment_parts}
+          onChange={(payment_parts) => update({ ...current, payment_parts })}
+        />
+      ),
+    },
     ...baseFields,
   ];
   const total = crud.items.length;
@@ -274,7 +290,11 @@ export default function TrialsPage() {
       openConvertModal(form);
       return;
     }
-    await crud.save(form);
+    if (Number(form.price || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.price || 0)) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой пробника.');
+      return;
+    }
+    await crud.save({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
   };
 
   const updateConvertForm = (patch) => setConvertForm((current) => ({ ...current, ...patch }));
@@ -320,9 +340,13 @@ export default function TrialsPage() {
 
   const convertToSubscription = async () => {
     if (!convertTrial) return;
+    if (Number(convertForm.payment_amount || 0) > 0 && paymentPartsTotal(convertForm.payment_parts) !== Number(convertForm.payment_amount || 0)) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
+      return;
+    }
     setConverting(true);
     try {
-      const { data } = await api.post(`trials/${convertTrial.id}/convert-to-subscription/`, { ...convertForm, addons: addonPayload(convertForm.addons) });
+      const { data } = await api.post(`trials/${convertTrial.id}/convert-to-subscription/`, { ...convertForm, addons: addonPayload(convertForm.addons), payment_parts: paymentPartsPayload(convertForm.payment_parts) });
       crud.setItems((items) => items.map((trial) => (trial.id === convertTrial.id ? { ...trial, ...data.trial, stage: data.trial.stage ?? data.trial.status } : trial)));
       setConvertTrial(null);
       setMessage('Абонемент создан, клиент добавлен в раздел Абонементы.');
@@ -415,12 +439,13 @@ export default function TrialsPage() {
             <p className="text-emerald-700">Скидка: −{money(convertDiscountAmount)}</p>
             <p className="mt-1 text-base text-slate-900">Итого: {money(convertTotal)}</p>
           </div>
-          <SelectField
-            label="Способ оплаты"
-            value={convertForm.payment_method}
-            onChange={(value) => updateConvertForm({ payment_method: value })}
-            options={[{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions]}
-          />
+          <div className="md:col-span-2">
+            <PaymentSplitFields
+              totalAmount={convertForm.payment_amount}
+              value={convertForm.payment_parts}
+              onChange={(payment_parts) => updateConvertForm({ payment_parts })}
+            />
+          </div>
           <Input label="Менеджер" value={convertTrial?.manager_name || ''} onChange={() => {}} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
             Комментарий

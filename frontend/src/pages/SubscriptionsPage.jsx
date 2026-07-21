@@ -13,6 +13,7 @@ import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/disc
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
+import PaymentSplitFields, { paymentPartsPayload } from '../components/finance/PaymentSplitFields.jsx';
 
 const empty = {
   client: '',
@@ -30,6 +31,7 @@ const empty = {
   addons: [],
   discount: '',
   payment_method: '',
+  payment_parts: [],
   comment: '',
 };
 
@@ -164,14 +166,15 @@ export default function SubscriptionsPage() {
       return;
     }
 
-    if (current.id || currentHasService) {
-      const { comment, price_summary, ...payload } = current;
-      await crud.save({ ...payload, addons });
+    const paymentParts = paymentPartsPayload(current.payment_parts);
+    if (Number(current.paid_amount || 0) > 0 && paymentParts.reduce((sum, item) => sum + Number(item.amount || 0), 0) !== Number(current.paid_amount || 0)) {
+      notifyError('Сумма частей оплаты должна совпадать с суммой оплаты.');
       return;
     }
 
-    if (Number(current.paid_amount || 0) > 0 && !current.payment_method) {
-      notifyError('Выберите способ оплаты.');
+    if (current.id || currentHasService) {
+      const { comment, price_summary, ...payload } = current;
+      await crud.save({ ...payload, addons, payment_parts: paymentParts });
       return;
     }
 
@@ -180,7 +183,7 @@ export default function SubscriptionsPage() {
       await api.post('addon-sales/', {
         client: current.client ? Number(current.client) : null,
         branch: numericBranchOrNull(current.branch),
-        payment_method: current.payment_method ? Number(current.payment_method) : null,
+        payment_parts: paymentParts,
         sale_date: current.purchase_date || todayIso(),
         discount: current.discount ? Number(current.discount) : null,
         items: addons,
@@ -244,7 +247,11 @@ export default function SubscriptionsPage() {
         }
         return field;
       }),
-    { name: 'payment_method', label: 'Способ оплаты', type: 'select', options: [{ value: '', label: 'Выберите способ' }, ...paymentMethodOptions] },
+    {
+      name: 'payment_parts',
+      type: 'custom',
+      render: (current, update) => <PaymentSplitFields totalAmount={current.paid_amount} value={current.payment_parts} onChange={(payment_parts) => update({ ...current, payment_parts })} />,
+    },
     {
       name: 'price_summary',
       type: 'custom',

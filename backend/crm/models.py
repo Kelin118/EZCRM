@@ -647,6 +647,42 @@ class PaymentMethod(TimeStampedModel):
         return self.name
 
 
+class FinancePaymentPart(TimeStampedModel):
+    transaction = models.ForeignKey(
+        FinanceTransaction,
+        on_delete=models.CASCADE,
+        related_name='payment_parts',
+    )
+    payment_method = models.ForeignKey(
+        PaymentMethod,
+        on_delete=models.PROTECT,
+        related_name='finance_payment_parts',
+    )
+    payment_method_name = models.CharField(max_length=150)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ('id',)
+        constraints = [
+            models.UniqueConstraint(
+                fields=('transaction', 'payment_method'),
+                name='unique_payment_method_per_transaction',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name='finance_payment_part_amount_positive',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.payment_method_id and not self.payment_method_name:
+            self.payment_method_name = self.payment_method.name
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.payment_method_name}: {self.amount}'
+
+
 class CashRegisterSnapshot(TimeStampedModel):
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='cash_register_snapshots')
     amount = models.DecimalField(max_digits=12, decimal_places=2)

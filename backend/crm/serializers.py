@@ -22,6 +22,8 @@ from .models import (
     AuditLog,
     Branch,
     CatalogItem,
+    CertificateBatch,
+    CertificateDesignAsset,
     CertificateRedemption,
     CertificateTemplate,
     ChatMessage,
@@ -973,6 +975,10 @@ def money(value):
 def certificate_template_snapshot(template):
     if not template:
         return {}
+    request = None
+    asset_url = ''
+    if template.background_asset_id:
+        asset_url = f'/api/public/certificate-assets/{template.background_asset.public_token}/'
     return {
         'name': template.name,
         'title': template.title,
@@ -991,14 +997,42 @@ def certificate_template_snapshot(template):
         'badge_text': template.badge_text,
         'terms': template.terms,
         'background_image_url': template.background_image_url,
+        'background_asset': template.background_asset_id,
+        'background_asset_url': asset_url,
     }
 
 
+class CertificateDesignAssetSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CertificateDesignAsset
+        fields = (
+            'id', 'public_token', 'file_name', 'mime_type', 'file_size', 'width', 'height',
+            'sha256', 'url', 'created_at',
+        )
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        request = self.context.get('request')
+        path = f'/api/public/certificate-assets/{obj.public_token}/'
+        return request.build_absolute_uri(path) if request else path
+
+
 class CertificateTemplateSerializer(serializers.ModelSerializer):
+    background_asset_url = serializers.SerializerMethodField()
+
     class Meta:
         model = CertificateTemplate
         fields = '__all__'
         read_only_fields = ('created_at', 'updated_at')
+
+    def get_background_asset_url(self, obj):
+        if not obj.background_asset_id:
+            return ''
+        request = self.context.get('request')
+        path = f'/api/public/certificate-assets/{obj.background_asset.public_token}/'
+        return request.build_absolute_uri(path) if request else path
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -1028,7 +1062,11 @@ class CertificateRedemptionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CertificateRedemption
-        fields = ('id', 'certificate', 'amount', 'comment', 'redeemed_at', 'created_by', 'created_by_name', 'created_at')
+        fields = (
+            'id', 'certificate', 'amount', 'visitor_name', 'visitor_phone', 'service_name',
+            'remaining_amount_after', 'comment', 'redeemed_at', 'created_by', 'created_by_name',
+            'created_at',
+        )
         read_only_fields = ('certificate', 'redeemed_at', 'created_by', 'created_at')
 
     def get_created_by_name(self, obj):
@@ -1043,14 +1081,20 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
     public_url = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
     design = serializers.SerializerMethodField()
+    serial_code = serializers.CharField(read_only=True)
+    purchaser_name = serializers.SerializerMethodField()
+    purchaser_phone = serializers.SerializerMethodField()
+    visits_count = serializers.SerializerMethodField()
+    last_visit = serializers.SerializerMethodField()
+    background_asset_url = serializers.SerializerMethodField()
 
     class Meta:
         model = GiftCertificate
         fields = '__all__'
         read_only_fields = (
-            'template_name', 'template_snapshot', 'code', 'public_token', 'sale_discount_percent',
+            'batch', 'template_name', 'template_snapshot', 'serial_number', 'code', 'public_token', 'sale_discount_percent',
             'sale_price', 'remaining_amount', 'valid_until', 'finance_transaction', 'created_by',
-            'sent_at', 'sent_to_phone', 'created_at', 'updated_at',
+            'background_asset', 'sent_at', 'sent_to_phone', 'created_at', 'updated_at',
         )
 
     def get_purchaser_client_name(self, obj):
@@ -1069,6 +1113,30 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
 
     def get_design(self, obj):
         return obj.template_snapshot or certificate_template_snapshot(obj.template)
+
+    def get_purchaser_name(self, obj):
+        if obj.batch and obj.batch.purchaser_name:
+            return obj.batch.purchaser_name
+        return str(obj.purchaser_client) if obj.purchaser_client else ''
+
+    def get_purchaser_phone(self, obj):
+        if obj.batch and (obj.batch.purchaser_phone_snapshot or obj.batch.purchaser_phone):
+            return obj.batch.purchaser_phone_snapshot or obj.batch.purchaser_phone
+        return obj.purchaser_client.phone if obj.purchaser_client else ''
+
+    def get_visits_count(self, obj):
+        return obj.redemptions.count() if hasattr(obj, 'redemptions') else 0
+
+    def get_last_visit(self, obj):
+        redemption = obj.redemptions.first()
+        return redemption.redeemed_at if redemption else None
+
+    def get_background_asset_url(self, obj):
+        if not obj.background_asset_id:
+            return ''
+        request = self.context.get('request')
+        path = f'/api/public/certificate-assets/{obj.background_asset.public_token}/'
+        return request.build_absolute_uri(path) if request else path
 
     def to_representation(self, instance):
         instance = refresh_certificate_status(instance)
@@ -1129,12 +1197,14 @@ class PublicGiftCertificateSerializer(serializers.ModelSerializer):
     terms = serializers.SerializerMethodField()
     design = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
+    serial_code = serializers.CharField(read_only=True)
+    background_asset_url = serializers.SerializerMethodField()
 
     class Meta:
         model = GiftCertificate
         fields = (
-            'code', 'title', 'subtitle', 'recipient_name', 'face_value', 'remaining_amount',
-            'issued_at', 'valid_until', 'status', 'status_display', 'terms', 'design',
+            'serial_code', 'code', 'title', 'subtitle', 'recipient_name', 'face_value', 'remaining_amount',
+            'issued_at', 'valid_until', 'status', 'status_display', 'terms', 'design', 'background_asset_url',
         )
 
     def get_title(self, obj):
@@ -1151,6 +1221,30 @@ class PublicGiftCertificateSerializer(serializers.ModelSerializer):
 
     def get_status_display(self, obj):
         return obj.get_status_display()
+
+    def get_background_asset_url(self, obj):
+        if not obj.background_asset_id:
+            return ''
+        request = self.context.get('request')
+        path = f'/api/public/certificate-assets/{obj.background_asset.public_token}/'
+        return request.build_absolute_uri(path) if request else path
+
+
+class CertificateBatchSerializer(serializers.ModelSerializer):
+    serial_from = serializers.SerializerMethodField()
+    serial_to = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CertificateBatch
+        fields = '__all__'
+
+    def get_serial_from(self, obj):
+        first = obj.certificates.order_by('serial_number').first()
+        return first.serial_code if first else ''
+
+    def get_serial_to(self, obj):
+        last = obj.certificates.order_by('-serial_number').first()
+        return last.serial_code if last else ''
 
 
 def refresh_certificate_status(certificate):

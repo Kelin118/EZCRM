@@ -11,12 +11,13 @@ export function normalizeWhatsappPhone(value) {
 }
 
 export function certificateWhatsappMessage(certificate, publicUrl) {
+  const serialCode = certificate.serial_code || certificate.code;
+  const greeting = certificate.recipient_name ? `Здравствуйте, ${certificate.recipient_name}!` : 'Здравствуйте!';
   return [
-    `Здравствуйте, ${certificate.recipient_name || 'получатель'}!`,
+    greeting,
     '',
-    `Для вас оформлен подарочный сертификат «${certificate.template_title || certificate.title || 'Сертификат'}» на сумму ${money(certificate.face_value)}.`,
-    '',
-    `Код сертификата: ${certificate.code}`,
+    `Для вас оформлен подарочный сертификат № ${serialCode}`,
+    `Номинал: ${money(certificate.face_value)}`,
     `Действителен до: ${certificate.valid_until}`,
     '',
     'Открыть сертификат:',

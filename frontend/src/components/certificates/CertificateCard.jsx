@@ -10,9 +10,11 @@ export default function CertificateCard({ certificate, template, compact = false
   const faceValue = certificate?.face_value || template?.fixed_amount || template?.min_amount || 0;
   const remaining = certificate?.remaining_amount;
   const badge = design.badge_text || template?.badge_text || 'Подарочный сертификат';
+  const backgroundImage = certificate?.background_asset_url || design.background_asset_url || template?.background_asset_url || design.background_image_url;
+  const serialCode = certificate?.serial_code || certificate?.code;
   const style = {
-    background: design.background_image_url
-      ? `linear-gradient(135deg, ${design.background_from || '#fff7ed'}dd, ${design.background_to || '#fef3c7'}ee), url(${design.background_image_url}) center/cover`
+    background: backgroundImage
+      ? `linear-gradient(135deg, ${design.background_from || '#fff7ed'}dd, ${design.background_to || '#fef3c7'}ee), url(${backgroundImage}) center/cover`
       : `linear-gradient(135deg, ${design.background_from || '#fff7ed'}, ${design.background_to || '#fef3c7'})`,
     color: design.text_color || '#1f2937',
   };
@@ -27,7 +29,7 @@ export default function CertificateCard({ certificate, template, compact = false
             <Gift size={16} style={{ color: design.accent_color || '#f59e0b' }} />
             {badge}
           </div>
-          {certificate?.code && <span className="rounded-full bg-black/10 px-3 py-1 text-xs font-bold">{certificate.code}</span>}
+          {serialCode && <span className="rounded-full bg-black/10 px-3 py-1 text-xs font-bold">{serialCode}</span>}
         </div>
         <div>
           <p className="text-sm font-bold uppercase tracking-[0.22em] opacity-70">{subtitle}</p>

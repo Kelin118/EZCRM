@@ -210,6 +210,66 @@ def export_master_classes(queryset):
     return _write_sheet('МК', headers, rows)
 
 
+def export_certificates(queryset):
+    workbook = Workbook()
+    registry = workbook.active
+    registry.title = 'Certificates'
+    registry_headers = [
+        'Certificate number', 'Technical code', 'Batch', 'Purchaser', 'Purchaser phone',
+        'Recipient', 'Recipient phone', 'Template', 'Face value', 'Sale price', 'Remaining',
+        'Visits count', 'Last visit', 'Issued at', 'Valid until', 'Status',
+    ]
+    registry_rows = []
+    history_rows = []
+    for item in queryset:
+        redemptions = list(item.redemptions.all())
+        last_redemption = redemptions[0] if redemptions else None
+        purchaser = item.batch.purchaser_name if item.batch and item.batch.purchaser_name else _display_client(item.purchaser_client)
+        purchaser_phone = ''
+        if item.batch:
+            purchaser_phone = item.batch.purchaser_phone_snapshot or item.batch.purchaser_phone
+        if not purchaser_phone and item.purchaser_client:
+            purchaser_phone = item.purchaser_client.phone
+        registry_rows.append([
+            item.serial_code or '',
+            item.code,
+            item.batch_id or '',
+            purchaser,
+            purchaser_phone,
+            item.recipient_name or '',
+            item.recipient_phone or '',
+            item.template_name,
+            _money(item.face_value),
+            _money(item.sale_price),
+            _money(item.remaining_amount),
+            len(redemptions),
+            _datetime(last_redemption.redeemed_at) if last_redemption else '',
+            _date(item.issued_at),
+            _date(item.valid_until),
+            item.status,
+        ])
+        for redemption in redemptions:
+            history_rows.append([
+                item.serial_code or '',
+                purchaser,
+                redemption.visitor_name or item.recipient_name or '',
+                redemption.visitor_phone or item.recipient_phone or '',
+                _datetime(redemption.redeemed_at),
+                redemption.service_name,
+                _money(redemption.amount),
+                _money(redemption.remaining_amount_after),
+                _display_user(redemption.created_by),
+                redemption.comment,
+            ])
+    _fill_sheet(registry, registry_headers, registry_rows)
+    history = workbook.create_sheet('Visits')
+    _fill_sheet(history, [
+        'Certificate number', 'Purchaser', 'Visitor', 'Visitor phone', 'Date and time',
+        'Service', 'Redeemed', 'Remaining', 'Staff', 'Comment',
+    ], history_rows)
+    return _to_bytes(workbook)
+
+
 def export_groups(queryset):
     headers = ['ID', 'Название', 'Предмет', 'Учитель', 'Менеджер', 'Статус', 'Кол-во учеников', 'Дата начала', 'Дата окончания', 'Описание']
     rows = [

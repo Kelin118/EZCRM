@@ -1,4 +1,4 @@
-import { toBlob } from 'html-to-image';
+﻿import { toBlob } from 'html-to-image';
 import { Download, Eye, Gift, MessageCircle, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -29,12 +29,20 @@ const emptyTemplate = {
   badge_text: 'Подарочный сертификат',
   terms: '',
   background_image_url: '',
+  background_asset: '',
+  background_asset_url: '',
   is_active: true,
 };
 
 const emptyCertificate = {
   template: '',
+  mode: 'single',
+  issue_mode: 'digital',
   purchaser_client: '',
+  purchaser_name: '',
+  purchaser_phone: '',
+  quantity: 1,
+  start_number: '',
   recipient_name: '',
   recipient_phone: '',
   face_value: '',
@@ -80,13 +88,20 @@ export default function CertificatesPage() {
   const [wizardStep, setWizardStep] = useState(1);
   const [certificateForm, setCertificateForm] = useState(emptyCertificate);
   const [selectedCertificate, setSelectedCertificate] = useState(null);
-  const [redeemForm, setRedeemForm] = useState({ amount: '', comment: '' });
+  const [redeemForm, setRedeemForm] = useState({ amount: '', visitor_name: '', visitor_phone: '', service_name: '', comment: '' });
   const cardRef = useRef(null);
   const { clientOptions } = useClientOptions();
 
   const templateOptions = templates.map((item) => ({ value: String(item.id), label: item.name }));
   const selectedTemplate = templates.find((item) => String(item.id) === String(certificateForm.template));
   const calculatedSalePrice = salePrice(certificateForm.face_value, selectedTemplate);
+  const certificateQuantity = Math.max(1, Number(certificateForm.quantity || 1));
+  const totalFaceValue = Number(certificateForm.face_value || 0) * certificateQuantity;
+  const totalSalePrice = calculatedSalePrice * certificateQuantity;
+  const startNumber = Number(certificateForm.start_number || 0);
+  const previewRange = startNumber > 0
+    ? `N${String(startNumber).padStart(3, '0')}–N${String(startNumber + certificateQuantity - 1).padStart(3, '0')}`
+    : 'будет присвоен автоматически';
 
   const loadTemplates = async () => {
     const { data } = await api.get('certificate-templates/');
@@ -145,17 +160,19 @@ export default function CertificatesPage() {
 
   const createCertificate = async () => {
     if (!certificateForm.template) return dispatchError('Выберите шаблон сертификата.');
-    if (calculatedSalePrice > 0 && paymentPartsTotal(certificateForm.payment_parts) !== calculatedSalePrice) {
+    if (totalSalePrice > 0 && paymentPartsTotal(certificateForm.payment_parts) !== totalSalePrice) {
       return dispatchError('Сумма оплат по способам должна совпадать с ценой продажи сертификата.');
     }
     try {
       const payload = { ...certificateForm, payment_parts: paymentPartsPayload(certificateForm.payment_parts) };
-      const { data } = await api.post('certificates/', payload);
+      const { data } = certificateForm.mode === 'batch'
+        ? await api.post('certificates/bulk-create/', payload)
+        : await api.post('certificates/', payload);
       setWizardOpen(false);
       setWizardStep(1);
-      setSelectedCertificate(data);
+      setSelectedCertificate(data.certificates?.[0] || data);
       await loadCertificates();
-      dispatchSuccess('Сертификат создан.');
+      dispatchSuccess(certificateForm.mode === 'batch' ? `Создана партия сертификатов: ${data.batch?.serial_from || ''}–${data.batch?.serial_to || ''}` : 'Сертификат создан.');
     } catch (error) {
       showApiError(error);
     }
@@ -166,7 +183,7 @@ export default function CertificatesPage() {
     try {
       const { data } = await api.post(`certificates/${selectedCertificate.id}/redeem/`, redeemForm);
       setSelectedCertificate(data.certificate);
-      setRedeemForm({ amount: '', comment: '' });
+      setRedeemForm({ amount: '', visitor_name: '', visitor_phone: '', service_name: '', comment: '' });
       await loadCertificates();
       dispatchSuccess('Сертификат использован.');
     } catch (error) {
@@ -191,7 +208,7 @@ export default function CertificatesPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `certificate-${certificate.code}.png`;
+    link.download = `certificate-${certificate.serial_code || certificate.code}.png`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -200,9 +217,9 @@ export default function CertificatesPage() {
     if (!selectedCertificate || !cardRef.current) return;
     const publicUrl = certificatePublicUrl(selectedCertificate);
     const blob = await toBlob(cardRef.current, { pixelRatio: 2, cacheBust: true });
-    const file = blob ? new File([blob], `certificate-${selectedCertificate.code}.png`, { type: 'image/png' }) : null;
+    const file = blob ? new File([blob], `certificate-${selectedCertificate.serial_code || selectedCertificate.code}.png`, { type: 'image/png' }) : null;
     if (file && navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ files: [file], title: selectedCertificate.code, text: publicUrl });
+      await navigator.share({ files: [file], title: selectedCertificate.serial_code || selectedCertificate.code, text: publicUrl });
       return;
     }
     await downloadPng(selectedCertificate);
@@ -212,7 +229,7 @@ export default function CertificatesPage() {
   const openWhatsapp = async () => {
     if (!selectedCertificate) return;
     try {
-      const phone = normalizeWhatsappPhone(selectedCertificate.recipient_phone);
+      const phone = normalizeWhatsappPhone(selectedCertificate.recipient_phone || selectedCertificate.purchaser_phone);
       const publicUrl = certificatePublicUrl(selectedCertificate);
       window.open(certificateWhatsappUrl(selectedCertificate, publicUrl), '_blank', 'noopener,noreferrer');
       const { data } = await api.post(`certificates/${selectedCertificate.id}/mark-sent/`, { phone });
@@ -224,18 +241,57 @@ export default function CertificatesPage() {
     }
   };
 
+  const uploadTemplateAsset = async (file) => {
+    if (!file) return;
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const { data } = await api.post('certificate-assets/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setTemplateForm((current) => ({
+        ...current,
+        background_asset: data.id,
+        background_asset_url: data.url,
+      }));
+      dispatchSuccess('Фон сертификата загружен.');
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+
+  const exportCertificates = async () => {
+    try {
+      const params = Object.fromEntries(Object.entries(filters).filter(([, value]) => value));
+      const response = await api.get('export/certificates/', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'certificates.xlsx';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+
   const certificateColumns = useMemo(() => [
-    { key: 'code', header: 'Код' },
-    { key: 'recipient_name', header: 'Получатель' },
+    { key: 'serial_code', header: 'Номер', render: (row) => row.serial_code || row.code },
+    { key: 'purchaser_name', header: 'Покупатель', render: (row) => row.purchaser_name || row.purchaser_client_name || '—' },
+    { key: 'purchaser_phone', header: 'Телефон покупателя', render: (row) => row.purchaser_phone || '—' },
+    { key: 'recipient_name', header: 'Получатель', render: (row) => row.recipient_name || 'Не указан' },
+    { key: 'recipient_phone', header: 'Телефон получателя', render: (row) => row.recipient_phone || '—' },
     { key: 'template_name', header: 'Шаблон' },
     { key: 'face_value', header: 'Номинал', render: (row) => money(row.face_value) },
     { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
-    { key: 'sale_price', header: 'Продажа', render: (row) => money(row.sale_price) },
+    { key: 'visits_count', header: 'Посещений', render: (row) => row.visits_count || 0 },
+    { key: 'last_visit', header: 'Последнее посещение', render: (row) => row.last_visit ? new Date(row.last_visit).toLocaleString('ru-RU') : '—' },
     { key: 'valid_until', header: 'Действует до' },
     { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{row.status_display || row.status}</Badge> },
     { key: 'actions', header: '', render: (row) => (
       <div className="flex justify-end gap-2">
         <Button variant="secondary" className="h-9 px-3" onClick={() => setSelectedCertificate(row)}><Eye size={15} />Открыть</Button>
+        <Button variant="secondary" className="h-9 px-3" onClick={() => setSelectedCertificate(row)}>Зафиксировать посещение</Button>
         {row.status !== 'cancelled' && <Button variant="secondary" className="h-9 px-3" onClick={() => cancelCertificate(row)}><Trash2 size={15} />Отменить</Button>}
       </div>
     ) },
@@ -244,6 +300,7 @@ export default function CertificatesPage() {
   return (
     <>
       <PageHeader title="Сертификаты" actionLabel="Оформить сертификат" onAction={() => openWizard()}>
+        <Button variant="secondary" onClick={exportCertificates}><Download size={16} />Экспорт Excel</Button>
         <Button variant="secondary" onClick={() => { setTemplateForm(emptyTemplate); setTemplateModal(true); }}><Plus size={16} />Добавить шаблон</Button>
       </PageHeader>
 
@@ -312,6 +369,18 @@ export default function CertificatesPage() {
           <Input label="Цвет текста" type="color" value={templateForm.text_color} onChange={(e) => setTemplateForm({ ...templateForm, text_color: e.target.value })} />
           <Input label="Бейдж" value={templateForm.badge_text} onChange={(e) => setTemplateForm({ ...templateForm, badge_text: e.target.value })} />
           <Input label="URL фонового изображения" value={templateForm.background_image_url} onChange={(e) => setTemplateForm({ ...templateForm, background_image_url: e.target.value })} />
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
+            Готовое изображение сертификата
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="rounded-2xl border border-slate-200 px-4 py-3"
+              onChange={(e) => uploadTemplateAsset(e.target.files?.[0])}
+            />
+            {(templateForm.background_asset_url || templateForm.background_image_url) && (
+              <span className="text-xs text-emerald-700">Фон выбран и будет использоваться в новых сертификатах.</span>
+            )}
+          </label>
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">Описание<textarea className="min-h-20 rounded-2xl border border-slate-200 px-4 py-3" value={templateForm.description} onChange={(e) => setTemplateForm({ ...templateForm, description: e.target.value })} /></label>
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">Условия<textarea className="min-h-24 rounded-2xl border border-slate-200 px-4 py-3" value={templateForm.terms} onChange={(e) => setTemplateForm({ ...templateForm, terms: e.target.value })} /></label>
           <label className="flex items-center gap-3 text-sm font-bold"><input type="checkbox" checked={templateForm.is_active} onChange={(e) => setTemplateForm({ ...templateForm, is_active: e.target.checked })} />Активен</label>
@@ -339,18 +408,40 @@ export default function CertificatesPage() {
         )}
         {wizardStep === 2 && (
           <div className="grid gap-4 md:grid-cols-2">
+            <SelectField label="Режим" value={certificateForm.mode} onChange={(value) => setCertificateForm({ ...certificateForm, mode: value, quantity: value === 'batch' ? certificateForm.quantity : 1 })} options={[{ value: 'single', label: 'Один сертификат' }, { value: 'batch', label: 'Партия сертификатов' }]} />
+            <SelectField label="Формат" value={certificateForm.issue_mode} onChange={(value) => setCertificateForm({ ...certificateForm, issue_mode: value })} options={[{ value: 'digital', label: 'Цифровой сертификат' }, { value: 'physical', label: 'Физические сертификаты' }]} />
             <SelectField label="Шаблон" value={certificateForm.template} onChange={(value) => setCertificateForm({ ...certificateForm, template: value })} options={[{ value: '', label: 'Выберите шаблон' }, ...templateOptions]} />
             <SelectField label="Клиент-покупатель" value={certificateForm.purchaser_client} onChange={(value) => setCertificateForm({ ...certificateForm, purchaser_client: value })} options={[{ value: '', label: 'Без клиента' }, ...clientOptions]} />
-            <Input label="Получатель" value={certificateForm.recipient_name} onChange={(e) => setCertificateForm({ ...certificateForm, recipient_name: e.target.value })} />
-            <Input label="Телефон получателя" value={certificateForm.recipient_phone} onChange={(e) => setCertificateForm({ ...certificateForm, recipient_phone: e.target.value })} />
+            {!certificateForm.purchaser_client && (
+              <>
+                <Input label="Имя покупателя" value={certificateForm.purchaser_name} onChange={(e) => setCertificateForm({ ...certificateForm, purchaser_name: e.target.value })} />
+                <Input label="Телефон покупателя" value={certificateForm.purchaser_phone} onChange={(e) => setCertificateForm({ ...certificateForm, purchaser_phone: e.target.value })} />
+              </>
+            )}
+            {certificateForm.mode === 'single' ? (
+              <>
+                <Input label="Получатель" value={certificateForm.recipient_name} onChange={(e) => setCertificateForm({ ...certificateForm, recipient_name: e.target.value })} />
+                <Input label="Телефон получателя" value={certificateForm.recipient_phone} onChange={(e) => setCertificateForm({ ...certificateForm, recipient_phone: e.target.value })} />
+              </>
+            ) : (
+              <>
+                <Input label="Количество" type="number" min="1" max="100" value={certificateForm.quantity} onChange={(e) => setCertificateForm({ ...certificateForm, quantity: e.target.value })} />
+                <Input label="Начальный номер" type="number" value={certificateForm.start_number} onChange={(e) => setCertificateForm({ ...certificateForm, start_number: e.target.value })} />
+              </>
+            )}
             <Input label="Номинал" type="number" value={certificateForm.face_value} onChange={(e) => setCertificateForm({ ...certificateForm, face_value: e.target.value })} disabled={selectedTemplate?.amount_type === 'fixed'} />
             <Input label="Дата оформления" type="date" value={certificateForm.issued_at} onChange={(e) => setCertificateForm({ ...certificateForm, issued_at: e.target.value })} />
             <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold md:col-span-2">
-              <p>Номинал: {money(certificateForm.face_value)}</p>
+              <p>Номинал одного: {money(certificateForm.face_value)}</p>
+              {certificateForm.mode === 'batch' && <p>Номера: {previewRange}</p>}
+              {certificateForm.mode === 'batch' && <p>Общий номинал: {money(totalFaceValue)}</p>}
               <p className="text-emerald-700">Скидка при покупке: {Number(selectedTemplate?.sale_discount_percent || 0).toLocaleString('ru-RU')}%</p>
-              <p className="mt-1 text-base text-slate-900">Цена продажи: {money(calculatedSalePrice)}</p>
+              <p className="mt-1 text-base text-slate-900">К оплате: {money(totalSalePrice)}</p>
+              {certificateForm.issue_mode === 'physical' && (
+                <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-amber-800">Нанесите указанные номера на физические сертификаты.</p>
+              )}
             </div>
-            {calculatedSalePrice > 0 && <PaymentSplitFields totalAmount={calculatedSalePrice} value={certificateForm.payment_parts} onChange={(payment_parts) => setCertificateForm({ ...certificateForm, payment_parts })} />}
+            {totalSalePrice > 0 && <PaymentSplitFields totalAmount={totalSalePrice} value={certificateForm.payment_parts} onChange={(payment_parts) => setCertificateForm({ ...certificateForm, payment_parts })} />}
           </div>
         )}
         {wizardStep === 3 && (
@@ -359,8 +450,11 @@ export default function CertificatesPage() {
             <div className="rounded-2xl border border-slate-100 bg-white p-4 text-sm font-semibold text-slate-700">
               <p>Получатель: {certificateForm.recipient_name || '—'}</p>
               <p>Телефон: {certificateForm.recipient_phone || '—'}</p>
-              <p>Номинал: {money(certificateForm.face_value)}</p>
-              <p>Цена продажи: {money(calculatedSalePrice)}</p>
+              <p>Количество: {certificateQuantity}</p>
+              <p>Номера: {certificateForm.mode === 'batch' ? previewRange : 'будет присвоен автоматически'}</p>
+              <p>Номинал одного: {money(certificateForm.face_value)}</p>
+              <p>Общий номинал: {money(totalFaceValue)}</p>
+              <p>Цена продажи: {money(totalSalePrice)}</p>
               <p>Оплачено: {money(paymentPartsTotal(certificateForm.payment_parts))}</p>
             </div>
           </div>
@@ -368,7 +462,7 @@ export default function CertificatesPage() {
       </Modal>
 
       <Modal
-        title={selectedCertificate ? `Сертификат ${selectedCertificate.code}` : 'Сертификат'}
+        title={selectedCertificate ? `Сертификат ${selectedCertificate.serial_code || selectedCertificate.code}` : 'Сертификат'}
         open={Boolean(selectedCertificate)}
         onClose={() => setSelectedCertificate(null)}
         footer={<><Button variant="secondary" onClick={() => setSelectedCertificate(null)}>Закрыть</Button></>}
@@ -382,17 +476,24 @@ export default function CertificatesPage() {
               <Button variant="secondary" onClick={() => downloadPng(selectedCertificate)}><Download size={16} />Скачать PNG</Button>
               <a className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700" href={certificatePublicUrl(selectedCertificate)} target="_blank" rel="noreferrer">Публичная страница</a>
             </div>
-            <div className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4 md:grid-cols-3">
-              <Input label="Доступно" value={money(selectedCertificate.remaining_amount)} onChange={() => {}} />
-              <Input label="Списать" type="number" value={redeemForm.amount} onChange={(e) => setRedeemForm({ ...redeemForm, amount: e.target.value })} />
-              <Input label="Останется" value={money(Number(selectedCertificate.remaining_amount || 0) - Number(redeemForm.amount || 0))} onChange={() => {}} />
-              <Input label="Комментарий" className="md:col-span-2" value={redeemForm.comment} onChange={(e) => setRedeemForm({ ...redeemForm, comment: e.target.value })} />
-              <div className="flex items-end"><Button onClick={redeemCertificate} disabled={!redeemForm.amount}><RotateCcw size={16} />Использовать</Button></div>
-            </div>
+	            <div className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4 md:grid-cols-3">
+	              <Input label="Доступно" value={money(selectedCertificate.remaining_amount)} onChange={() => {}} />
+	              <Input label="Списать" type="number" value={redeemForm.amount} onChange={(e) => setRedeemForm({ ...redeemForm, amount: e.target.value })} />
+	              <Input label="Останется" value={money(Number(selectedCertificate.remaining_amount || 0) - Number(redeemForm.amount || 0))} onChange={() => {}} />
+	              <Input label="Посетитель" value={redeemForm.visitor_name} onChange={(e) => setRedeemForm({ ...redeemForm, visitor_name: e.target.value })} />
+	              <Input label="Телефон посетителя" value={redeemForm.visitor_phone} onChange={(e) => setRedeemForm({ ...redeemForm, visitor_phone: e.target.value })} />
+	              <Input label="Услуга" value={redeemForm.service_name} onChange={(e) => setRedeemForm({ ...redeemForm, service_name: e.target.value })} />
+	              <Input label="Комментарий" className="md:col-span-2" value={redeemForm.comment} onChange={(e) => setRedeemForm({ ...redeemForm, comment: e.target.value })} />
+	              <div className="flex items-end"><Button onClick={redeemCertificate} disabled={!redeemForm.amount}><RotateCcw size={16} />Использовать</Button></div>
+	            </div>
             <div className="rounded-2xl border border-slate-100">
               <Table data={selectedCertificate.redemptions || []} columns={[
-                { key: 'redeemed_at', header: 'Дата', render: (row) => row.redeemed_at ? new Date(row.redeemed_at).toLocaleString('ru-RU') : '—' },
-                { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
+	                { key: 'redeemed_at', header: 'Дата', render: (row) => row.redeemed_at ? new Date(row.redeemed_at).toLocaleString('ru-RU') : '—' },
+	                { key: 'visitor_name', header: 'Посетитель' },
+	                { key: 'visitor_phone', header: 'Телефон' },
+	                { key: 'service_name', header: 'Услуга' },
+	                { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
+	                { key: 'remaining_amount_after', header: 'Остаток', render: (row) => money(row.remaining_amount_after) },
                 { key: 'comment', header: 'Комментарий' },
                 { key: 'created_by_name', header: 'Сотрудник' },
               ]} />

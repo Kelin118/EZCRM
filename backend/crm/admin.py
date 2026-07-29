@@ -7,6 +7,9 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateBatch,
+    CertificateDesignAsset,
+    CertificateNumberSequence,
     CertificateRedemption,
     CertificateTemplate,
     ChatMessage,
@@ -165,23 +168,55 @@ class FinancePaymentPartAdmin(admin.ModelAdmin):
 
 @admin.register(CertificateTemplate)
 class CertificateTemplateAdmin(admin.ModelAdmin):
-    list_display = ('name', 'amount_type', 'fixed_amount', 'min_amount', 'max_amount', 'validity_days', 'sale_discount_percent', 'is_active')
+    list_display = ('name', 'amount_type', 'fixed_amount', 'min_amount', 'max_amount', 'validity_days', 'sale_discount_percent', 'background_asset', 'is_active')
     list_filter = ('amount_type', 'is_active')
     search_fields = ('name', 'title', 'subtitle', 'description')
 
 
+@admin.register(CertificateBatch)
+class CertificateBatchAdmin(admin.ModelAdmin):
+    list_display = ('id', 'purchaser_name', 'purchaser_phone_snapshot', 'quantity', 'total_sale_price', 'issued_at', 'created_by')
+    list_filter = ('issued_at',)
+    search_fields = ('purchaser_name', 'purchaser_phone', 'purchaser_phone_snapshot', 'certificates__code')
+
+
+@admin.register(CertificateDesignAsset)
+class CertificateDesignAssetAdmin(admin.ModelAdmin):
+    list_display = ('file_name', 'mime_type', 'file_size', 'sha256', 'created_by', 'created_at')
+    search_fields = ('file_name', 'sha256')
+    readonly_fields = ('public_token', 'sha256', 'file_size', 'mime_type', 'created_at', 'updated_at')
+
+
+@admin.register(CertificateNumberSequence)
+class CertificateNumberSequenceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'last_number', 'updated_at')
+    readonly_fields = ('updated_at',)
+
+
 @admin.register(GiftCertificate)
 class GiftCertificateAdmin(admin.ModelAdmin):
-    list_display = ('code', 'template_name', 'recipient_name', 'face_value', 'remaining_amount', 'valid_until', 'status')
+    list_display = ('serial_code', 'code', 'template_name', 'purchaser_client', 'recipient_name', 'face_value', 'remaining_amount', 'visits_count', 'last_visit', 'valid_until', 'status')
     list_filter = ('status', 'template')
-    search_fields = ('code', 'recipient_name', 'recipient_phone', 'purchaser_client__first_name', 'purchaser_client__last_name', 'purchaser_client__phone')
-    readonly_fields = ('public_token',)
+    search_fields = (
+        'serial_number', 'code', 'recipient_name', 'recipient_phone',
+        'batch__purchaser_name', 'batch__purchaser_phone', 'batch__purchaser_phone_snapshot',
+        'redemptions__visitor_phone', 'purchaser_client__first_name', 'purchaser_client__last_name',
+        'purchaser_client__phone',
+    )
+    readonly_fields = ('public_token', 'serial_code')
+
+    def visits_count(self, obj):
+        return obj.redemptions.count()
+
+    def last_visit(self, obj):
+        redemption = obj.redemptions.first()
+        return redemption.redeemed_at if redemption else None
 
 
 @admin.register(CertificateRedemption)
 class CertificateRedemptionAdmin(admin.ModelAdmin):
-    list_display = ('certificate', 'amount', 'redeemed_at', 'created_by')
-    search_fields = ('certificate__code', 'comment', 'created_by__username')
+    list_display = ('certificate', 'visitor_name', 'visitor_phone', 'service_name', 'amount', 'remaining_amount_after', 'redeemed_at', 'created_by')
+    search_fields = ('certificate__code', 'certificate__serial_number', 'visitor_name', 'visitor_phone', 'service_name', 'comment', 'created_by__username')
 
 
 @admin.register(PaymentMethod)

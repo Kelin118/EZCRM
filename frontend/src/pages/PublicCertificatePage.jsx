@@ -24,7 +24,7 @@ export default function PublicCertificatePage() {
       <div className="mx-auto grid max-w-3xl gap-5">
         <div className="text-center">
           <p className="text-sm font-black uppercase tracking-[0.24em] text-brand">EZCRM</p>
-          <h1 className="mt-2 text-3xl font-black text-slate-900">Подарочный сертификат</h1>
+          <h1 className="mt-2 text-3xl font-black text-slate-900">Подарочный сертификат{certificate?.serial_code ? ` № ${certificate.serial_code}` : ''}</h1>
         </div>
         {error ? (
           <div className="rounded-[24px] border border-red-100 bg-white p-8 text-center text-red-700 shadow-card">

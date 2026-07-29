@@ -656,6 +656,13 @@ class CertificateTemplate(TimeStampedModel):
     badge_text = models.CharField(max_length=100, blank=True, default='?????????? ??????????')
     terms = models.TextField(blank=True)
     background_image_url = models.URLField(blank=True)
+    background_asset = models.ForeignKey(
+        'CertificateDesignAsset',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='templates',
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -663,6 +670,87 @@ class CertificateTemplate(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+
+class CertificateNumberSequence(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    last_number = models.PositiveBigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'Certificate sequence: {self.last_number}'
+
+
+class CertificateDesignAsset(TimeStampedModel):
+    public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    file_name = models.CharField(max_length=255)
+    mime_type = models.CharField(max_length=100)
+    file_size = models.PositiveIntegerField()
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    sha256 = models.CharField(max_length=64, unique=True)
+    file_data = models.BinaryField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='certificate_design_assets',
+    )
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return self.file_name
+
+
+class CertificateBatch(TimeStampedModel):
+    purchaser_client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='certificate_batches',
+    )
+    purchaser_name = models.CharField(max_length=150, blank=True)
+    purchaser_phone = models.CharField(max_length=30, blank=True)
+    purchaser_phone_snapshot = models.CharField(max_length=30, blank=True)
+    template = models.ForeignKey(
+        CertificateTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='batches',
+    )
+    template_name = models.CharField(max_length=150)
+    template_snapshot = models.JSONField(default=dict, blank=True)
+    quantity = models.PositiveIntegerField()
+    face_value_per_certificate = models.DecimalField(max_digits=12, decimal_places=2)
+    sale_price_per_certificate = models.DecimalField(max_digits=12, decimal_places=2)
+    total_face_value = models.DecimalField(max_digits=12, decimal_places=2)
+    total_sale_price = models.DecimalField(max_digits=12, decimal_places=2)
+    issued_at = models.DateField()
+    finance_transaction = models.OneToOneField(
+        FinanceTransaction,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='certificate_batch',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_certificate_batches',
+    )
+
+    class Meta:
+        ordering = ('-issued_at', '-created_at')
+
+    def __str__(self):
+        return f'Certificate batch #{self.pk or "new"} ({self.quantity})'
 
 
 class GiftCertificate(TimeStampedModel):
@@ -675,12 +763,14 @@ class GiftCertificate(TimeStampedModel):
         CANCELLED = 'cancelled', 'Cancelled'
 
     template = models.ForeignKey(CertificateTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificates')
+    batch = models.ForeignKey(CertificateBatch, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificates')
     template_name = models.CharField(max_length=150, blank=True)
     template_snapshot = models.JSONField(default=dict, blank=True)
+    serial_number = models.PositiveBigIntegerField(unique=True, null=True, blank=True, db_index=True)
     code = models.CharField(max_length=40, unique=True)
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     purchaser_client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name='purchased_certificates')
-    recipient_name = models.CharField(max_length=150)
+    recipient_name = models.CharField(max_length=150, blank=True, default='')
     recipient_phone = models.CharField(max_length=30, blank=True)
     face_value = models.DecimalField(max_digits=12, decimal_places=2)
     sale_discount_percent = models.DecimalField(max_digits=10, decimal_places=5, default=0)
@@ -690,6 +780,13 @@ class GiftCertificate(TimeStampedModel):
     valid_until = models.DateField()
     status = models.CharField(max_length=30, choices=Status.choices, default=Status.ACTIVE)
     finance_transaction = models.ForeignKey(FinanceTransaction, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificates')
+    background_asset = models.ForeignKey(
+        CertificateDesignAsset,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='issued_certificates',
+    )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_certificates')
     sent_at = models.DateTimeField(null=True, blank=True)
     sent_to_phone = models.CharField(max_length=30, blank=True)
@@ -698,12 +795,20 @@ class GiftCertificate(TimeStampedModel):
         ordering = ('-issued_at', '-created_at')
 
     def __str__(self):
-        return self.code
+        return self.serial_code or self.code
+
+    @property
+    def serial_code(self):
+        return f'N{self.serial_number:03d}' if self.serial_number else ''
 
 
 class CertificateRedemption(models.Model):
     certificate = models.ForeignKey(GiftCertificate, on_delete=models.CASCADE, related_name='redemptions')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    visitor_name = models.CharField(max_length=150, blank=True, default='')
+    visitor_phone = models.CharField(max_length=30, blank=True, default='')
+    service_name = models.CharField(max_length=150, blank=True, default='')
+    remaining_amount_after = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     comment = models.TextField(blank=True)
     redeemed_at = models.DateTimeField(default=timezone.now)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='certificate_redemptions')
@@ -713,7 +818,7 @@ class CertificateRedemption(models.Model):
         ordering = ('-redeemed_at', '-created_at')
 
     def __str__(self):
-        return f'{self.certificate.code}: {self.amount}'
+        return f'{self.certificate.serial_code or self.certificate.code}: {self.amount}'
 
 
 class PaymentMethod(TimeStampedModel):
@@ -891,6 +996,9 @@ class AuditLog(models.Model):
         CERTIFICATE_REDEEM = 'certificate_redeem', 'Certificate redeem'
         CERTIFICATE_CANCEL = 'certificate_cancel', 'Certificate cancel'
         CERTIFICATE_WHATSAPP_OPEN = 'certificate_whatsapp_open', 'Certificate WhatsApp open'
+        CERTIFICATE_BATCH_CREATE = 'certificate_batch_create', 'Certificate batch create'
+        CERTIFICATE_ASSET_UPLOAD = 'certificate_asset_upload', 'Certificate asset upload'
+        CERTIFICATE_VISIT_CREATE = 'certificate_visit_create', 'Certificate visit create'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

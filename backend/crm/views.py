@@ -1,8 +1,10 @@
 from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+import hashlib
 import random
 import re
 import string
+import uuid
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -21,8 +23,10 @@ from rest_framework.views import APIView
 from .audit import log_action
 from .branch_filters import apply_branch_filter
 from .backup import create_database_backup
+from .certificates import allocate_certificate_numbers, certificate_serial_code
 from .export_excel import (
     export_clients,
+    export_certificates,
     export_finance,
     export_groups,
     export_lessons,
@@ -41,6 +45,8 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateBatch,
+    CertificateDesignAsset,
     CertificateRedemption,
     CertificateTemplate,
     ChatMessage,
@@ -99,6 +105,8 @@ from .serializers import (
     BranchSerializer,
     CatalogItemSerializer,
     CertificateRedemptionSerializer,
+    CertificateDesignAssetSerializer,
+    CertificateBatchSerializer,
     CertificateTemplateSerializer,
     ChatMessageSerializer,
     ClientSerializer,
@@ -119,6 +127,7 @@ from .serializers import (
     TaskSerializer,
     TrialSerializer,
     VisitSerializer,
+    certificate_template_snapshot,
     refresh_certificate_status,
 )
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
@@ -2267,6 +2276,7 @@ def _certificate_code():
 
 def _certificate_audit(certificate):
     return {
+        'serial_code': certificate.serial_code,
         'code': certificate.code,
         'template': certificate.template_name,
         'face_value': str(certificate.face_value),
@@ -2276,6 +2286,80 @@ def _certificate_audit(certificate):
         'remaining_amount': str(certificate.remaining_amount),
         'payment_parts': payment_parts_audit(certificate.finance_transaction) if certificate.finance_transaction else [],
     }
+
+
+def _certificate_design_url(asset, request=None):
+    if not asset:
+        return ''
+    path = f'/api/public/certificate-assets/{asset.public_token}/'
+    return request.build_absolute_uri(path) if request else path
+
+
+def _certificate_batch_comment(certificates, quantity):
+    numbers = [certificate.serial_code or certificate.code for certificate in certificates]
+    if not numbers:
+        return 'Продажа сертификатов'
+    label = numbers[0] if len(numbers) == 1 else f'{numbers[0]}–{numbers[-1]}'
+    return f'Продажа сертификатов {label}, {quantity} шт.'
+
+
+def _batch_audit(batch):
+    certificates = list(batch.certificates.order_by('serial_number'))
+    return {
+        'purchaser': batch.purchaser_name,
+        'purchaser_phone': batch.purchaser_phone_snapshot or batch.purchaser_phone,
+        'quantity': batch.quantity,
+        'serial_from': certificates[0].serial_code if certificates else '',
+        'serial_to': certificates[-1].serial_code if certificates else '',
+        'total_face_value': str(batch.total_face_value),
+        'total_sale_price': str(batch.total_sale_price),
+        'payment_parts': payment_parts_audit(batch.finance_transaction) if batch.finance_transaction else [],
+    }
+
+
+class CertificateDesignAssetViewSet(viewsets.GenericViewSet):
+    permission_classes = (IsAuthenticated, CertificatePermission)
+    serializer_class = CertificateDesignAssetSerializer
+    parser_classes = (MultiPartParser, FormParser)
+    queryset = CertificateDesignAsset.objects.all()
+
+    def create(self, request):
+        upload = request.FILES.get('file')
+        if not upload:
+            raise drf_serializers.ValidationError({'file': 'Загрузите файл изображения.'})
+        if upload.content_type not in {'image/png', 'image/jpeg', 'image/webp'}:
+            raise drf_serializers.ValidationError({'file': 'Можно загрузить только PNG, JPEG или WebP.'})
+        if upload.size > 5 * 1024 * 1024:
+            raise drf_serializers.ValidationError({'file': 'Размер изображения не должен превышать 5 МБ.'})
+        file_data = upload.read()
+        digest = hashlib.sha256(file_data).hexdigest()
+        asset, created = CertificateDesignAsset.objects.get_or_create(
+            sha256=digest,
+            defaults={
+                'file_name': upload.name,
+                'mime_type': upload.content_type,
+                'file_size': upload.size,
+                'file_data': file_data,
+                'created_by': request.user,
+            },
+        )
+        if created:
+            log_action(
+                request,
+                AuditLog.Action.CERTIFICATE_ASSET_UPLOAD,
+                'CertificateDesignAsset',
+                entity_id=asset.pk,
+                entity_name=asset.file_name,
+                description='Загружен фон сертификата',
+                changes={
+                    'file_name': asset.file_name,
+                    'mime_type': asset.mime_type,
+                    'file_size': asset.file_size,
+                    'sha256': asset.sha256,
+                },
+            )
+        status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(self.get_serializer(asset).data, status=status_code)
 
 
 class CertificateTemplateViewSet(BaseAuthenticatedViewSet):
@@ -2305,7 +2389,8 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
 
     def get_queryset(self):
         queryset = GiftCertificate.objects.select_related(
-            'template', 'purchaser_client', 'finance_transaction', 'created_by',
+            'template', 'template__background_asset', 'batch', 'background_asset',
+            'purchaser_client', 'finance_transaction', 'created_by',
         ).prefetch_related('redemptions__created_by', 'finance_transaction__payment_parts__payment_method')
         search = self.request.query_params.get('search')
         status_value = self.request.query_params.get('status')
@@ -2316,8 +2401,16 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
         valid_from = _date_param(self.request, 'valid_until_from')
         valid_to = _date_param(self.request, 'valid_until_to')
         if search:
-            queryset = queryset.filter(
+            search_clean = search.strip()
+            serial_number = None
+            serial_match = re.match(r'^n?0*(\d+)$', search_clean, flags=re.IGNORECASE)
+            if serial_match:
+                serial_number = int(serial_match.group(1))
+            search_filter = (
                 Q(code__icontains=search)
+                | Q(batch__purchaser_name__icontains=search)
+                | Q(batch__purchaser_phone__icontains=search)
+                | Q(batch__purchaser_phone_snapshot__icontains=search)
                 | Q(recipient_name__icontains=search)
                 | Q(recipient_phone__icontains=search)
                 | Q(template_name__icontains=search)
@@ -2325,7 +2418,12 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 | Q(purchaser_client__last_name__icontains=search)
                 | Q(purchaser_client__parent_name__icontains=search)
                 | Q(purchaser_client__phone__icontains=search)
+                | Q(redemptions__visitor_name__icontains=search)
+                | Q(redemptions__visitor_phone__icontains=search)
             )
+            if serial_number is not None:
+                search_filter |= Q(serial_number=serial_number)
+            queryset = queryset.filter(search_filter)
         if status_value:
             queryset = queryset.filter(status=status_value)
         if template:
@@ -2355,7 +2453,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             finance_transaction.discount_name = f'?????? ??????????? {certificate.sale_discount_percent}%'
             finance_transaction.client = certificate.purchaser_client
             finance_transaction.source = 'certificate'
-            finance_transaction.comment = f'??????? ??????????? {certificate.code}'
+            finance_transaction.comment = f'Продажа сертификата {certificate.serial_code or certificate.code}'
             finance_transaction.paid_at = _paid_at_from_date(certificate.issued_at)
             finance_transaction.save(update_fields=(
                 'amount', 'subtotal_amount', 'discount_amount', 'discount_name',
@@ -2372,7 +2470,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 client=certificate.purchaser_client,
                 created_by=self.request.user,
                 paid_at=_paid_at_from_date(certificate.issued_at),
-                comment=f'??????? ??????????? {certificate.code}',
+                comment=f'Продажа сертификата {certificate.serial_code or certificate.code}',
             )
             certificate.finance_transaction = finance_transaction
             certificate.save(update_fields=('finance_transaction', 'updated_at'))
@@ -2391,7 +2489,30 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             issued_at = serializer.validated_data.get('issued_at') or timezone.localdate()
             sale_price = serializer.validated_data['_calculated_sale_price']
             snapshot = serializer.validated_data['_template_snapshot']
+            serial_number = allocate_certificate_numbers(1)[0]
+            purchaser_client = serializer.validated_data.get('purchaser_client')
+            purchaser_name = _client_name(purchaser_client)
+            purchaser_phone = purchaser_client.phone if purchaser_client else ''
+            face_value = serializer.validated_data['face_value']
+            batch = CertificateBatch.objects.create(
+                purchaser_client=purchaser_client,
+                purchaser_name=purchaser_name,
+                purchaser_phone=purchaser_phone,
+                purchaser_phone_snapshot=purchaser_phone,
+                template=template,
+                template_name=template.name,
+                template_snapshot=snapshot,
+                quantity=1,
+                face_value_per_certificate=face_value,
+                sale_price_per_certificate=sale_price,
+                total_face_value=face_value,
+                total_sale_price=sale_price,
+                issued_at=issued_at,
+                created_by=self.request.user,
+            )
             certificate = serializer.save(
+                batch=batch,
+                serial_number=serial_number,
                 code=_certificate_code(),
                 template_name=template.name,
                 template_snapshot=snapshot,
@@ -2401,10 +2522,15 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 issued_at=issued_at,
                 valid_until=issued_at + timedelta(days=template.validity_days),
                 status=GiftCertificate.Status.ACTIVE,
+                background_asset=template.background_asset,
                 created_by=self.request.user,
             )
-            self._sync_finance(certificate, serializer.validated_data.get('_payment_parts'))
+            finance_transaction = self._sync_finance(certificate, serializer.validated_data.get('_payment_parts'))
+            if finance_transaction:
+                batch.finance_transaction = finance_transaction
+                batch.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CERTIFICATE_CREATE, certificate, '?????? ??????????', _certificate_audit(certificate))
+            self._log_instance(AuditLog.Action.CERTIFICATE_BATCH_CREATE, batch, 'Создана партия сертификатов', _batch_audit(batch))
 
     def perform_update(self, serializer):
         with transaction.atomic():
@@ -2425,20 +2551,140 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
         if amount > certificate.remaining_amount:
             raise drf_serializers.ValidationError({'amount': '????? ???????? ????????? ??????? ???????????.'})
         with transaction.atomic():
+            certificate.remaining_amount = _money(certificate.remaining_amount - amount)
+            certificate.status = GiftCertificate.Status.USED if certificate.remaining_amount == 0 else GiftCertificate.Status.PARTIALLY_USED
+            update_fields = ['remaining_amount', 'status', 'updated_at']
+            visitor_name = (request.data.get('visitor_name') or '').strip()
+            visitor_phone = (request.data.get('visitor_phone') or '').strip()
+            if visitor_name and not certificate.recipient_name:
+                certificate.recipient_name = visitor_name
+                update_fields.append('recipient_name')
+            if visitor_phone and not certificate.recipient_phone:
+                certificate.recipient_phone = visitor_phone
+                update_fields.append('recipient_phone')
+            certificate.save(update_fields=tuple(update_fields))
             redemption = CertificateRedemption.objects.create(
                 certificate=certificate,
                 amount=amount,
+                visitor_name=visitor_name,
+                visitor_phone=visitor_phone,
+                service_name=(request.data.get('service_name') or '').strip(),
+                remaining_amount_after=certificate.remaining_amount,
                 comment=request.data.get('comment', ''),
                 created_by=request.user,
             )
-            certificate.remaining_amount = _money(certificate.remaining_amount - amount)
-            certificate.status = GiftCertificate.Status.USED if certificate.remaining_amount == 0 else GiftCertificate.Status.PARTIALLY_USED
-            certificate.save(update_fields=('remaining_amount', 'status', 'updated_at'))
-            self._log_instance(AuditLog.Action.CERTIFICATE_REDEEM, certificate, '??????????? ??????????', {
+            self._log_instance(AuditLog.Action.CERTIFICATE_VISIT_CREATE, certificate, 'Зафиксировано посещение по сертификату', {
                 **_certificate_audit(certificate),
                 'redeemed_amount': str(amount),
+                'visitor_name': visitor_name,
+                'visitor_phone': visitor_phone,
+                'service_name': redemption.service_name,
+                'remaining_amount_after': str(certificate.remaining_amount),
             })
         return Response({'certificate': self.get_serializer(certificate).data, 'redemption': CertificateRedemptionSerializer(redemption).data})
+
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        data = request.data
+        quantity = int(data.get('quantity') or 0)
+        if quantity < 1 or quantity > 100:
+            raise drf_serializers.ValidationError({'quantity': 'Количество должно быть от 1 до 100.'})
+        template = CertificateTemplate.objects.filter(pk=data.get('template'), is_active=True).select_related('background_asset').first()
+        if not template:
+            raise drf_serializers.ValidationError({'template': 'Выберите активный шаблон сертификата.'})
+        purchaser_client = Client.objects.filter(pk=data.get('purchaser_client')).first() if data.get('purchaser_client') else None
+        purchaser_name = (data.get('purchaser_name') or _client_name(purchaser_client)).strip()
+        purchaser_phone = (data.get('purchaser_phone') or (purchaser_client.phone if purchaser_client else '')).strip()
+        if not purchaser_client and (not purchaser_name or not purchaser_phone):
+            raise drf_serializers.ValidationError({'purchaser': 'Укажите клиента-покупателя или имя и телефон покупателя.'})
+        face_value = _money(data.get('face_value'))
+        if face_value <= 0:
+            raise drf_serializers.ValidationError({'face_value': 'Номинал должен быть больше нуля.'})
+        if template.amount_type == CertificateTemplate.AmountType.FIXED and face_value != _money(template.fixed_amount):
+            raise drf_serializers.ValidationError({'face_value': 'Номинал должен совпадать с фиксированным номиналом шаблона.'})
+        if template.amount_type == CertificateTemplate.AmountType.RANGE:
+            if face_value < _money(template.min_amount):
+                raise drf_serializers.ValidationError({'face_value': 'Номинал меньше минимального значения шаблона.'})
+            if template.max_amount is not None and face_value > _money(template.max_amount):
+                raise drf_serializers.ValidationError({'face_value': 'Номинал больше максимального значения шаблона.'})
+        issued_at = parse_date(data.get('issued_at') or '') or timezone.localdate()
+        discount = Decimal(template.sale_discount_percent or 0)
+        sale_price = _money(face_value * (Decimal('100') - discount) / Decimal('100'))
+        total_face_value = _money(face_value * quantity)
+        total_sale_price = _money(sale_price * quantity)
+        payment_parts = validate_payment_parts(data.get('payment_parts'), total_amount=total_sale_price) if total_sale_price > 0 else []
+        snapshot = certificate_template_snapshot(template)
+
+        with transaction.atomic():
+            numbers = allocate_certificate_numbers(quantity, data.get('start_number'))
+            batch = CertificateBatch.objects.create(
+                purchaser_client=purchaser_client,
+                purchaser_name=purchaser_name,
+                purchaser_phone=purchaser_phone,
+                purchaser_phone_snapshot=purchaser_phone,
+                template=template,
+                template_name=template.name,
+                template_snapshot=snapshot,
+                quantity=quantity,
+                face_value_per_certificate=face_value,
+                sale_price_per_certificate=sale_price,
+                total_face_value=total_face_value,
+                total_sale_price=total_sale_price,
+                issued_at=issued_at,
+                created_by=request.user,
+            )
+            certificates = []
+            for number in numbers:
+                certificates.append(GiftCertificate.objects.create(
+                    batch=batch,
+                    template=template,
+                    template_name=template.name,
+                    template_snapshot=snapshot,
+                    serial_number=number,
+                    code=_certificate_code(),
+                    public_token=uuid.uuid4(),
+                    purchaser_client=purchaser_client,
+                    recipient_name='',
+                    recipient_phone='',
+                    face_value=face_value,
+                    sale_discount_percent=template.sale_discount_percent,
+                    sale_price=sale_price,
+                    remaining_amount=face_value,
+                    issued_at=issued_at,
+                    valid_until=issued_at + timedelta(days=template.validity_days),
+                    status=GiftCertificate.Status.ACTIVE,
+                    finance_transaction=None,
+                    background_asset=template.background_asset,
+                    created_by=request.user,
+                ))
+            finance_transaction = None
+            if total_sale_price > 0:
+                finance_transaction = FinanceTransaction.objects.create(
+                    transaction_type=FinanceTransaction.Type.INCOME,
+                    source='certificate',
+                    amount=total_sale_price,
+                    subtotal_amount=total_face_value,
+                    discount_amount=total_face_value - total_sale_price,
+                    discount_name=f'Скидка сертификата {template.sale_discount_percent}%',
+                    client=purchaser_client,
+                    created_by=request.user,
+                    paid_at=_paid_at_from_date(issued_at),
+                    comment=_certificate_batch_comment(certificates, quantity),
+                )
+                sync_finance_payment_parts(finance_transaction, payment_parts)
+                batch.finance_transaction = finance_transaction
+                batch.save(update_fields=('finance_transaction', 'updated_at'))
+                GiftCertificate.objects.filter(pk__in=[certificate.pk for certificate in certificates]).update(finance_transaction=finance_transaction)
+                for certificate in certificates:
+                    certificate.finance_transaction = finance_transaction
+            self._log_instance(AuditLog.Action.CERTIFICATE_BATCH_CREATE, batch, 'Создана партия сертификатов', _batch_audit(batch))
+        return Response(
+            {
+                'batch': CertificateBatchSerializer(batch, context={'request': request}).data,
+                'certificates': GiftCertificateSerializer(certificates, many=True, context={'request': request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
@@ -2472,6 +2718,19 @@ class PublicGiftCertificateView(APIView):
             return Response({'detail': '?????????? ?? ??????.'}, status=status.HTTP_404_NOT_FOUND)
         certificate = refresh_certificate_status(certificate)
         return Response(PublicGiftCertificateSerializer(certificate).data)
+
+
+class PublicCertificateAssetView(APIView):
+    permission_classes = ()
+    authentication_classes = ()
+
+    def get(self, request, public_token):
+        asset = CertificateDesignAsset.objects.filter(public_token=public_token).first()
+        if not asset:
+            return Response({'detail': 'Файл не найден.'}, status=status.HTTP_404_NOT_FOUND)
+        response = HttpResponse(bytes(asset.file_data), content_type=asset.mime_type)
+        response['Cache-Control'] = 'public, max-age=31536000, immutable'
+        return response
 
 
 class AddonSaleViewSet(BaseAuthenticatedViewSet):
@@ -2697,7 +2956,10 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if source:
             queryset = queryset.filter(source=source)
         if payment_method and payment_method != 'all':
-            queryset = queryset.filter(payment_parts__isnull=True) if payment_method == 'unassigned' else queryset.filter(payment_parts__payment_method_id=payment_method)
+            if payment_method == 'unassigned':
+                queryset = queryset.filter(payment_method__isnull=True, payment_parts__isnull=True)
+            else:
+                queryset = queryset.filter(Q(payment_method_id=payment_method) | Q(payment_parts__payment_method_id=payment_method))
         if discount and discount != 'all':
             queryset = queryset.filter(discount__isnull=True) if discount == 'unassigned' else queryset.filter(discount_id=discount)
         if manager and manager != 'all':
@@ -3262,6 +3524,47 @@ class MasterClassesExportView(BaseExportView):
             queryset = queryset.filter(teacher_id=teacher)
         self._log_export(request, queryset.count())
         return _xlsx_response(export_master_classes(queryset.order_by('-starts_at')), self._filename())
+
+
+class CertificatesExportView(BaseExportView):
+    export_type = 'certificates'
+    filename_prefix = 'certificates'
+    description = 'Экспорт сертификатов'
+
+    def get(self, request):
+        queryset = (
+            GiftCertificate.objects
+            .select_related('template', 'batch', 'purchaser_client', 'created_by')
+            .prefetch_related('redemptions__created_by')
+            .all()
+        )
+        queryset = _filter_period(queryset, 'issued_at', request)
+        search = request.query_params.get('search')
+        status_value = request.query_params.get('status')
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if search:
+            search_clean = search.strip()
+            search_filter = (
+                Q(code__icontains=search)
+                | Q(recipient_name__icontains=search)
+                | Q(recipient_phone__icontains=search)
+                | Q(batch__purchaser_name__icontains=search)
+                | Q(batch__purchaser_phone__icontains=search)
+                | Q(batch__purchaser_phone_snapshot__icontains=search)
+                | Q(purchaser_client__first_name__icontains=search)
+                | Q(purchaser_client__last_name__icontains=search)
+                | Q(purchaser_client__parent_name__icontains=search)
+                | Q(purchaser_client__phone__icontains=search)
+                | Q(redemptions__visitor_name__icontains=search)
+                | Q(redemptions__visitor_phone__icontains=search)
+            )
+            serial_match = re.match(r'^n?0*(\d+)$', search_clean, flags=re.IGNORECASE)
+            if serial_match:
+                search_filter |= Q(serial_number=int(serial_match.group(1)))
+            queryset = queryset.filter(search_filter)
+        self._log_export(request, queryset.distinct().count())
+        return _xlsx_response(export_certificates(queryset.distinct().order_by('serial_number', 'id')), self._filename())
 
 
 class GroupsExportView(BaseExportView):

@@ -19,6 +19,9 @@ from .models import (
     Branch,
     CashRegisterSnapshot,
     CatalogItem,
+    CertificateBatch,
+    CertificateDesignAsset,
+    CertificateNumberSequence,
     CertificateTemplate,
     CertificateRedemption,
     Client,
@@ -4148,6 +4151,10 @@ class CertificateApiTests(APITestCase):
         self.assertEqual(transaction.amount, Decimal('45000.00'))
         self.assertEqual(transaction.payment_method_name, 'Смешанная оплата')
         self.assertEqual(transaction.payment_parts.count(), 2)
+        self.assertEqual(certificate.serial_number, 1)
+        self.assertEqual(certificate.serial_code, 'N001')
+        self.assertIsNotNone(certificate.batch)
+        self.assertEqual(certificate.batch.quantity, 1)
 
     def test_free_certificate_does_not_create_finance_transaction(self):
         self.template.sale_discount_percent = Decimal('100.00000')
@@ -4191,6 +4198,131 @@ class CertificateApiTests(APITestCase):
         certificate = GiftCertificate.objects.get(pk=response.data['id'])
         self.assertEqual(certificate.sent_to_phone, '77071234567')
         self.assertIsNotNone(certificate.sent_at)
+
+    def test_sequential_visible_numbers(self):
+        first = self.client.post('/api/certificates/', self.payload(recipient_name='One'), format='json')
+        second = self.client.post('/api/certificates/', self.payload(recipient_name='Two'), format='json')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.data['serial_code'], 'N001')
+        self.assertEqual(second.data['serial_code'], 'N002')
+
+    def test_number_after_n099_is_n100(self):
+        CertificateNumberSequence.objects.update_or_create(pk=1, defaults={'last_number': 99})
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['serial_code'], 'N100')
+
+    def test_bulk_create_allocates_range_and_one_finance_transaction(self):
+        response = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id,
+            'purchaser_client': self.client_obj.id,
+            'quantity': 10,
+            'face_value': '10000.00',
+            'start_number': 1,
+            'payment_parts': [
+                {'payment_method': self.cash.id, 'amount': '50000.00'},
+                {'payment_method': self.card.id, 'amount': '40000.00'},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['batch']['serial_from'], 'N001')
+        self.assertEqual(response.data['batch']['serial_to'], 'N010')
+        self.assertEqual(len(response.data['certificates']), 10)
+        self.assertEqual(CertificateBatch.objects.count(), 1)
+        self.assertEqual(FinanceTransaction.objects.filter(source='certificate').count(), 1)
+        self.assertEqual(FinanceTransaction.objects.get(source='certificate').amount, Decimal('90000.00'))
+
+    def test_bulk_create_manual_range_conflict_returns_400(self):
+        self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id,
+            'purchaser_client': self.client_obj.id,
+            'quantity': 2,
+            'face_value': '10000.00',
+            'start_number': 5,
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '18000.00'}],
+        }, format='json')
+        response = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id,
+            'purchaser_client': self.client_obj.id,
+            'quantity': 2,
+            'face_value': '10000.00',
+            'start_number': 6,
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '18000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_create_allows_empty_recipients_with_manual_buyer(self):
+        response = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id,
+            'purchaser_name': 'Мария',
+            'purchaser_phone': '87071112233',
+            'quantity': 2,
+            'face_value': '10000.00',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '18000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(GiftCertificate.objects.filter(recipient_name='').count(), 2)
+
+    def test_redeem_saves_visitor_and_fills_empty_recipient_once(self):
+        response = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id,
+            'purchaser_name': 'Мария',
+            'purchaser_phone': '87071112233',
+            'quantity': 1,
+            'face_value': '10000.00',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '9000.00'}],
+        }, format='json')
+        certificate_id = response.data['certificates'][0]['id']
+        response = self.client.post(f'/api/certificates/{certificate_id}/redeem/', {
+            'amount': '3000.00',
+            'visitor_name': 'Айша',
+            'visitor_phone': '87075550000',
+            'service_name': 'МК',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        certificate = GiftCertificate.objects.get(pk=certificate_id)
+        redemption = CertificateRedemption.objects.get(certificate=certificate)
+        self.assertEqual(certificate.recipient_name, 'Айша')
+        self.assertEqual(redemption.visitor_phone, '87075550000')
+        self.assertEqual(redemption.remaining_amount_after, Decimal('7000.00'))
+
+    def test_search_by_serial_and_visitor_phone(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = response.data['id']
+        self.client.post(f'/api/certificates/{certificate_id}/redeem/', {
+            'amount': '1000.00',
+            'visitor_name': 'Айша',
+            'visitor_phone': '87070001122',
+        }, format='json')
+        by_serial = self.client.get('/api/certificates/', {'search': 'n001'})
+        by_phone = self.client.get('/api/certificates/', {'search': '87070001122'})
+        self.assertEqual(by_serial.status_code, 200)
+        self.assertEqual(len(by_serial.data), 1)
+        self.assertEqual(len(by_phone.data), 1)
+
+    def test_asset_upload_dedup_and_public_endpoint(self):
+        image = SimpleUploadedFile('cert.png', b'\x89PNG\r\n\x1a\nfake', content_type='image/png')
+        response = self.client.post('/api/certificate-assets/', {'file': image}, format='multipart')
+        self.assertEqual(response.status_code, 201)
+        token = response.data['public_token']
+        self.assertEqual(CertificateDesignAsset.objects.count(), 1)
+        duplicate = SimpleUploadedFile('cert-copy.png', b'\x89PNG\r\n\x1a\nfake', content_type='image/png')
+        response = self.client.post('/api/certificate-assets/', {'file': duplicate}, format='multipart')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(CertificateDesignAsset.objects.count(), 1)
+        public = self.client.get(f'/api/public/certificate-assets/{token}/')
+        self.assertEqual(public.status_code, 200)
+        self.assertEqual(public['Content-Type'], 'image/png')
+
+    def test_certificate_export_contains_registry_and_history(self):
+        response = self.client.post('/api/certificates/', self.payload(), format='json')
+        self.client.post(f'/api/certificates/{response.data["id"]}/redeem/', {'amount': '1000.00', 'visitor_name': 'Айша'}, format='json')
+        response = self.client.get('/api/export/certificates/')
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(BytesIO(response.content))
+        self.assertIn('Certificates', workbook.sheetnames)
+        self.assertIn('Visits', workbook.sheetnames)
 
 
 class ReportsConversionSummaryTests(APITestCase):

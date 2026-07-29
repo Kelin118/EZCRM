@@ -8,7 +8,9 @@ from .views import (
     BackupCreateView,
     BranchViewSet,
     CatalogItemViewSet,
+    CertificateDesignAssetViewSet,
     CertificateTemplateViewSet,
+    CertificatesExportView,
     ChatMessageViewSet,
     ClientViewSet,
     CurrentUserView,
@@ -27,6 +29,7 @@ from .views import (
     PaymentMethodViewSet,
     MasterClassesExportView,
     GiftCertificateViewSet,
+    PublicCertificateAssetView,
     PublicGiftCertificateView,
     ReportsSummaryView,
     ReportSummaryExportView,
@@ -65,6 +68,7 @@ router.register('payment-methods', PaymentMethodViewSet, basename='payment-metho
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
 router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')
+router.register('certificate-assets', CertificateDesignAssetViewSet, basename='certificate-asset')
 router.register('certificate-templates', CertificateTemplateViewSet, basename='certificate-template')
 router.register('certificates', GiftCertificateViewSet, basename='certificate')
 router.register('audit-logs', AuditLogViewSet, basename='audit-log')
@@ -82,11 +86,13 @@ urlpatterns = [
     path('export/finance/', FinanceExportView.as_view(), name='export-finance'),
     path('export/trials/', TrialsExportView.as_view(), name='export-trials'),
     path('export/master-classes/', MasterClassesExportView.as_view(), name='export-master-classes'),
+    path('export/certificates/', CertificatesExportView.as_view(), name='export-certificates'),
     path('export/groups/', GroupsExportView.as_view(), name='export-groups'),
     path('export/lessons/', LessonsExportView.as_view(), name='export-lessons'),
     path('export/report-summary/', ReportSummaryExportView.as_view(), name='export-report-summary'),
     path('backup/create/', BackupCreateView.as_view(), name='backup-create'),
     path('public/certificates/<uuid:public_token>/', PublicGiftCertificateView.as_view(), name='public-certificate'),
+    path('public/certificate-assets/<uuid:public_token>/', PublicCertificateAssetView.as_view(), name='public-certificate-asset'),
 ]
 
 urlpatterns += router.urls

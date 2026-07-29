@@ -146,8 +146,8 @@ class AddonSalePermission(RolePermission):
 
 class CertificatePermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent'},
-        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent', 'bulk_create'},
+        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'redeem', 'cancel', 'mark_sent', 'bulk_create'},
     }
 
 
@@ -217,7 +217,7 @@ class ExportPermission(BasePermission):
             return True
         export_type = getattr(view, 'export_type', '')
         if has_role(request.user, ACCOUNTANT):
-            return export_type in {'subscriptions', 'finance', 'report-summary'}
+            return export_type in {'subscriptions', 'finance', 'report-summary', 'certificates'}
         if has_role(request.user, MANAGER):
             return export_type in {
                 'clients',
@@ -227,6 +227,7 @@ class ExportPermission(BasePermission):
                 'master-classes',
                 'groups',
                 'lessons',
+                'certificates',
                 'report-summary',
             }
         if has_role(request.user, TEACHER):

@@ -125,9 +125,22 @@ export default function ReportsPage() {
             { key: 'trials_bought', header: 'Купили с пробника' },
             { key: 'trials_conversion', header: 'Конверсия пробников', render: (row) => percent(row.trials_conversion) },
             { key: 'mk_total', header: 'МК всего' },
-            { key: 'mk_bought', header: 'Купили после МК' },
+            { key: 'mk_paid', header: 'Оплатили МК' },
             { key: 'mk_conversion', header: 'Конверсия МК', render: (row) => percent(row.mk_conversion) },
             { key: 'income', header: 'Доход', render: (row) => money(row.income) },
+          ]}
+        />
+      </ReportSection>
+
+      <ReportSection title="Конверсия преподавателей">
+        <Table
+          data={summary.trial_conversion_by_teacher || []}
+          empty="Нет пробников по преподавателям за выбранный период"
+          columns={[
+            { key: 'teacher_name', header: 'Преподаватель' },
+            { key: 'trials_total', header: 'Пробников' },
+            { key: 'subscriptions_bought', header: 'Купили абонемент' },
+            { key: 'conversion', header: 'Конверсия', render: (row) => <Progress value={row.conversion} /> },
           ]}
         />
       </ReportSection>
@@ -147,7 +160,7 @@ export default function ReportsPage() {
         />
       </ReportSection>
 
-      <ReportSection title="Учителя">
+      <ReportSection title="Посещаемость преподавателей">
         <Table
           data={summary.attendance_by_teacher || []}
           empty="Нет посещаемости по учителям"

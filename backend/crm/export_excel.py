@@ -259,7 +259,8 @@ def export_summary_report(data):
     sheets = [
         ('Финансы по дням', ['Дата', 'Доход', 'Расход', 'Баланс'], data.get('daily_finance', []), ['date', 'income', 'expense', 'balance']),
         ('Доходы по источникам', ['Источник', 'Кол-во', 'Сумма'], data.get('income_by_source', []), ['source_display', 'count', 'amount']),
-        ('Продажи менеджеров', ['Менеджер', 'Пробники', 'Купили', 'Конверсия %', 'МК', 'Купили МК', 'Конверсия МК %', 'Доход'], data.get('sales_by_manager', []), ['manager_name', 'trials_total', 'trials_bought', 'trials_conversion', 'mk_total', 'mk_bought', 'mk_conversion', 'income']),
+        ('Продажи менеджеров', ['Менеджер', 'Пробники', 'Купили', 'Конверсия %', 'МК', 'Оплатили МК', 'Конверсия МК %', 'Доход'], data.get('sales_by_manager', []), ['manager_name', 'trials_total', 'trials_bought', 'trials_conversion', 'mk_total', 'mk_paid', 'mk_conversion', 'income']),
+        ('Конверсия преподавателей', ['Преподаватель', 'Пробников', 'Купили абонемент', 'Конверсия %'], data.get('trial_conversion_by_teacher', []), ['teacher_name', 'trials_total', 'subscriptions_bought', 'conversion']),
         ('Посещаемость групп', ['Группа', 'Уроков', 'Учеников', 'Пришли', 'Пропустили', 'Посещаемость %'], data.get('attendance_by_group', []), ['group_name', 'lessons_count', 'students_count', 'attended', 'missed', 'attendance_rate']),
         ('Посещаемость учителей', ['Учитель', 'Уроков', 'Пришли', 'Пропустили', 'Посещаемость %'], data.get('attendance_by_teacher', []), ['teacher_name', 'lessons_count', 'attended', 'missed', 'attendance_rate']),
         ('Заканчиваются', ['Клиент', 'Телефон', 'Абонемент', 'Остаток', 'Всего', 'Дата окончания', 'Статус'], data.get('ending_subscriptions', []), ['client_name', 'client_phone', 'title', 'lessons_left', 'lessons_total', 'end_date', 'status']),

@@ -3323,6 +3323,7 @@ class ReportSummaryExportView(BaseExportView):
             'daily_finance',
             'income_by_source',
             'sales_by_manager',
+            'trial_conversion_by_teacher',
             'attendance_by_group',
             'attendance_by_teacher',
             'ending_subscriptions',
@@ -3445,7 +3446,10 @@ class DashboardStatsView(APIView):
 
         mk_total = master_classes.count()
         mk_bought = master_classes.filter(stage='bought').count()
-        mk_paid = master_classes.filter(stage='paid').count()
+        mk_paid = master_classes.filter(
+            Q(payment_amount__gt=0)
+            | Q(finance_transaction__amount__gt=0)
+        ).distinct().count()
         mk_lost = master_classes.filter(stage='lost').count()
         mk_income = _decimal(master_classes.aggregate(total=Sum('payment_amount'))['total'])
 
@@ -3495,7 +3499,7 @@ class DashboardStatsView(APIView):
                 'paid': mk_paid if not is_teacher else 0,
                 'bought': mk_bought if not is_teacher else 0,
                 'lost': mk_lost if not is_teacher else 0,
-                'conversion': round(mk_bought / mk_total * 100, 2) if mk_total and not is_teacher else 0,
+                'conversion': round(mk_paid / mk_total * 100, 2) if mk_total and not is_teacher else 0,
                 'income': mk_income if not is_teacher else 0,
             },
             'groups': {
@@ -3699,7 +3703,10 @@ class ReportsSummaryView(APIView):
             mt_total = manager_trials.count()
             mt_bought = manager_trials.filter(Q(bought_subscription=True) | Q(status='bought')).count()
             mm_total = manager_mk.count()
-            mm_bought = manager_mk.filter(stage='bought').count()
+            mm_paid = manager_mk.filter(
+                Q(payment_amount__gt=0)
+                | Q(finance_transaction__amount__gt=0)
+            ).distinct().count()
             sales_by_manager.append(
                 {
                     'manager_id': manager_id,
@@ -3708,11 +3715,36 @@ class ReportsSummaryView(APIView):
                     'trials_bought': mt_bought,
                     'trials_conversion': round(mt_bought / mt_total * 100, 2) if mt_total else 0,
                     'mk_total': mm_total,
-                    'mk_bought': mm_bought,
-                    'mk_conversion': round(mm_bought / mm_total * 100, 2) if mm_total else 0,
+                    'mk_paid': mm_paid,
+                    'mk_conversion': round(mm_paid / mm_total * 100, 2) if mm_total else 0,
                     'income': manager_income,
                 }
             )
+
+        trial_conversion_by_teacher = []
+        trial_teacher_ids = set(filter(None, trials.values_list('teacher_id', flat=True)))
+        for teacher_id in trial_teacher_ids:
+            teacher_trials = trials.filter(teacher_id=teacher_id)
+            tt_total = teacher_trials.count()
+            subscriptions_bought = teacher_trials.filter(
+                Q(subscription_id__isnull=False)
+                | Q(bought_subscription=True)
+                | Q(status=Trial.Status.BOUGHT)
+            ).distinct().count()
+            teacher = teacher_trials.first().teacher
+            trial_conversion_by_teacher.append(
+                {
+                    'teacher_id': teacher_id,
+                    'teacher_name': teacher.get_full_name() or teacher.username if teacher else f'ID {teacher_id}',
+                    'trials_total': tt_total,
+                    'subscriptions_bought': subscriptions_bought,
+                    'conversion': round(subscriptions_bought / tt_total * 100, 2) if tt_total else 0,
+                }
+            )
+        trial_conversion_by_teacher = sorted(
+            trial_conversion_by_teacher,
+            key=lambda item: (-item['conversion'], -item['trials_total'], item['teacher_name']),
+        )
 
         attendance_by_group = []
         for group in StudyGroup.objects.filter(lessons__in=lessons).distinct().order_by('name'):
@@ -3816,6 +3848,7 @@ class ReportsSummaryView(APIView):
                 'income_by_source': income_by_source,
                 'income_by_managers': income_by_manager,
                 'sales_by_manager': sales_by_manager,
+                'trial_conversion_by_teacher': trial_conversion_by_teacher,
                 'attendance_by_group': attendance_by_group,
                 'attendance_by_teacher': attendance_by_teacher,
                 'lessons_by_status': lessons_by_status,

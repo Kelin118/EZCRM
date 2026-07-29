@@ -44,7 +44,7 @@ from .group_schedule import schedule_display, subscription_expected_end_date, su
 from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
 from .views import _client_active_subscription
-from .export_excel import export_finance
+from .export_excel import export_finance, export_summary_report
 
 
 class SubscriptionDateHelperTests(APITestCase):
@@ -4191,3 +4191,133 @@ class CertificateApiTests(APITestCase):
         certificate = GiftCertificate.objects.get(pk=response.data['id'])
         self.assertEqual(certificate.sent_to_phone, '77071234567')
         self.assertIsNotNone(certificate.sent_at)
+
+
+class ReportsConversionSummaryTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='reports-admin', password='pass')
+        self.manager = User.objects.create_user(username='reports-manager', password='pass', role='manager', roles=['manager'])
+        self.other_manager = User.objects.create_user(username='reports-other-manager', password='pass', role='manager', roles=['manager'])
+        self.teacher_a = User.objects.create_user(username='teacher-a', password='pass', first_name='Анна', last_name='Алимова', role='teacher', roles=['teacher'])
+        self.teacher_b = User.objects.create_user(username='teacher-b', password='pass', first_name='Борис', last_name='Беков', role='teacher', roles=['teacher'])
+        self.teacher_c = User.objects.create_user(username='teacher-c', password='pass', first_name='Вера', last_name='Власова', role='teacher', roles=['teacher'])
+        self.branch = Branch.objects.create(name='Reports branch')
+        self.other_branch = Branch.objects.create(name='Other reports branch')
+        self.client_obj = Client.objects.create(first_name='Отчёт', last_name='Клиент', branch=self.branch)
+        self.other_client = Client.objects.create(first_name='Другой', last_name='Клиент', branch=self.other_branch)
+        self.base_dt = timezone.make_aware(datetime(2026, 7, 10, 10, 0))
+        self.client.force_authenticate(self.admin)
+
+    def make_master_class(self, *, manager=None, branch=None, stage=MasterClass.Stage.LEAD, payment_amount='0.00', finance_amount=None):
+        master_class = MasterClass.objects.create(
+            branch=branch or self.branch,
+            title='МК отчёт',
+            manager=manager or self.manager,
+            starts_at=self.base_dt,
+            stage=stage,
+            payment_amount=Decimal(payment_amount),
+        )
+        if finance_amount is not None:
+            transaction = FinanceTransaction.objects.create(
+                transaction_type=FinanceTransaction.Type.INCOME,
+                amount=Decimal(finance_amount),
+                source='master_class',
+                client=self.client_obj,
+                created_by=manager or self.manager,
+                paid_at=self.base_dt,
+                comment='Оплата МК',
+            )
+            master_class.finance_transaction = transaction
+            master_class.save(update_fields=('finance_transaction', 'updated_at'))
+        return master_class
+
+    def make_subscription(self):
+        return Subscription.objects.create(
+            client=self.client_obj,
+            title='Абонемент после пробного',
+            start_date=date(2026, 7, 10),
+            total_visits=8,
+            remaining_visits=8,
+            price=Decimal('10000.00'),
+            paid_amount=Decimal('10000.00'),
+            status=Subscription.Status.ACTIVE,
+            branch=self.branch,
+        )
+
+    def make_trial(self, *, teacher=None, branch=None, scheduled_at=None, **kwargs):
+        return Trial.objects.create(
+            branch=branch or self.branch,
+            client=self.client_obj if (branch or self.branch) == self.branch else self.other_client,
+            manager=self.manager,
+            teacher=teacher,
+            scheduled_at=scheduled_at or self.base_dt,
+            **kwargs,
+        )
+
+    def get_summary(self, **params):
+        defaults = {'date_from': '2026-07-01', 'date_to': '2026-07-31', 'branch': str(self.branch.id)}
+        defaults.update(params)
+        response = self.client.get('/api/reports/summary/', defaults)
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def test_master_class_manager_conversion_uses_actual_payment(self):
+        self.make_master_class(stage=MasterClass.Stage.BOUGHT, payment_amount='0.00')
+        self.make_master_class(stage=MasterClass.Stage.PAID, payment_amount='10000.00')
+        self.make_master_class(stage=MasterClass.Stage.LEAD, payment_amount='5000.00')
+        self.make_master_class(stage=MasterClass.Stage.LEAD, payment_amount='0.00', finance_amount='7000.00')
+        self.make_master_class(stage=MasterClass.Stage.PAID, payment_amount='3000.00', finance_amount='3000.00')
+        self.make_master_class(manager=self.other_manager, stage=MasterClass.Stage.PAID, payment_amount='0.00')
+        self.make_master_class(branch=self.other_branch, stage=MasterClass.Stage.PAID, payment_amount='9999.00')
+
+        summary = self.get_summary()
+        row = next(item for item in summary['sales_by_manager'] if item['manager_id'] == self.manager.id)
+        self.assertEqual(row['mk_total'], 5)
+        self.assertEqual(row['mk_paid'], 4)
+        self.assertEqual(row['mk_conversion'], 80)
+        self.assertNotIn('mk_bought', row)
+        other = next(item for item in summary['sales_by_manager'] if item['manager_id'] == self.other_manager.id)
+        self.assertEqual(other['mk_total'], 1)
+        self.assertEqual(other['mk_paid'], 0)
+        self.assertEqual(other['mk_conversion'], 0)
+
+    def test_trial_conversion_by_teacher_counts_purchase_signs_once_and_sorts(self):
+        subscription = self.make_subscription()
+        self.make_trial(teacher=self.teacher_a, bought_subscription=True)
+        self.make_trial(teacher=self.teacher_a, status=Trial.Status.BOUGHT)
+        self.make_trial(teacher=self.teacher_a, subscription=subscription)
+        self.make_trial(teacher=self.teacher_a, bought_subscription=True, status=Trial.Status.BOUGHT, subscription=subscription)
+        self.make_trial(teacher=self.teacher_b, bought_subscription=True)
+        self.make_trial(teacher=self.teacher_b)
+        self.make_trial(teacher=self.teacher_b)
+        self.make_trial(teacher=self.teacher_c)
+        self.make_trial(teacher=None, bought_subscription=True)
+        self.make_trial(teacher=self.teacher_a, branch=self.other_branch, bought_subscription=True)
+        self.make_trial(teacher=self.teacher_a, scheduled_at=timezone.make_aware(datetime(2026, 8, 1, 10, 0)), bought_subscription=True)
+
+        summary = self.get_summary()
+        rows = summary['trial_conversion_by_teacher']
+        self.assertEqual([row['teacher_id'] for row in rows], [self.teacher_a.id, self.teacher_b.id, self.teacher_c.id])
+        self.assertEqual(rows[0]['teacher_name'], 'Анна Алимова')
+        self.assertEqual(rows[0]['trials_total'], 4)
+        self.assertEqual(rows[0]['subscriptions_bought'], 4)
+        self.assertEqual(rows[0]['conversion'], 100)
+        self.assertEqual(rows[1]['trials_total'], 3)
+        self.assertEqual(rows[1]['subscriptions_bought'], 1)
+        self.assertEqual(rows[1]['conversion'], 33.33)
+        self.assertEqual(rows[2]['trials_total'], 1)
+        self.assertEqual(rows[2]['subscriptions_bought'], 0)
+        self.assertEqual(rows[2]['conversion'], 0)
+
+    def test_report_summary_export_contains_new_columns_and_sheet(self):
+        self.make_master_class(stage=MasterClass.Stage.PAID, payment_amount='10000.00')
+        self.make_trial(teacher=self.teacher_a, bought_subscription=True)
+        summary = self.get_summary()
+        workbook = load_workbook(export_summary_report(summary))
+        self.assertIn('Конверсия преподавателей', workbook.sheetnames)
+        sales_headers = [cell.value for cell in workbook['Продажи менеджеров'][1]]
+        self.assertIn('Оплатили МК', sales_headers)
+        self.assertNotIn('Купили МК', sales_headers)
+        teacher_headers = [cell.value for cell in workbook['Конверсия преподавателей'][1]]
+        self.assertEqual(teacher_headers, ['Преподаватель', 'Пробников', 'Купили абонемент', 'Конверсия %'])

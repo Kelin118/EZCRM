@@ -20,7 +20,12 @@ from .models import (
     GiftCertificate,
     GroupMembership,
     Lesson,
+    Lead,
+    LeadMessage,
     MasterClass,
+    MessagingChannel,
+    MessagingContact,
+    MetaWebhookEvent,
     PaymentMethod,
     Room,
     ScheduleSlot,
@@ -238,6 +243,40 @@ class ChatMessageAdmin(admin.ModelAdmin):
     list_display = ('sender', 'client', 'is_read', 'created_at')
     list_filter = ('is_read', 'created_at')
     search_fields = ('sender__username', 'client__first_name', 'client__last_name', 'text')
+
+
+@admin.register(MessagingChannel)
+class MessagingChannelAdmin(admin.ModelAdmin):
+    list_display = ('provider', 'name', 'external_account_id', 'phone_number', 'branch', 'default_manager', 'is_active', 'last_webhook_at', 'last_message_at')
+    list_filter = ('provider', 'is_active', 'branch')
+    search_fields = ('name', 'external_account_id', 'phone_number')
+
+
+@admin.register(MessagingContact)
+class MessagingContactAdmin(admin.ModelAdmin):
+    list_display = ('channel', 'external_contact_id', 'display_name', 'phone', 'username', 'client', 'last_message_at')
+    search_fields = ('external_contact_id', 'display_name', 'phone', 'username', 'client__first_name', 'client__last_name')
+
+
+@admin.register(Lead)
+class LeadAdmin(admin.ModelAdmin):
+    list_display = ('id', 'source', 'contact_name', 'contact_phone', 'status', 'manager', 'branch', 'unread_count', 'last_message_at')
+    list_filter = ('source', 'status', 'manager', 'branch')
+    search_fields = ('contact_name', 'contact_phone', 'contact_username', 'first_message', 'last_message', 'messages__text', 'messages__external_message_id')
+
+
+@admin.register(LeadMessage)
+class LeadMessageAdmin(admin.ModelAdmin):
+    list_display = ('lead', 'direction', 'message_type', 'external_message_id', 'sent_at', 'is_read')
+    list_filter = ('direction', 'message_type', 'is_read')
+    search_fields = ('external_message_id', 'text', 'lead__contact_name', 'lead__contact_phone')
+
+
+@admin.register(MetaWebhookEvent)
+class MetaWebhookEventAdmin(admin.ModelAdmin):
+    list_display = ('provider', 'event_key', 'object_type', 'processed_at', 'processing_error', 'created_at')
+    search_fields = ('event_key', 'provider', 'object_type', 'processing_error')
+    readonly_fields = ('payload', 'created_at', 'updated_at')
 
 
 @admin.register(StudioSettings)

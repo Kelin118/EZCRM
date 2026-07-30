@@ -904,6 +904,160 @@ class ChatMessage(TimeStampedModel):
         return f'Message from {self.sender}'
 
 
+class MessagingChannel(TimeStampedModel):
+    class Provider(models.TextChoices):
+        WHATSAPP = 'whatsapp', 'WhatsApp'
+        INSTAGRAM = 'instagram', 'Instagram'
+
+    provider = models.CharField(max_length=20, choices=Provider.choices)
+    name = models.CharField(max_length=150)
+    external_account_id = models.CharField(max_length=255, db_index=True)
+    phone_number = models.CharField(max_length=30, blank=True)
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='messaging_channels')
+    default_manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='default_messaging_channels',
+    )
+    is_active = models.BooleanField(default=True)
+    last_webhook_at = models.DateTimeField(null=True, blank=True)
+    last_message_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+
+    class Meta:
+        unique_together = ('provider', 'external_account_id')
+        ordering = ('provider', 'name')
+
+    def __str__(self):
+        return f'{self.get_provider_display()} · {self.name}'
+
+
+class MessagingContact(TimeStampedModel):
+    channel = models.ForeignKey(MessagingChannel, on_delete=models.CASCADE, related_name='contacts')
+    external_contact_id = models.CharField(max_length=255)
+    display_name = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    username = models.CharField(max_length=255, blank=True)
+    profile_picture_url = models.URLField(blank=True)
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name='messaging_contacts')
+    last_message_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('channel', 'external_contact_id')
+        ordering = ('-last_message_at', '-created_at')
+
+    def __str__(self):
+        return self.display_name or self.username or self.phone or self.external_contact_id
+
+
+class Lead(TimeStampedModel):
+    class Source(models.TextChoices):
+        WHATSAPP = 'whatsapp', 'WhatsApp'
+        INSTAGRAM = 'instagram', 'Instagram'
+        MANUAL = 'manual', 'Вручную'
+
+    class Status(models.TextChoices):
+        NEW = 'new', 'Новое'
+        IN_PROGRESS = 'in_progress', 'В работе'
+        QUALIFIED = 'qualified', 'Квалифицирован'
+        TRIAL_BOOKED = 'trial_booked', 'Записан на пробник'
+        WON = 'won', 'Продажа'
+        LOST = 'lost', 'Не купил'
+        SPAM = 'spam', 'Спам'
+
+    ACTIVE_STATUSES = (Status.NEW, Status.IN_PROGRESS, Status.QUALIFIED, Status.TRIAL_BOOKED)
+
+    source = models.CharField(max_length=20, choices=Source.choices)
+    channel = models.ForeignKey(MessagingChannel, on_delete=models.SET_NULL, null=True, blank=True, related_name='leads')
+    contact = models.ForeignKey(MessagingContact, on_delete=models.SET_NULL, null=True, blank=True, related_name='leads')
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name='leads')
+    manager = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='managed_leads')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='leads')
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.NEW)
+    title = models.CharField(max_length=255)
+    contact_name = models.CharField(max_length=255, blank=True)
+    contact_phone = models.CharField(max_length=30, blank=True)
+    contact_username = models.CharField(max_length=255, blank=True)
+    first_message = models.TextField(blank=True)
+    last_message = models.TextField(blank=True)
+    first_message_at = models.DateTimeField()
+    last_message_at = models.DateTimeField()
+    unread_count = models.PositiveIntegerField(default=0)
+    converted_trial = models.ForeignKey(Trial, on_delete=models.SET_NULL, null=True, blank=True, related_name='source_leads')
+    closed_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ('-last_message_at',)
+        indexes = [
+            models.Index(fields=('status',)),
+            models.Index(fields=('source',)),
+            models.Index(fields=('manager',)),
+            models.Index(fields=('last_message_at',)),
+            models.Index(fields=('contact_phone',)),
+        ]
+
+    def __str__(self):
+        return self.title
+
+    @property
+    def is_active(self):
+        return self.status in self.ACTIVE_STATUSES
+
+
+class LeadMessage(TimeStampedModel):
+    class Direction(models.TextChoices):
+        INBOUND = 'inbound', 'Входящее'
+        OUTBOUND = 'outbound', 'Исходящее'
+
+    class MessageType(models.TextChoices):
+        TEXT = 'text', 'Текст'
+        IMAGE = 'image', 'Изображение'
+        VIDEO = 'video', 'Видео'
+        AUDIO = 'audio', 'Аудио'
+        DOCUMENT = 'document', 'Документ'
+        STICKER = 'sticker', 'Стикер'
+        INTERACTIVE = 'interactive', 'Интерактивное'
+        UNKNOWN = 'unknown', 'Другое'
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name='messages')
+    contact = models.ForeignKey(MessagingContact, on_delete=models.SET_NULL, null=True, blank=True, related_name='messages')
+    direction = models.CharField(max_length=20, choices=Direction.choices)
+    message_type = models.CharField(max_length=30, choices=MessageType.choices, default=MessageType.TEXT)
+    external_message_id = models.CharField(max_length=255, unique=True)
+    text = models.TextField(blank=True)
+    media_id = models.CharField(max_length=255, blank=True)
+    media_url = models.URLField(blank=True)
+    mime_type = models.CharField(max_length=100, blank=True)
+    file_name = models.CharField(max_length=255, blank=True)
+    sent_at = models.DateTimeField()
+    raw_payload = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ('sent_at', 'created_at')
+
+    def __str__(self):
+        return f'{self.direction} {self.external_message_id}'
+
+
+class MetaWebhookEvent(TimeStampedModel):
+    provider = models.CharField(max_length=20)
+    event_key = models.CharField(max_length=255, unique=True)
+    object_type = models.CharField(max_length=100, blank=True)
+    payload = models.JSONField(default=dict)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_error = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return self.event_key
+
+
 class StudioSettings(TimeStampedModel):
     studio_name = models.CharField(max_length=150, default='EDUCRM')
     phone = models.CharField(max_length=30, blank=True)
@@ -999,6 +1153,16 @@ class AuditLog(models.Model):
         CERTIFICATE_BATCH_CREATE = 'certificate_batch_create', 'Certificate batch create'
         CERTIFICATE_ASSET_UPLOAD = 'certificate_asset_upload', 'Certificate asset upload'
         CERTIFICATE_VISIT_CREATE = 'certificate_visit_create', 'Certificate visit create'
+        MESSAGING_CHANNEL_CREATE = 'messaging_channel_create', 'Messaging channel create'
+        MESSAGING_CHANNEL_UPDATE = 'messaging_channel_update', 'Messaging channel update'
+        LEAD_CREATED_FROM_MESSAGE = 'lead_created_from_message', 'Lead created from message'
+        LEAD_STATUS_UPDATE = 'lead_status_update', 'Lead status update'
+        LEAD_ASSIGN = 'lead_assign', 'Lead assign'
+        LEAD_LINK_CLIENT = 'lead_link_client', 'Lead link client'
+        LEAD_CREATE_CLIENT = 'lead_create_client', 'Lead create client'
+        LEAD_CONVERT_TO_TRIAL = 'lead_convert_to_trial', 'Lead convert to trial'
+        LEAD_MARK_READ = 'lead_mark_read', 'Lead mark read'
+        META_WEBHOOK_ERROR = 'meta_webhook_error', 'Meta webhook error'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

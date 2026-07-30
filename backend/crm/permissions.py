@@ -151,6 +151,39 @@ class CertificatePermission(RolePermission):
     }
 
 
+class LeadPermission(RolePermission):
+    allowed_by_role = {
+        MANAGER: {
+            'read', 'list', 'retrieve', 'create', 'update', 'partial_update',
+            'mark_read', 'mark_unread', 'assign', 'link_client', 'create_client',
+            'convert_to_trial', 'close', 'reopen', 'messages', 'unread_count',
+        },
+    }
+
+    def has_object_permission(self, request, view, obj):
+        if is_admin(request.user):
+            return True
+        if not has_role(request.user, MANAGER):
+            return False
+        if getattr(view, 'action', None) == 'destroy':
+            return False
+        return obj.manager_id in (None, request.user.id)
+
+
+class MessagingChannelPermission(BasePermission):
+    def has_permission(self, request, view):
+        if not is_authenticated(request.user):
+            return False
+        if is_admin(request.user):
+            return True
+        if request.method in SAFE_METHODS:
+            return has_role(request.user, MANAGER)
+        return False
+
+    def has_object_permission(self, request, view, obj):
+        return self.has_permission(request, view)
+
+
 class DiscountPermission(BasePermission):
     def has_permission(self, request, view):
         if not is_authenticated(request.user):

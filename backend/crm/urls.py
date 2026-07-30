@@ -25,7 +25,11 @@ from .views import (
     GroupMembershipViewSet,
     LessonsExportView,
     LessonViewSet,
+    LeadViewSet,
     MasterClassViewSet,
+    MessagingChannelViewSet,
+    MetaIntegrationStatusView,
+    MetaWebhookView,
     PaymentMethodViewSet,
     MasterClassesExportView,
     GiftCertificateViewSet,
@@ -58,6 +62,7 @@ router.register('study-groups', StudyGroupViewSet, basename='study-group')
 router.register('group-memberships', GroupMembershipViewSet, basename='group-membership')
 router.register('schedule-slots', ScheduleSlotViewSet, basename='schedule-slot')
 router.register('lessons', LessonViewSet, basename='lesson')
+router.register('leads', LeadViewSet, basename='lead')
 router.register('trials', TrialViewSet, basename='trial')
 router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
@@ -65,6 +70,7 @@ router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
 router.register('discounts', DiscountViewSet, basename='discount')
 router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')
+router.register('messaging-channels', MessagingChannelViewSet, basename='messaging-channel')
 router.register('chat/messages', ChatMessageViewSet, basename='chat-message')
 router.register('settings', StudioSettingsViewSet, basename='settings')
 router.register('catalog-items', CatalogItemViewSet, basename='catalog-item')
@@ -79,6 +85,8 @@ urlpatterns = [
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),
     path('attendance/day/', AttendanceDayView.as_view(), name='attendance-day'),
+    path('integrations/meta/webhook/', MetaWebhookView.as_view(), name='meta-webhook'),
+    path('integrations/meta/status/', MetaIntegrationStatusView.as_view(), name='meta-integration-status'),
     path('import/excel/', ExcelImportView.as_view(), name='excel-import'),
     path('export/clients/', ClientsExportView.as_view(), name='export-clients'),
     path('export/subscriptions/', SubscriptionsExportView.as_view(), name='export-subscriptions'),

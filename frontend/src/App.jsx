@@ -16,6 +16,7 @@ import ExportPage from './pages/ExportPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
 import GroupsPage from './pages/GroupsPage.jsx';
 import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
+import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
@@ -91,6 +92,7 @@ export default function App() {
         <Route path="clients/:id" element={<ClientDetailPage />} />
         <Route path="subscriptions" element={<SubscriptionsPage />} />
         <Route path="visits" element={<VisitsPage />} />
+        <Route path="leads" element={<LeadsPage />} />
         <Route path="trials" element={<TrialsPage />} />
         <Route path="master-classes" element={<MasterClassesPage />} />
         <Route path="certificates" element={<CertificatesPage />} />

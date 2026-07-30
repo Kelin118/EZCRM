@@ -1,12 +1,14 @@
 from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
+import hmac
 import random
 import re
 import string
 import uuid
 
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
@@ -56,7 +58,12 @@ from .models import (
     GiftCertificate,
     GroupMembership,
     Lesson,
+    Lead,
+    LeadMessage,
     MasterClass,
+    MessagingChannel,
+    MessagingContact,
+    MetaWebhookEvent,
     PaymentMethod,
     Room,
     ScheduleSlot,
@@ -85,7 +92,9 @@ from .permissions import (
     EducationPermission,
     BackupPermission,
     FinancePermission,
+    LeadPermission,
     PaymentMethodPermission,
+    MessagingChannelPermission,
     ExportPermission,
     MasterClassPermission,
     ReportsPermission,
@@ -115,7 +124,11 @@ from .serializers import (
     GiftCertificateSerializer,
     GroupMembershipSerializer,
     LessonSerializer,
+    LeadSerializer,
+    LeadMessageSerializer,
     MasterClassSerializer,
+    MessagingChannelSerializer,
+    MetaWebhookEventSerializer,
     PaymentMethodSerializer,
     PublicGiftCertificateSerializer,
     RoomSerializer,
@@ -130,6 +143,7 @@ from .serializers import (
     certificate_template_snapshot,
     refresh_certificate_status,
 )
+from .meta_webhooks import normalize_kz_phone, process_meta_webhook, verify_meta_signature
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
@@ -2720,6 +2734,49 @@ class PublicGiftCertificateView(APIView):
         return Response(PublicGiftCertificateSerializer(certificate).data)
 
 
+class MetaWebhookView(APIView):
+    permission_classes = ()
+    authentication_classes = ()
+
+    def get(self, request):
+        if request.query_params.get('hub.mode') == 'subscribe' and request.query_params.get('hub.verify_token') == getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', ''):
+            return HttpResponse(request.query_params.get('hub.challenge', ''), content_type='text/plain')
+        return Response({'detail': 'Invalid verify token.'}, status=status.HTTP_403_FORBIDDEN)
+
+    def post(self, request):
+        if not verify_meta_signature(request.body, request.META.get('HTTP_X_HUB_SIGNATURE_256', '')):
+            return Response({'detail': 'Invalid Meta signature.'}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            payload = request.data if isinstance(request.data, dict) else {}
+            leads = process_meta_webhook(request, payload)
+            return Response({'ok': True, 'created_or_updated': len(leads)})
+        except Exception as exc:
+            log_action(request, AuditLog.Action.META_WEBHOOK_ERROR, 'MetaWebhook', description='Meta webhook processing error', changes={'error': str(exc)})
+            return Response({'ok': True})
+
+
+class MetaIntegrationStatusView(APIView):
+    permission_classes = (IsAuthenticated, MessagingChannelPermission)
+
+    def get(self, request):
+        def provider_payload(provider):
+            channels = MessagingChannel.objects.filter(provider=provider)
+            last_event = MetaWebhookEvent.objects.filter(provider=provider).order_by('-created_at').first()
+            last_error_event = MetaWebhookEvent.objects.filter(provider=provider).exclude(processing_error='').order_by('-created_at').first()
+            return {
+                'configured': channels.filter(is_active=True).exists(),
+                'channel_count': channels.count(),
+                'last_event_at': last_event.created_at if last_event else None,
+                'last_error': (last_error_event.processing_error if last_error_event else ''),
+            }
+        return Response({
+            'webhook_configured': bool(getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', '')),
+            'app_secret_configured': bool(getattr(settings, 'META_APP_SECRET', '')),
+            'whatsapp': provider_payload(MessagingChannel.Provider.WHATSAPP),
+            'instagram': provider_payload(MessagingChannel.Provider.INSTAGRAM),
+        })
+
+
 class PublicCertificateAssetView(APIView):
     permission_classes = ()
     authentication_classes = ()
@@ -2731,6 +2788,210 @@ class PublicCertificateAssetView(APIView):
         response = HttpResponse(bytes(asset.file_data), content_type=asset.mime_type)
         response['Cache-Control'] = 'public, max-age=31536000, immutable'
         return response
+
+
+class MessagingChannelViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, MessagingChannelPermission)
+    serializer_class = MessagingChannelSerializer
+    queryset = MessagingChannel.objects.select_related('branch', 'default_manager').all()
+    audit_entity_type = 'MessagingChannel'
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.MESSAGING_CHANNEL_CREATE, instance, 'Создан канал мессенджера', self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.MESSAGING_CHANNEL_UPDATE, instance, 'Изменён канал мессенджера', self._audit_changes())
+
+
+class LeadViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, LeadPermission)
+    serializer_class = LeadSerializer
+    audit_entity_type = 'Lead'
+
+    def get_queryset(self):
+        queryset = (
+            Lead.objects
+            .select_related('channel', 'contact', 'client', 'manager', 'branch', 'converted_trial')
+            .prefetch_related('messages')
+            .all()
+        )
+        if has_role(self.request.user, MANAGER) and not is_admin(self.request.user):
+            queryset = queryset.filter(Q(manager=self.request.user) | Q(manager__isnull=True))
+        search = self.request.query_params.get('search')
+        source = self.request.query_params.get('source')
+        status_value = self.request.query_params.get('status')
+        manager = self.request.query_params.get('manager')
+        branch = self.request.query_params.get('branch')
+        client = self.request.query_params.get('client')
+        unread = self.request.query_params.get('unread')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+        if search:
+            queryset = queryset.filter(
+                Q(contact_name__icontains=search)
+                | Q(contact_phone__icontains=search)
+                | Q(contact_username__icontains=search)
+                | Q(first_message__icontains=search)
+                | Q(last_message__icontains=search)
+                | Q(messages__text__icontains=search)
+                | Q(client__first_name__icontains=search)
+                | Q(client__last_name__icontains=search)
+                | Q(client__parent_name__icontains=search)
+                | Q(client__phone__icontains=search)
+            )
+        if source:
+            queryset = queryset.filter(source=source)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if manager and manager != 'all':
+            queryset = queryset.filter(manager__isnull=True) if manager == 'unassigned' else queryset.filter(manager_id=manager)
+        if branch and branch != 'all':
+            queryset = queryset.filter(branch__isnull=True) if branch == 'unassigned' else queryset.filter(branch_id=branch)
+        if client:
+            queryset = queryset.filter(client_id=client)
+        if unread in {'1', 'true', 'yes'}:
+            queryset = queryset.filter(unread_count__gt=0)
+        if date_from:
+            queryset = queryset.filter(last_message_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(last_message_at__date__lte=date_to)
+        return queryset.distinct()
+
+    @action(detail=False, methods=['get'], url_path='unread-count')
+    def unread_count(self, request):
+        queryset = self.get_queryset().filter(unread_count__gt=0)
+        return Response({
+            'total': queryset.aggregate(total=Sum('unread_count'))['total'] or 0,
+            'whatsapp': queryset.filter(source=Lead.Source.WHATSAPP).aggregate(total=Sum('unread_count'))['total'] or 0,
+            'instagram': queryset.filter(source=Lead.Source.INSTAGRAM).aggregate(total=Sum('unread_count'))['total'] or 0,
+        })
+
+    @action(detail=True, methods=['get'])
+    def messages(self, request, pk=None):
+        lead = self.get_object()
+        serializer = LeadMessageSerializer(lead.messages.order_by('sent_at', 'created_at'), many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='mark-read')
+    def mark_read(self, request, pk=None):
+        lead = self.get_object()
+        lead.unread_count = 0
+        lead.messages.filter(direction=LeadMessage.Direction.INBOUND, is_read=False).update(is_read=True)
+        lead.save(update_fields=('unread_count', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_MARK_READ, lead, 'Обращение отмечено прочитанным', {'unread_count': 0})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='mark-unread')
+    def mark_unread(self, request, pk=None):
+        lead = self.get_object()
+        lead.unread_count = max(lead.unread_count, 1)
+        lead.save(update_fields=('unread_count', 'updated_at'))
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'])
+    def assign(self, request, pk=None):
+        lead = self.get_object()
+        manager_id = request.data.get('manager') or request.user.id
+        manager = User.objects.filter(pk=manager_id, is_active=True).first()
+        if not manager or not (is_admin(manager) or has_role(manager, MANAGER)):
+            raise drf_serializers.ValidationError({'manager': 'Выберите активного менеджера.'})
+        lead.manager = manager
+        lead.save(update_fields=('manager', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_ASSIGN, lead, 'Назначен менеджер обращения', {'manager': manager.pk})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='link-client')
+    def link_client(self, request, pk=None):
+        lead = self.get_object()
+        if request.data.get('client') in (None, ''):
+            if not is_admin(request.user):
+                raise drf_serializers.ValidationError({'client': 'Отвязать клиента может только admin.'})
+            client = None
+        else:
+            client = Client.objects.filter(pk=request.data.get('client')).first()
+            if not client:
+                raise drf_serializers.ValidationError({'client': 'Клиент не найден.'})
+        lead.client = client
+        if client and not lead.branch_id:
+            lead.branch = client.branch
+        lead.save(update_fields=('client', 'branch', 'updated_at'))
+        if lead.contact_id:
+            lead.contact.client = client
+            lead.contact.save(update_fields=('client', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_LINK_CLIENT, lead, 'Обращение связано с клиентом', {'client': client.pk if client else None})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='create-client')
+    def create_client(self, request, pk=None):
+        lead = self.get_object()
+        if lead.client_id:
+            raise drf_serializers.ValidationError({'client': 'Обращение уже связано с клиентом.'})
+        phone = normalize_kz_phone(request.data.get('phone') or lead.contact_phone)
+        client = Client.objects.create(
+            first_name=request.data.get('first_name') or lead.contact_name or lead.contact_username or 'Клиент',
+            last_name=request.data.get('last_name', ''),
+            parent_name=request.data.get('parent_name', ''),
+            phone=phone,
+            branch_id=request.data.get('branch') or lead.branch_id,
+            manager_id=request.data.get('manager') or lead.manager_id,
+            notes=request.data.get('notes') or f'Создан из обращения {lead.get_source_display()}',
+        )
+        lead.client = client
+        lead.save(update_fields=('client', 'updated_at'))
+        if lead.contact_id:
+            lead.contact.client = client
+            lead.contact.save(update_fields=('client', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_CREATE_CLIENT, lead, 'Создан клиент из обращения', {'client': client.pk})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='convert-to-trial')
+    def convert_to_trial(self, request, pk=None):
+        lead = self.get_object()
+        if not lead.client_id:
+            raise drf_serializers.ValidationError({'client': 'Сначала свяжите обращение с клиентом.'})
+        if lead.converted_trial_id:
+            return Response(self.get_serializer(lead).data)
+        scheduled_at = request.data.get('scheduled_at')
+        if not scheduled_at:
+            raise drf_serializers.ValidationError({'scheduled_at': 'Укажите дату и время пробника.'})
+        serializer = TrialSerializer(data={
+            'client': lead.client_id,
+            'branch': request.data.get('branch') or lead.branch_id,
+            'manager': request.data.get('manager') or lead.manager_id,
+            'teacher': request.data.get('teacher') or None,
+            'scheduled_at': scheduled_at,
+            'status': Trial.Status.BOOKED,
+            'price': request.data.get('price', '0.00'),
+            'notes': request.data.get('notes') or f'Запись из обращения {lead.get_source_display()}',
+        }, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            trial = serializer.save()
+            lead.converted_trial = trial
+            lead.status = Lead.Status.TRIAL_BOOKED
+            lead.save(update_fields=('converted_trial', 'status', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_CONVERT_TO_TRIAL, lead, 'Обращение переведено в пробник', {'trial': trial.pk})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        lead = self.get_object()
+        lead.status = request.data.get('status') if request.data.get('status') in {Lead.Status.WON, Lead.Status.LOST, Lead.Status.SPAM} else Lead.Status.LOST
+        lead.closed_at = timezone.now()
+        lead.save(update_fields=('status', 'closed_at', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_STATUS_UPDATE, lead, 'Обращение закрыто', {'status': lead.status})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'])
+    def reopen(self, request, pk=None):
+        lead = self.get_object()
+        lead.status = Lead.Status.IN_PROGRESS
+        lead.closed_at = None
+        lead.save(update_fields=('status', 'closed_at', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_STATUS_UPDATE, lead, 'Обращение переоткрыто', {'status': lead.status})
+        return Response(self.get_serializer(lead).data)
 
 
 class AddonSaleViewSet(BaseAuthenticatedViewSet):

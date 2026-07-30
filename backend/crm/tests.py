@@ -1,5 +1,8 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+import hashlib
+import hmac
+import json
 from unittest.mock import patch
 from io import BytesIO, StringIO
 
@@ -7,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.test import override_settings
 from django.db import connection
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -31,7 +35,12 @@ from .models import (
     GroupMembership,
     GiftCertificate,
     Lesson,
+    Lead,
+    LeadMessage,
     MasterClass,
+    MessagingChannel,
+    MessagingContact,
+    MetaWebhookEvent,
     PaymentMethod,
     Room,
     ScheduleSlot,
@@ -4323,6 +4332,206 @@ class CertificateApiTests(APITestCase):
         workbook = load_workbook(BytesIO(response.content))
         self.assertIn('Certificates', workbook.sheetnames)
         self.assertIn('Visits', workbook.sheetnames)
+
+
+@override_settings(META_WEBHOOK_VERIFY_TOKEN='verify-me', META_APP_SECRET='test-secret')
+class MetaWebhookLeadTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='meta-admin', password='pass')
+        self.manager = User.objects.create_user(username='meta-manager', password='pass', role='manager', roles=['manager'])
+        self.teacher = User.objects.create_user(username='meta-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.accountant = User.objects.create_user(username='meta-accountant', password='pass', role='accountant', roles=['accountant'])
+        self.branch = Branch.objects.create(name='Meta branch')
+        self.whatsapp_channel = MessagingChannel.objects.create(
+            provider=MessagingChannel.Provider.WHATSAPP,
+            name='WA main',
+            external_account_id='phone-1',
+            phone_number='77070000000',
+            branch=self.branch,
+            default_manager=self.manager,
+        )
+        self.instagram_channel = MessagingChannel.objects.create(
+            provider=MessagingChannel.Provider.INSTAGRAM,
+            name='IG main',
+            external_account_id='ig-business-1',
+            default_manager=self.manager,
+        )
+
+    def signed_post(self, payload):
+        body = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+        signature = 'sha256=' + hmac.new(b'test-secret', body, hashlib.sha256).hexdigest()
+        return self.client.post(
+            '/api/integrations/meta/webhook/',
+            data=body,
+            content_type='application/json',
+            HTTP_X_HUB_SIGNATURE_256=signature,
+        )
+
+    def whatsapp_payload(self, message_id='wamid.1', text='Здравствуйте', sender='87071234567', phone_number_id='phone-1', msg_type='text'):
+        message = {'id': message_id, 'from': sender, 'timestamp': '1785420000', 'type': msg_type}
+        if msg_type == 'text':
+            message['text'] = {'body': text}
+        elif msg_type == 'image':
+            message['image'] = {'id': 'media-1', 'mime_type': 'image/jpeg', 'caption': text}
+        return {
+            'object': 'whatsapp_business_account',
+            'entry': [{
+                'changes': [{
+                    'value': {
+                        'metadata': {'phone_number_id': phone_number_id},
+                        'contacts': [{'wa_id': sender, 'profile': {'name': 'Алия WA'}}],
+                        'messages': [message],
+                    },
+                }],
+            }],
+        }
+
+    def instagram_payload(self, message_id='igmid.1', text='Привет', sender='igsid-1', echo=False, seen=False):
+        event = {
+            'sender': {'id': sender},
+            'recipient': {'id': 'ig-business-1'},
+            'timestamp': 1785420000000,
+        }
+        if seen:
+            event['read'] = {'mid': message_id}
+        else:
+            event['message'] = {'mid': message_id, 'text': text, 'is_echo': echo}
+        return {'object': 'instagram', 'entry': [{'id': 'ig-business-1', 'messaging': [event]}]}
+
+    def test_get_webhook_verify_token(self):
+        response = self.client.get('/api/integrations/meta/webhook/', {'hub.mode': 'subscribe', 'hub.verify_token': 'verify-me', 'hub.challenge': 'abc123'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode(), 'abc123')
+
+    def test_get_webhook_wrong_token_returns_403(self):
+        response = self.client.get('/api/integrations/meta/webhook/', {'hub.mode': 'subscribe', 'hub.verify_token': 'bad', 'hub.challenge': 'abc123'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_post_without_or_wrong_signature_returns_401(self):
+        payload = self.whatsapp_payload()
+        response = self.client.post('/api/integrations/meta/webhook/', payload, format='json')
+        self.assertEqual(response.status_code, 401)
+        response = self.client.post('/api/integrations/meta/webhook/', payload, format='json', HTTP_X_HUB_SIGNATURE_256='sha256=bad')
+        self.assertEqual(response.status_code, 401)
+
+    def test_whatsapp_text_creates_contact_lead_message_and_normalizes_phone(self):
+        response = self.signed_post(self.whatsapp_payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MessagingContact.objects.count(), 1)
+        self.assertEqual(Lead.objects.count(), 1)
+        self.assertEqual(LeadMessage.objects.count(), 1)
+        contact = MessagingContact.objects.get()
+        lead = Lead.objects.get()
+        self.assertEqual(contact.display_name, 'Алия WA')
+        self.assertEqual(contact.phone, '77071234567')
+        self.assertEqual(lead.contact_phone, '77071234567')
+        self.assertEqual(lead.manager, self.manager)
+        self.assertEqual(lead.branch, self.branch)
+        self.assertEqual(lead.unread_count, 1)
+
+    def test_existing_client_is_linked_but_not_created(self):
+        client_obj = Client.objects.create(first_name='Алия', phone='77071234567', manager=self.manager, branch=self.branch)
+        self.signed_post(self.whatsapp_payload(sender='+7 707 123 45 67'))
+        lead = Lead.objects.get()
+        self.assertEqual(Client.objects.count(), 1)
+        self.assertEqual(lead.client, client_obj)
+
+    def test_repeat_message_reuses_active_lead_and_increases_unread(self):
+        self.signed_post(self.whatsapp_payload(message_id='wamid.1'))
+        self.signed_post(self.whatsapp_payload(message_id='wamid.2', text='Повтор'))
+        self.assertEqual(Lead.objects.count(), 1)
+        lead = Lead.objects.get()
+        self.assertEqual(lead.unread_count, 2)
+        self.assertEqual(LeadMessage.objects.count(), 2)
+
+    def test_duplicate_external_message_id_is_idempotent(self):
+        self.signed_post(self.whatsapp_payload(message_id='wamid.same'))
+        self.signed_post(self.whatsapp_payload(message_id='wamid.same'))
+        self.assertEqual(Lead.objects.count(), 1)
+        self.assertEqual(LeadMessage.objects.count(), 1)
+
+    def test_status_webhook_and_disabled_channel_do_not_create_lead(self):
+        status_payload = {'object': 'whatsapp_business_account', 'entry': [{'changes': [{'value': {'metadata': {'phone_number_id': 'phone-1'}, 'statuses': [{'id': 'x'}]}}]}]}
+        response = self.signed_post(status_payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Lead.objects.count(), 0)
+        self.whatsapp_channel.is_active = False
+        self.whatsapp_channel.save(update_fields=('is_active', 'updated_at'))
+        self.signed_post(self.whatsapp_payload(message_id='wamid.disabled'))
+        self.assertEqual(Lead.objects.count(), 0)
+        self.assertTrue(MetaWebhookEvent.objects.exclude(processing_error='').exists())
+
+    def test_media_message_saves_type_and_media_id(self):
+        self.signed_post(self.whatsapp_payload(message_id='wamid.image', text='Фото', msg_type='image'))
+        message = LeadMessage.objects.get()
+        self.assertEqual(message.message_type, LeadMessage.MessageType.IMAGE)
+        self.assertEqual(message.media_id, 'media-1')
+
+    def test_instagram_message_creates_lead_and_ignores_echo_seen(self):
+        self.signed_post(self.instagram_payload())
+        self.signed_post(self.instagram_payload(message_id='igmid.echo', echo=True))
+        self.signed_post(self.instagram_payload(message_id='igmid.seen', seen=True))
+        self.assertEqual(MessagingContact.objects.filter(channel=self.instagram_channel).count(), 1)
+        self.assertEqual(Lead.objects.filter(source=Lead.Source.INSTAGRAM).count(), 1)
+        lead = Lead.objects.get(source=Lead.Source.INSTAGRAM)
+        self.assertEqual(lead.contact.external_contact_id, 'igsid-1')
+        self.assertEqual(lead.contact_phone, '')
+
+    def test_new_message_after_closed_lead_creates_new_lead(self):
+        self.signed_post(self.whatsapp_payload(message_id='wamid.close1'))
+        lead = Lead.objects.get()
+        lead.status = Lead.Status.LOST
+        lead.closed_at = timezone.now()
+        lead.save(update_fields=('status', 'closed_at', 'updated_at'))
+        self.signed_post(self.whatsapp_payload(message_id='wamid.close2'))
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_lead_api_permissions_unread_mark_read_search_and_filters(self):
+        self.signed_post(self.whatsapp_payload(text='Хочу математику'))
+        self.client.force_authenticate(self.manager)
+        response = self.client.get('/api/leads/unread-count/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total'], 1)
+        lead_id = Lead.objects.get().id
+        self.assertEqual(len(self.client.get('/api/leads/', {'search': 'математику'}).data), 1)
+        self.assertEqual(len(self.client.get('/api/leads/', {'source': 'whatsapp'}).data), 1)
+        self.assertEqual(len(self.client.get('/api/leads/', {'status': 'new'}).data), 1)
+        self.assertEqual(len(self.client.get('/api/leads/', {'branch': self.branch.id}).data), 1)
+        response = self.client.post(f'/api/leads/{lead_id}/mark-read/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['unread_count'], 0)
+        self.client.force_authenticate(self.teacher)
+        self.assertEqual(self.client.get('/api/leads/').status_code, 403)
+        self.client.force_authenticate(self.accountant)
+        self.assertEqual(self.client.get('/api/leads/').status_code, 403)
+
+    def test_create_client_link_client_and_convert_to_trial(self):
+        self.signed_post(self.whatsapp_payload())
+        lead = Lead.objects.get()
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(f'/api/leads/{lead.id}/convert-to-trial/', {'scheduled_at': '2026-08-01T15:00:00+05:00'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(f'/api/leads/{lead.id}/create-client/', {'first_name': 'Алия', 'phone': '77071234567'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Client.objects.count(), 1)
+        response = self.client.post(f'/api/leads/{lead.id}/create-client/', {'first_name': 'Дубль'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(f'/api/leads/{lead.id}/convert-to-trial/', {'scheduled_at': '2026-08-01T15:00:00+05:00'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Trial.objects.count(), 1)
+        response = self.client.post(f'/api/leads/{lead.id}/convert-to-trial/', {'scheduled_at': '2026-08-01T15:00:00+05:00'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Trial.objects.count(), 1)
+
+    def test_secrets_are_not_exposed(self):
+        self.signed_post(self.whatsapp_payload())
+        self.client.force_authenticate(self.manager)
+        status_response = self.client.get('/api/integrations/meta/status/')
+        self.assertEqual(status_response.status_code, 200)
+        self.assertNotIn('test-secret', json.dumps(status_response.data, default=str))
+        event = MetaWebhookEvent.objects.get()
+        self.assertNotIn('test-secret', json.dumps(event.payload))
 
 
 class ReportsConversionSummaryTests(APITestCase):

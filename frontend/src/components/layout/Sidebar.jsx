@@ -8,6 +8,7 @@ import {
   Download,
   Gift,
   Home,
+  Inbox,
   Library,
   ListChecks,
   MessageSquare,
@@ -20,7 +21,9 @@ import {
   UsersRound,
 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 
+import api from '../../api/axios.js';
 import { canAccessNavItem, getStoredUser, ROLES } from '../../auth.js';
 
 export const navItems = [
@@ -28,6 +31,7 @@ export const navItems = [
   { group: 'Основное', to: '/clients', label: 'Клиенты', icon: Users, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Основное', to: '/subscriptions', label: 'Абонементы', icon: Ticket, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Основное', to: '/visits', label: 'Посещения', icon: ListChecks, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
+  { group: 'Продажи', to: '/leads', label: 'Обращения', icon: Inbox, roles: [ROLES.MANAGER] },
   { group: 'Продажи', to: '/trials', label: 'Пробники', icon: CalendarCheck, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/master-classes', label: 'МК', icon: Sparkles, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/certificates', label: 'Сертификаты', icon: Gift, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
@@ -48,10 +52,27 @@ const groupOrder = ['Основное', 'Продажи', 'Обучение', '�
 
 export default function Sidebar({ open = false, onNavigate }) {
   const user = getStoredUser();
+  const [unreadLeads, setUnreadLeads] = useState(0);
   const visibleNavItems = navItems.filter((item) => canAccessNavItem(item, user));
   const groupedItems = groupOrder
     .map((group) => ({ group, items: visibleNavItems.filter((item) => item.group === group) }))
     .filter((section) => section.items.length > 0);
+
+  useEffect(() => {
+    if (!canAccessNavItem({ roles: [ROLES.MANAGER] }, user)) return undefined;
+    let mounted = true;
+    const loadUnread = () => {
+      api.get('leads/unread-count/')
+        .then(({ data }) => { if (mounted) setUnreadLeads(Number(data.total || 0)); })
+        .catch(() => { if (mounted) setUnreadLeads(0); });
+    };
+    loadUnread();
+    const intervalId = window.setInterval(loadUnread, 30000);
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, [user?.id]);
 
   return (
     <aside
@@ -92,6 +113,9 @@ export default function Sidebar({ open = false, onNavigate }) {
                   >
                     <Icon size={18} className="shrink-0" />
                     <span className="min-w-0 truncate whitespace-nowrap">{label}</span>
+                    {to === '/leads' && unreadLeads > 0 && (
+                      <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[11px] font-black text-white">{unreadLeads}</span>
+                    )}
                   </NavLink>
                 ))}
               </div>

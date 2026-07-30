@@ -65,7 +65,7 @@ export function canAccessPath(pathname, user = getStoredUser()) {
 
   const allowedPaths = new Set();
   if (hasRole(user, ROLES.MANAGER)) {
-    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/certificates', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/employees', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
+    ['/clients', '/subscriptions', '/visits', '/leads', '/trials', '/master-classes', '/certificates', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/employees', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
   }
 
   if (hasRole(user, ROLES.TEACHER)) {

@@ -34,7 +34,12 @@ from .models import (
     GiftCertificate,
     GroupMembership,
     Lesson,
+    Lead,
+    LeadMessage,
     MasterClass,
+    MessagingChannel,
+    MessagingContact,
+    MetaWebhookEvent,
     PaymentMethod,
     Room,
     ScheduleSlot,
@@ -1252,6 +1257,95 @@ def refresh_certificate_status(certificate):
         certificate.status = GiftCertificate.Status.EXPIRED
         certificate.save(update_fields=('status', 'updated_at'))
     return certificate
+
+
+class MessagingChannelSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True, default='')
+    default_manager_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MessagingChannel
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at', 'last_webhook_at', 'last_message_at', 'last_error')
+
+    def get_default_manager_name(self, obj):
+        return obj.default_manager.get_full_name() or obj.default_manager.username if obj.default_manager else ''
+
+
+class MessagingContactSerializer(serializers.ModelSerializer):
+    client_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MessagingContact
+        fields = '__all__'
+
+    def get_client_name(self, obj):
+        return str(obj.client) if obj.client else ''
+
+
+class LeadMessageSerializer(serializers.ModelSerializer):
+    source = serializers.CharField(source='lead.source', read_only=True)
+    message_type_display = serializers.CharField(source='get_message_type_display', read_only=True)
+    direction_display = serializers.CharField(source='get_direction_display', read_only=True)
+
+    class Meta:
+        model = LeadMessage
+        fields = (
+            'id', 'lead', 'contact', 'source', 'direction', 'direction_display', 'message_type',
+            'message_type_display', 'external_message_id', 'text', 'media_id', 'media_url',
+            'mime_type', 'file_name', 'sent_at', 'is_read', 'created_at',
+        )
+        read_only_fields = fields
+
+
+class LeadSerializer(BranchNameMixin, serializers.ModelSerializer):
+    source_display = serializers.CharField(source='get_source_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    manager_name = serializers.SerializerMethodField()
+    client_name = serializers.SerializerMethodField()
+    channel_name = serializers.SerializerMethodField()
+    messages_count = serializers.SerializerMethodField()
+    latest_messages = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Lead
+        fields = '__all__'
+        read_only_fields = ('first_message_at', 'last_message_at', 'unread_count', 'converted_trial', 'closed_at', 'created_at', 'updated_at')
+
+    def get_manager_name(self, obj):
+        return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
+
+    def get_client_name(self, obj):
+        return str(obj.client) if obj.client else ''
+
+    def get_channel_name(self, obj):
+        return obj.channel.name if obj.channel else ''
+
+    def get_messages_count(self, obj):
+        return obj.messages.count()
+
+    def get_latest_messages(self, obj):
+        messages = list(obj.messages.order_by('-sent_at')[:3])
+        return LeadMessageSerializer(reversed(messages), many=True).data
+
+    def create(self, validated_data):
+        now = timezone.now()
+        validated_data.setdefault('source', Lead.Source.MANUAL)
+        validated_data.setdefault('first_message_at', now)
+        validated_data.setdefault('last_message_at', now)
+        validated_data.setdefault('first_message', validated_data.get('first_message', ''))
+        validated_data.setdefault('last_message', validated_data.get('last_message', validated_data.get('first_message', '')))
+        if not validated_data.get('title'):
+            validated_data['title'] = validated_data.get('contact_name') or validated_data.get('contact_phone') or 'Обращение'
+        return super().create(validated_data)
+
+
+class MetaWebhookEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MetaWebhookEvent
+        fields = '__all__'
+        read_only_fields = fields
 
 
 class TaskSerializer(BranchNameMixin, serializers.ModelSerializer):

@@ -1,4 +1,4 @@
-import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
+import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSquare, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -36,6 +36,7 @@ const emptyCatalogForm = {
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
 const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true, sort_order: 0 };
 const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
+const emptyChannelForm = { provider: 'whatsapp', name: '', external_account_id: '', phone_number: '', branch: '', default_manager: '', is_active: true };
 
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
@@ -64,6 +65,7 @@ export default function SettingsPage() {
   const user = getStoredUser();
   const canEditStudio = canEditStudioSettings(user);
   const canEditCatalog = isAdmin(user);
+  const canEditChannels = isAdmin(user);
   const canImport = canImportExcel(user);
   const [settings, setSettings] = useState(empty);
   const [settingsId, setSettingsId] = useState(null);
@@ -87,6 +89,11 @@ export default function SettingsPage() {
   const [discounts, setDiscounts] = useState([]);
   const [discountModal, setDiscountModal] = useState({ open: false, item: null });
   const [discountForm, setDiscountForm] = useState(emptyDiscountForm);
+  const [channels, setChannels] = useState([]);
+  const [integrationStatus, setIntegrationStatus] = useState(null);
+  const [channelModal, setChannelModal] = useState({ open: false, item: null });
+  const [channelForm, setChannelForm] = useState(emptyChannelForm);
+  const [managerOptions, setManagerOptions] = useState([]);
 
   const activeSection = useMemo(
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
@@ -104,7 +111,42 @@ export default function SettingsPage() {
     loadCatalogItems();
     loadBranches();
     loadDiscounts();
+    loadChannels();
+    loadManagers();
   }, []);
+
+  const loadManagers = async () => {
+    const { data } = await api.get('users/staff-options/', { params: { role: 'manager', active: '1' } });
+    const list = Array.isArray(data) ? data : data.results || [];
+    setManagerOptions(list.map((item) => ({ value: String(item.id), label: item.display_name || item.full_name || item.username })));
+  };
+
+  const loadChannels = async () => {
+    try {
+      const [channelsResponse, statusResponse] = await Promise.all([
+        api.get('messaging-channels/'),
+        api.get('integrations/meta/status/'),
+      ]);
+      setChannels(Array.isArray(channelsResponse.data) ? channelsResponse.data : channelsResponse.data.results || []);
+      setIntegrationStatus(statusResponse.data);
+    } catch {
+      setChannels([]);
+      setIntegrationStatus(null);
+    }
+  };
+
+  const saveChannel = async () => {
+    const payload = {
+      ...channelForm,
+      branch: channelForm.branch || null,
+      default_manager: channelForm.default_manager || null,
+    };
+    if (channelModal.item?.id) await api.patch(`messaging-channels/${channelModal.item.id}/`, payload);
+    else await api.post('messaging-channels/', payload);
+    setChannelModal({ open: false, item: null });
+    setChannelForm(emptyChannelForm);
+    await loadChannels();
+  };
 
   const loadDiscounts = async () => {
     const { data } = await api.get('discounts/');
@@ -365,6 +407,41 @@ export default function SettingsPage() {
             </table>
           </div>
         </SettingsCard>
+        <SettingsCard icon={MessageSquare} title="Интеграции с мессенджерами" subtitle="Официальные Meta Webhooks для WhatsApp и Instagram">
+          {integrationStatus && (
+            <div className="mb-4 grid gap-3 text-sm md:grid-cols-3">
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="font-bold text-slate-900">Webhook</p>
+                <p className={integrationStatus.webhook_configured ? 'text-emerald-700' : 'text-amber-700'}>{integrationStatus.webhook_configured ? 'Verify token настроен' : 'Verify token не задан'}</p>
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="font-bold text-slate-900">App Secret</p>
+                <p className={integrationStatus.app_secret_configured ? 'text-emerald-700' : 'text-amber-700'}>{integrationStatus.app_secret_configured ? 'Подпись включена' : 'Secret не задан'}</p>
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <p className="font-bold text-slate-900">Каналы</p>
+                <p>WhatsApp: {integrationStatus.whatsapp?.channel_count || 0} · Instagram: {integrationStatus.instagram?.channel_count || 0}</p>
+              </div>
+            </div>
+          )}
+          {canEditChannels && <Button className="mb-4" onClick={() => { setChannelForm(emptyChannelForm); setChannelModal({ open: true, item: null }); }}><Plus size={16} />Добавить канал</Button>}
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="min-w-[920px] w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Источник</th><th className="px-4 py-3">Название</th><th className="px-4 py-3">Account ID</th><th className="px-4 py-3">Номер</th><th className="px-4 py-3">Филиал</th><th className="px-4 py-3">Менеджер</th><th className="px-4 py-3">Последний webhook</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
+              <tbody>{channels.map((item) => <tr key={item.id} className="border-t border-slate-100">
+                <td className="px-4 py-3 font-semibold">{item.provider_display || item.provider}</td>
+                <td className="px-4 py-3">{item.name}</td>
+                <td className="px-4 py-3 font-mono text-xs">{item.external_account_id}</td>
+                <td className="px-4 py-3">{item.phone_number || '—'}</td>
+                <td className="px-4 py-3">{item.branch_name || '—'}</td>
+                <td className="px-4 py-3">{item.default_manager_name || '—'}</td>
+                <td className="px-4 py-3">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU') : '—'}</td>
+                <td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}{item.last_error ? ` · ${item.last_error}` : ''}</td>
+                <td className="px-4 py-3">{canEditChannels && <Button variant="secondary" onClick={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </SettingsCard>
         <SettingsCard icon={BadgePercent} title="Скидки" subtitle="Процентные и фиксированные скидки для продаж">
           {canEditCatalog && <Button className="mb-4" onClick={() => { setDiscountForm(emptyDiscountForm); setDiscountModal({ open: true, item: null }); }}><Plus size={16} />Добавить скидку</Button>}
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
@@ -491,6 +568,41 @@ export default function SettingsPage() {
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_cash} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_cash: event.target.checked })} />Наличные</label>
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
+        </div>
+      </Modal>
+
+      <Modal
+        title={channelModal.item ? 'Изменить канал мессенджера' : 'Новый канал мессенджера'}
+        open={channelModal.open}
+        onClose={() => setChannelModal({ open: false, item: null })}
+        footer={<><Button variant="secondary" onClick={() => setChannelModal({ open: false, item: null })}>Отмена</Button><Button onClick={saveChannel}>Сохранить</Button></>}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            Источник
+            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.provider} onChange={(event) => setChannelForm({ ...channelForm, provider: event.target.value })}>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="instagram">Instagram</option>
+            </select>
+          </label>
+          <Input label="Название" value={channelForm.name} onChange={(event) => setChannelForm({ ...channelForm, name: event.target.value })} />
+          <Input label="External Account ID" value={channelForm.external_account_id} onChange={(event) => setChannelForm({ ...channelForm, external_account_id: event.target.value })} />
+          <Input label="Номер WhatsApp" value={channelForm.phone_number || ''} onChange={(event) => setChannelForm({ ...channelForm, phone_number: event.target.value })} />
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            Филиал
+            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.branch || ''} onChange={(event) => setChannelForm({ ...channelForm, branch: event.target.value })}>
+              <option value="">Без филиала</option>
+              {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            Менеджер по умолчанию
+            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.default_manager || ''} onChange={(event) => setChannelForm({ ...channelForm, default_manager: event.target.value })}>
+              <option value="">Не назначен</option>
+              {managerOptions.map((manager) => <option key={manager.value} value={manager.value}>{manager.label}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={channelForm.is_active} onChange={(event) => setChannelForm({ ...channelForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>
 

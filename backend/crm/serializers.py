@@ -848,6 +848,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_phone = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
+    outside_regular_hours = serializers.SerializerMethodField()
+    outside_regular_hours_reason = serializers.SerializerMethodField()
     client = serializers.PrimaryKeyRelatedField(
         queryset=Client.objects.all(),
         write_only=True,
@@ -898,6 +900,25 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username if obj.teacher else ''
+
+    def _local_time(self, obj):
+        if not obj.starts_at:
+            return None
+        return timezone.localtime(obj.starts_at).time() if timezone.is_aware(obj.starts_at) else obj.starts_at.time()
+
+    def get_outside_regular_hours(self, obj):
+        local_time = self._local_time(obj)
+        return bool(local_time and (local_time < time(16, 0) or local_time >= time(21, 0)))
+
+    def get_outside_regular_hours_reason(self, obj):
+        local_time = self._local_time(obj)
+        if not local_time:
+            return ''
+        if local_time < time(16, 0):
+            return 'До рабочего времени'
+        if local_time >= time(21, 0):
+            return 'После рабочего времени'
+        return ''
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

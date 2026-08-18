@@ -6,7 +6,7 @@ import KanbanCard from '../components/ui/KanbanCard.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
-import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
+import { Actions, Badge, Button, CrudModal, Filters, Input, money, normalizePayload, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
@@ -51,6 +51,14 @@ const baseFields = [
 
 const stageLabel = (value) => masterClassStages.find((stage) => stage.value === value)?.label || value || '—';
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
+const eventDateTime = (value) => {
+  if (!value) return { date: '—', time: '' };
+  const date = new Date(value);
+  return {
+    date: date.toLocaleDateString('ru-RU'),
+    time: date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+  };
+};
 const dash = (value) => value || '—';
 const clientDisplay = (item) => item.client_display_name || item.client_name || item.client?.display_name || item.client?.full_name || 'Не указан';
 const clientSecondary = (item) => {
@@ -118,12 +126,14 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { search: '', stage: '', manager: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
   const [viewMode, setViewMode] = useState('table');
+  const [saving, setSaving] = useState(false);
+  const [duplicateError, setDuplicateError] = useState(null);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -138,6 +148,17 @@ export default function MasterClassesPage() {
     setForm({ ...form, discount: value, payment_amount: calculateDiscountedTotal(form.price, discount) });
   };
   const fields = [
+    duplicateError && {
+      name: 'duplicate_warning',
+      type: 'custom',
+      render: () => (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-bold">Похожая запись уже существует</p>
+          <p className="mt-1">{[duplicateError.client_name, duplicateError.title, dateTime(duplicateError.starts_at)].filter(Boolean).join(' · ')}</p>
+          <p className="mt-2 font-semibold">Измените дату или название МК.</p>
+        </div>
+      ),
+    },
     baseFields[0],
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
@@ -167,15 +188,34 @@ export default function MasterClassesPage() {
         />
       ),
     },
-  ];
+  ].filter(Boolean);
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
 
   const saveMasterClass = async () => {
+    setDuplicateError(null);
     if (Number(form.payment_amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.payment_amount || 0)) {
       dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
       return;
     }
-    await crud.save({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+    setSaving(true);
+    try {
+      const payload = normalizePayload({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+      if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
+      else await api.post('master-classes/', payload);
+      crud.setModalOpen(false);
+      crud.setEditing(null);
+      await crud.reload();
+    } catch (error) {
+      const duplicate = error.response?.data?.duplicate;
+      if (duplicate) {
+        setDuplicateError(duplicate);
+        dispatchError('Такая запись уже существует. Измените дату или название МК.');
+      } else {
+        showApiError(error);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const moveMasterClass = async (item, nextStage) => {
@@ -193,14 +233,16 @@ export default function MasterClassesPage() {
 
   return (
     <>
-      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
+      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { setDuplicateError(null); crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
         <ViewToggle value={viewMode} onChange={setViewMode} />
       </PageHeader>
       <Filters>
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
+        <Input label="Дата проведения" type="date" value={crud.filters.event_date} onChange={(e) => crud.setFilters({ ...crud.filters, event_date: e.target.value })} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
+        <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
@@ -211,7 +253,7 @@ export default function MasterClassesPage() {
           items={crud.items}
           getColumnId={masterClassColumnId}
           onMove={moveMasterClass}
-          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
+          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { setDuplicateError(null); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
         />
       ) : (
         <Table data={crud.items} columns={[
@@ -222,15 +264,18 @@ export default function MasterClassesPage() {
             </div>
           ) },
           { key: 'title', header: 'Предмет' },
-          { key: 'starts_at', header: 'Дата', render: (row) => dateTime(row.starts_at) },
+          { key: 'starts_at', header: 'Дата проведения МК', render: (row) => {
+            const value = eventDateTime(row.starts_at);
+            return <div><p className="font-semibold text-slate-900">{value.date}</p>{value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;
+          } },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },
           { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
-          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
         ]} />
       )}
-      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveMasterClass} />
+      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />
     </>
   );
 }

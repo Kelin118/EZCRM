@@ -10,6 +10,7 @@ import CertificatesPage from './pages/CertificatesPage.jsx';
 import ClientDetailPage from './pages/ClientDetailPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
+import DailyPaymentsPage from './pages/DailyPaymentsPage.jsx';
 import DictionariesPage from './pages/DictionariesPage.jsx';
 import EmployeesPage from './pages/EmployeesPage.jsx';
 import ExportPage from './pages/ExportPage.jsx';
@@ -19,6 +20,7 @@ import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
 import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
+import MasterClassesOutsideHoursPage from './pages/MasterClassesOutsideHoursPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import PublicCertificatePage from './pages/PublicCertificatePage.jsx';
@@ -95,6 +97,7 @@ export default function App() {
         <Route path="leads" element={<LeadsPage />} />
         <Route path="trials" element={<TrialsPage />} />
         <Route path="master-classes" element={<MasterClassesPage />} />
+        <Route path="master-classes/outside-hours" element={<MasterClassesOutsideHoursPage />} />
         <Route path="certificates" element={<CertificatesPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="dictionaries" element={<DictionariesPage />} />
@@ -103,6 +106,7 @@ export default function App() {
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="lessons/:id/attendance" element={<LessonAttendancePage />} />
         <Route path="finance" element={<FinancePage />} />
+        <Route path="daily-payments" element={<DailyPaymentsPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="employees" element={<EmployeesPage />} />
         <Route path="audit-logs" element={<AuditLogsPage />} />

@@ -188,10 +188,45 @@ def _decimal(value):
     return value or 0
 
 
+def _money(value):
+    return Decimal(value or 0).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _money_str(value):
+    return str(_money(value))
+
+
 def _paid_at_from_date(value):
     if not value:
         return timezone.now()
     return timezone.make_aware(datetime.combine(value, time.min))
+
+
+def _local_date(value):
+    if not value:
+        return None
+    return timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
+
+
+def _local_time(value):
+    if not value:
+        return None
+    return timezone.localtime(value).time() if timezone.is_aware(value) else value.time()
+
+
+REGULAR_MASTER_CLASS_START = time(16, 0)
+REGULAR_MASTER_CLASS_END = time(21, 0)
+
+
+def is_master_class_outside_regular_hours(starts_at):
+    local_time = _local_time(starts_at)
+    if not local_time:
+        return False
+    return local_time < REGULAR_MASTER_CLASS_START or local_time >= REGULAR_MASTER_CLASS_END
+
+
+def normalize_master_class_title(value):
+    return re.sub(r'\s+', ' ', (value or '').strip()).casefold()
 
 
 def _my_param(request):
@@ -1523,7 +1558,7 @@ class AttendanceDayView(APIView):
 
 class ClientViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, ClientPermission)
-    queryset = Client.objects.select_related('manager').all()
+    queryset = Client.objects.select_related('manager', 'branch').all()
     serializer_class = ClientSerializer
     audit_entity_type = 'Client'
     audit_create_description = 'Создан клиент'
@@ -1541,6 +1576,8 @@ class ClientViewSet(BaseAuthenticatedViewSet):
                     'display_name': ' · '.join(filter(None, [str(client), client.parent_name, client.phone])),
                     'phone': client.phone,
                     'parent_name': client.parent_name,
+                    'branch': client.branch_id,
+                    'branch_name': client.branch.name if client.branch else '',
                     'is_active': client.is_active,
                 }
                 for client in clients
@@ -2059,15 +2096,22 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         queryset = _filter_branch(super().get_queryset(), self.request)
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
+        teacher = self.request.query_params.get('teacher')
         client = self.request.query_params.get('client')
         search = self.request.query_params.get('search')
+        event_date = _date_param(self.request, 'event_date')
+        event_date_from = _date_param(self.request, 'event_date_from')
+        event_date_to = _date_param(self.request, 'event_date_to')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
+        outside_regular_hours = self.request.query_params.get('outside_regular_hours') in ('1', 'true', 'True', 'yes')
 
         if stage:
             queryset = queryset.filter(stage=stage)
         if manager:
             queryset = queryset.filter(manager_id=manager)
+        if teacher:
+            queryset = queryset.filter(teacher_id=teacher)
         if client:
             queryset = queryset.filter(participants__id=client)
         if search:
@@ -2081,14 +2125,62 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             )
         if _my_param(self.request):
             queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
+        if event_date:
+            queryset = queryset.filter(starts_at__date=event_date)
+        if event_date_from:
+            queryset = queryset.filter(starts_at__date__gte=event_date_from)
+        if event_date_to:
+            queryset = queryset.filter(starts_at__date__lte=event_date_to)
         if payment_date_from:
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
             queryset = queryset.filter(payment_date__lte=payment_date_to)
+        if outside_regular_hours:
+            outside_ids = [item.id for item in queryset if is_master_class_outside_regular_hours(item.starts_at)]
+            queryset = queryset.filter(id__in=outside_ids)
         return queryset.distinct().order_by('-starts_at')
+
+    def _duplicate_payload(self, duplicate):
+        client = duplicate.participants.first()
+        return {
+            'id': duplicate.id,
+            'client_name': str(client) if client else '',
+            'title': duplicate.title,
+            'starts_at': duplicate.starts_at.isoformat() if duplicate.starts_at else None,
+        }
+
+    def _find_duplicate(self, *, client, starts_at, title, exclude_id=None):
+        if not client or not starts_at or not title:
+            return None
+        selected_date = _local_date(starts_at)
+        normalized_title = normalize_master_class_title(title)
+        queryset = MasterClass.objects.filter(participants=client).prefetch_related('participants')
+        if exclude_id:
+            queryset = queryset.exclude(pk=exclude_id)
+        for item in queryset:
+            if _local_date(item.starts_at) == selected_date and normalize_master_class_title(item.title) == normalized_title:
+                return item
+        return None
+
+    def _raise_duplicate_if_needed(self, *, client, starts_at, title, exclude_id=None):
+        duplicate = self._find_duplicate(client=client, starts_at=starts_at, title=title, exclude_id=exclude_id)
+        if duplicate:
+            raise drf_serializers.ValidationError({
+                'detail': 'Такая запись МК уже существует.',
+                'duplicate': self._duplicate_payload(duplicate),
+            })
 
     def perform_create(self, serializer):
         with transaction.atomic():
+            client = serializer.validated_data.get('client')
+            if client:
+                client = Client.objects.select_for_update().get(pk=client.pk)
+                serializer.validated_data['client'] = client
+            self._raise_duplicate_if_needed(
+                client=client,
+                starts_at=serializer.validated_data.get('starts_at'),
+                title=serializer.validated_data.get('title'),
+            )
             master_class = serializer.save()
             if master_class.payment_amount > 0 and not master_class.payment_date:
                 master_class.payment_date = timezone.localdate()
@@ -2206,7 +2298,19 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
 
     def perform_update(self, serializer):
         previous_stage = serializer.instance.stage
+        instance = serializer.instance
+        client = serializer.validated_data.get('client')
+        if 'client' not in serializer.validated_data:
+            client = instance.participants.first()
+        starts_at = serializer.validated_data.get('starts_at', instance.starts_at)
+        title = serializer.validated_data.get('title', instance.title)
         with transaction.atomic():
+            self._raise_duplicate_if_needed(
+                client=client,
+                starts_at=starts_at,
+                title=title,
+                exclude_id=instance.id,
+            )
             master_class = serializer.save()
             self._sync_finance_transaction(master_class)
         changes = self._audit_changes()
@@ -4157,6 +4261,99 @@ class DashboardStatsView(APIView):
             }
         )
         return Response(dashboard)
+
+
+class DailyPaymentsReportView(APIView):
+    permission_classes = (IsAuthenticated, ReportsPermission)
+
+    def _bucket(self, transaction_item):
+        branch = transaction_item.branch
+        return {
+            'branch_id': branch.id if branch else None,
+            'branch_name': branch.name if branch else 'Не распределено',
+            'cash_income': Decimal('0.00'),
+            'card_income': Decimal('0.00'),
+            'unassigned_income': Decimal('0.00'),
+            'total_income': Decimal('0.00'),
+            'expense_total': Decimal('0.00'),
+        }
+
+    def get(self, request):
+        selected_date = _date_param(request, 'date') or timezone.localdate()
+        queryset = FinanceTransaction.objects.select_related('branch', 'payment_method').prefetch_related(
+            'payment_parts__payment_method'
+        ).filter(paid_at__date=selected_date)
+        queryset = apply_branch_filter(queryset, request.query_params.get('branch') or 'all')
+
+        branches = {}
+        totals = {
+            'cash_income': Decimal('0.00'),
+            'card_income': Decimal('0.00'),
+            'unassigned_income': Decimal('0.00'),
+            'income_total': Decimal('0.00'),
+            'expense_total': Decimal('0.00'),
+            'net_total': Decimal('0.00'),
+        }
+
+        for transaction_item in queryset:
+            branch_key = transaction_item.branch_id or 'unassigned'
+            bucket = branches.setdefault(branch_key, self._bucket(transaction_item))
+            amount = _money(transaction_item.amount)
+
+            if transaction_item.transaction_type == FinanceTransaction.Type.EXPENSE:
+                bucket['expense_total'] += amount
+                totals['expense_total'] += amount
+                continue
+
+            if transaction_item.transaction_type != FinanceTransaction.Type.INCOME:
+                continue
+
+            payment_parts = list(transaction_item.payment_parts.all())
+            if payment_parts:
+                for part in payment_parts:
+                    part_amount = _money(part.amount)
+                    key = 'cash_income' if part.payment_method and part.payment_method.is_cash else 'card_income'
+                    bucket[key] += part_amount
+                    totals[key] += part_amount
+            elif transaction_item.payment_method:
+                key = 'cash_income' if transaction_item.payment_method.is_cash else 'card_income'
+                bucket[key] += amount
+                totals[key] += amount
+            else:
+                bucket['unassigned_income'] += amount
+                totals['unassigned_income'] += amount
+
+        branch_rows = []
+        for bucket in branches.values():
+            bucket['total_income'] = bucket['cash_income'] + bucket['card_income'] + bucket['unassigned_income']
+            if bucket['total_income'] == 0 and bucket['expense_total'] == 0:
+                continue
+            branch_rows.append({
+                'branch_id': bucket['branch_id'],
+                'branch_name': bucket['branch_name'],
+                'cash_income': _money_str(bucket['cash_income']),
+                'card_income': _money_str(bucket['card_income']),
+                'unassigned_income': _money_str(bucket['unassigned_income']),
+                'total_income': _money_str(bucket['total_income']),
+                'expense_total': _money_str(bucket['expense_total']),
+            })
+
+        branch_rows.sort(key=lambda item: (item['branch_id'] is None, item['branch_name']))
+        totals['income_total'] = totals['cash_income'] + totals['card_income'] + totals['unassigned_income']
+        totals['net_total'] = totals['income_total'] - totals['expense_total']
+
+        return Response({
+            'date': selected_date.isoformat(),
+            'branches': branch_rows,
+            'totals': {
+                'cash_income': _money_str(totals['cash_income']),
+                'card_income': _money_str(totals['card_income']),
+                'unassigned_income': _money_str(totals['unassigned_income']),
+                'income_total': _money_str(totals['income_total']),
+                'expense_total': _money_str(totals['expense_total']),
+                'net_total': _money_str(totals['net_total']),
+            },
+        })
 
 
 class ReportsSummaryView(APIView):

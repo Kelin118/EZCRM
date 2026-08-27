@@ -16,7 +16,6 @@ const titles = {
   '/visits': 'Посещения',
   '/trials': 'Пробники',
   '/master-classes': 'Мастер-классы',
-  '/master-classes/outside-hours': 'МК вне графика',
   '/tasks': 'Задачи',
   '/dictionaries': 'Справочники',
   '/export': 'Экспорт',

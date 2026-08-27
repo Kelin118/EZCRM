@@ -22,7 +22,6 @@ import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
 import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
-import MasterClassesOutsideHoursPage from './pages/MasterClassesOutsideHoursPage.jsx';
 import PayrollPage from './pages/PayrollPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
@@ -100,7 +99,6 @@ export default function App() {
         <Route path="leads" element={<LeadsPage />} />
         <Route path="trials" element={<TrialsPage />} />
         <Route path="master-classes" element={<MasterClassesPage />} />
-        <Route path="master-classes/outside-hours" element={<MasterClassesOutsideHoursPage />} />
         <Route path="certificates" element={<CertificatesPage />} />
         <Route path="tasks" element={<TasksPage />} />
         <Route path="dictionaries" element={<DictionariesPage />} />

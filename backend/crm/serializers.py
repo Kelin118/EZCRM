@@ -934,6 +934,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         duration = attrs.get('duration_minutes', self.instance.duration_minutes if self.instance else None)
+        teacher = attrs.get('teacher', self.instance.teacher if self.instance else None)
+        is_extra_work = attrs.get('is_extra_work', self.instance.is_extra_work if self.instance else False)
+        if is_extra_work and not teacher:
+            raise serializers.ValidationError({'teacher': 'Для дополнительного выхода выберите мастера.'})
+        if is_extra_work and (duration is None or duration <= 0):
+            raise serializers.ValidationError({'duration_minutes': 'Для дополнительного выхода укажите длительность МК.'})
         if duration is not None and (duration <= 0 or duration > 720):
             raise serializers.ValidationError({'duration_minutes': 'Длительность должна быть от 1 до 720 минут.'})
         price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))

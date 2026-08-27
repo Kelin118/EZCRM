@@ -374,31 +374,72 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
         self.assert_outside_ids([first.id], branch=self.branch.id)
 
-    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False):
+    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False, teacher='default', duration_minutes=60):
         self.client.force_authenticate(self.manager)
+        payload = {
+            'title': title,
+            'client': (client or self.client_obj).id,
+            'starts_at': starts_at,
+            'manager': self.manager.id,
+            'branch': self.branch.id,
+            'is_extra_work': is_extra_work,
+        }
+        if teacher != 'omit':
+            payload['teacher'] = self.teacher.id if teacher == 'default' else teacher
+        if duration_minutes != 'omit':
+            payload['duration_minutes'] = duration_minutes
         return self.client.post(
             '/api/master-classes/',
-            {
-                'title': title,
-                'client': (client or self.client_obj).id,
-                'starts_at': starts_at,
-                'manager': self.manager.id,
-                'teacher': self.teacher.id,
-                'branch': self.branch.id,
-                'is_extra_work': is_extra_work,
-            },
+            payload,
             format='json',
         )
 
     def test_create_and_update_extra_work_flag(self):
-        response = self.post_master_class(is_extra_work=True)
+        response = self.post_master_class(is_extra_work=False)
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertTrue(response.data['is_extra_work'])
+        self.assertFalse(response.data['is_extra_work'])
+
+        patch = self.client.patch(f"/api/master-classes/{response.data['id']}/", {'is_extra_work': True}, format='json')
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertTrue(patch.data['is_extra_work'])
 
         patch = self.client.patch(f"/api/master-classes/{response.data['id']}/", {'is_extra_work': False}, format='json')
         self.assertEqual(patch.status_code, 200, patch.data)
         self.assertFalse(patch.data['is_extra_work'])
+
+    def test_extra_work_requires_teacher(self):
+        response = self.post_master_class(is_extra_work=True, teacher=None)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('teacher', response.data)
+
+    def test_extra_work_requires_duration(self):
+        response = self.post_master_class(is_extra_work=True, duration_minutes=None)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('duration_minutes', response.data)
+
+    def test_extra_work_rejects_zero_duration(self):
+        response = self.post_master_class(is_extra_work=True, duration_minutes=0)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('duration_minutes', response.data)
+
+    def test_extra_work_inside_regular_time_is_allowed(self):
+        response = self.post_master_class(is_extra_work=True, starts_at='2026-08-17T18:00', duration_minutes=90)
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data['is_extra_work'])
+        self.assertFalse(response.data['time_outside_regular_hours'])
+
+    def test_patch_existing_extra_work_without_teacher_and_duration_passes(self):
+        response = self.post_master_class(is_extra_work=True, duration_minutes=90)
+
+        patch = self.client.patch(f"/api/master-classes/{response.data['id']}/", {'title': 'Новое название'}, format='json')
+
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertTrue(patch.data['is_extra_work'])
 
     def test_same_client_same_date_same_title_is_rejected(self):
         first = self.post_master_class()

@@ -13,6 +13,8 @@ import DashboardPage from './pages/DashboardPage.jsx';
 import DailyPaymentsPage from './pages/DailyPaymentsPage.jsx';
 import DictionariesPage from './pages/DictionariesPage.jsx';
 import EmployeesPage from './pages/EmployeesPage.jsx';
+import EmployeeSchedulePage from './pages/EmployeeSchedulePage.jsx';
+import EmployeeWorklogPage from './pages/EmployeeWorklogPage.jsx';
 import ExportPage from './pages/ExportPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
 import GroupsPage from './pages/GroupsPage.jsx';
@@ -21,6 +23,7 @@ import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
 import MasterClassesOutsideHoursPage from './pages/MasterClassesOutsideHoursPage.jsx';
+import PayrollPage from './pages/PayrollPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import PublicCertificatePage from './pages/PublicCertificatePage.jsx';
@@ -107,6 +110,9 @@ export default function App() {
         <Route path="lessons/:id/attendance" element={<LessonAttendancePage />} />
         <Route path="finance" element={<FinancePage />} />
         <Route path="daily-payments" element={<DailyPaymentsPage />} />
+        <Route path="employee-schedule" element={<EmployeeSchedulePage />} />
+        <Route path="employee-worklog" element={<EmployeeWorklogPage />} />
+        <Route path="payroll" element={<PayrollPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="employees" element={<EmployeesPage />} />
         <Route path="audit-logs" element={<AuditLogsPage />} />

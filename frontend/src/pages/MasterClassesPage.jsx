@@ -28,6 +28,7 @@ const empty = {
   manager: '',
   teacher: '',
   starts_at: '',
+  duration_minutes: 60,
   stage: 'lead',
   payment_date: '',
   capacity: 0,
@@ -41,6 +42,7 @@ const empty = {
 const baseFields = [
   { name: 'title', label: 'Предмет' },
   { name: 'starts_at', label: 'Дата и время', type: 'datetime-local' },
+  { name: 'duration_minutes', label: 'Длительность, минут', type: 'number' },
   { name: 'stage', label: 'Этап', type: 'select', options: masterClassStages },
   { name: 'payment_date', label: 'Дата оплаты', type: 'date' },
   { name: 'capacity', label: 'Мест', type: 'number' },
@@ -72,6 +74,13 @@ const masterClassColumnId = (item) => {
   if (item.stage === 'completed') return 'attended';
   if (item.stage === 'cancelled') return 'lost';
   return item.stage;
+};
+
+const isOutsideRegularHours = (value) => {
+  if (!value) return false;
+  const date = new Date(value);
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return minutes < 16 * 60 || minutes >= 21 * 60;
 };
 
 function dispatchError(message) {
@@ -109,11 +118,15 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
           <p className="font-semibold text-slate-900">{clientName}</p>
           {clientInfo && <p className="mt-1 text-xs font-medium text-slate-500">{clientInfo}</p>}
         </div>
-        <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
+        <div className="grid justify-items-end gap-1">
+          <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
+          {(item.is_outside_regular_hours || item.outside_regular_hours) && <Badge value="outside">Вне времени МК</Badge>}
+        </div>
       </div>
       <dl className="mt-3 grid gap-2 text-sm text-slate-600">
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name || item.manager)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата МК</dt><dd className="text-right font-medium">{dateTime(item.starts_at)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Длительность</dt><dd className="text-right font-medium">{item.duration_minutes ? `${item.duration_minutes} мин` : 'Не указана'}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(item.title)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Куратор</dt><dd className="text-right font-medium">{dash(item.teacher_name || item.teacher)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
@@ -126,7 +139,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
@@ -141,6 +154,7 @@ export default function MasterClassesPage() {
   const setForm = (value) => crud.setEditing(value);
   const { getDiscountById } = useDiscounts({ branch: form.branch });
   const selectedDiscount = getDiscountById(form.discount);
+  const formOutsideRegularHours = isOutsideRegularHours(form.starts_at);
   const discountAmount = calculateDiscountAmount(form.price, selectedDiscount);
   const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
   const changeDiscount = (value) => {
@@ -174,6 +188,16 @@ export default function MasterClassesPage() {
           <p>Промежуточный итог: {money(form.price)}</p>
           <p className="text-emerald-700">Скидка: −{money(discountAmount)}</p>
           <p className="mt-1 text-base text-slate-900">Итого: {money(totalAfterDiscount)}</p>
+        </div>
+      ),
+    },
+    formOutsideRegularHours && {
+      name: 'outside_regular_hours_warning',
+      type: 'custom',
+      render: () => (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-bold">Вне времени мастер-классов</p>
+          <p className="mt-1">Этот МК проходит вне стандартного времени 16:00–21:00 и будет отображён в учёте дополнительной работы.</p>
         </div>
       ),
     },
@@ -243,6 +267,7 @@ export default function MasterClassesPage() {
         <Input label="Дата проведения" type="date" value={crud.filters.event_date} onChange={(e) => crud.setFilters({ ...crud.filters, event_date: e.target.value })} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
+        <SelectField label="Время проведения" value={crud.filters.outside_regular_hours} onChange={(value) => crud.setFilters({ ...crud.filters, outside_regular_hours: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычное время' }, { value: 'true', label: 'Вне времени МК' }]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
@@ -269,6 +294,8 @@ export default function MasterClassesPage() {
             return <div><p className="font-semibold text-slate-900">{value.date}</p>{value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;
           } },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
+          { key: 'time_kind', header: 'Время', render: (row) => row.is_outside_regular_hours || row.outside_regular_hours ? <Badge value="outside">Вне времени МК</Badge> : 'Обычное' },
+          { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },
           { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },

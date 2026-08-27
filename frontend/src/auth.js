@@ -65,15 +65,15 @@ export function canAccessPath(pathname, user = getStoredUser()) {
 
   const allowedPaths = new Set();
   if (hasRole(user, ROLES.MANAGER)) {
-    ['/clients', '/subscriptions', '/visits', '/leads', '/trials', '/master-classes', '/master-classes/outside-hours', '/certificates', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/daily-payments', '/employees', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
+    ['/clients', '/subscriptions', '/visits', '/leads', '/trials', '/master-classes', '/master-classes/outside-hours', '/certificates', '/tasks', '/dictionaries', '/export', '/groups', '/schedule', '/finance', '/daily-payments', '/employee-schedule', '/employee-worklog', '/employees', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
   }
 
   if (hasRole(user, ROLES.TEACHER)) {
-    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/groups', '/schedule', '/chat'].forEach((path) => allowedPaths.add(path));
+    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/tasks', '/groups', '/schedule', '/employee-worklog', '/chat'].forEach((path) => allowedPaths.add(path));
   }
 
   if (hasRole(user, ROLES.ACCOUNTANT)) {
-    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/master-classes/outside-hours', '/certificates', '/finance', '/daily-payments', '/reports', '/export', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
+    ['/clients', '/subscriptions', '/visits', '/trials', '/master-classes', '/master-classes/outside-hours', '/certificates', '/finance', '/daily-payments', '/employee-schedule', '/employee-worklog', '/payroll', '/reports', '/export', '/chat', '/settings'].forEach((path) => allowedPaths.add(path));
   }
 
   return allowedPaths.has(pathname) || pathname.startsWith('/lessons/');

@@ -1,5 +1,6 @@
-import { KeyRound, Lock, Pencil, Search, UserCheck } from 'lucide-react';
+import { CalendarClock, DollarSign, KeyRound, Lock, Pencil, Search, UserCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import Badge from '../components/ui/Badge.jsx';
@@ -31,6 +32,7 @@ const emptyEmployee = {
 };
 
 const emptyPassword = { password: '', password_confirm: '' };
+const emptyPayrollProfile = { employee: '', pay_type: 'hourly', monthly_salary: '', regular_hourly_rate: '', outside_hourly_rate: '', outside_master_class_bonus: '', is_active: true };
 
 const roleLabel = (value) => roles.find((item) => item.value === value)?.label || value;
 const getEmployeeRoles = (employee) => (Array.isArray(employee.roles) && employee.roles.length ? employee.roles : [employee.role].filter(Boolean));
@@ -43,10 +45,13 @@ export default function EmployeesPage() {
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [passwordTarget, setPasswordTarget] = useState(null);
+  const [payrollModalOpen, setPayrollModalOpen] = useState(false);
+  const [payrollForm, setPayrollForm] = useState(emptyPayrollProfile);
   const [passwordForm, setPasswordForm] = useState(emptyPassword);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const { branchOptions, branchFilterOptions } = useBranches();
+  const navigate = useNavigate();
   const user = getStoredUser();
   const availableRoles = roles.filter((roleItem) => canAssignRoleSet([roleItem.value], user));
 
@@ -165,6 +170,39 @@ export default function EmployeesPage() {
     }
   };
 
+  const openPayroll = async (employee) => {
+    setError('');
+    try {
+      const { data } = await api.get('employee-payroll-profiles/', { params: { employee: employee.id } });
+      const profile = (Array.isArray(data) ? data : data.results || [])[0];
+      setPayrollForm(profile ? {
+        ...profile,
+        employee: String(profile.employee),
+        monthly_salary: profile.monthly_salary || '',
+        regular_hourly_rate: profile.regular_hourly_rate || '',
+        outside_hourly_rate: profile.outside_hourly_rate || '',
+        outside_master_class_bonus: profile.outside_master_class_bonus || '',
+      } : { ...emptyPayrollProfile, employee: String(employee.id) });
+      setPayrollModalOpen(true);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    }
+  };
+
+  const savePayroll = async () => {
+    setSaving(true);
+    try {
+      const payload = { ...payrollForm };
+      if (payrollForm.id) await api.patch(`employee-payroll-profiles/${payrollForm.id}/`, payload);
+      else await api.post('employee-payroll-profiles/', payload);
+      setPayrollModalOpen(false);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const setEditingField = (name, value) => setEditing((current) => ({ ...current, [name]: value }));
 
   const toggleRole = (roleValue) => {
@@ -222,6 +260,8 @@ export default function EmployeesPage() {
                 {canManageEmployee(row, user) && (
                   <>
                     <ActionButton icon={Pencil} label="Редактировать" onClick={() => openEdit(row)} />
+                    <ActionButton icon={CalendarClock} label="График" onClick={() => navigate(`/employee-schedule?employee=${row.id}`)} />
+                    <ActionButton icon={DollarSign} label="Ставки" onClick={() => openPayroll(row)} />
                     <ActionButton icon={KeyRound} label="Сменить пароль" onClick={() => openPassword(row)} />
                     {row.is_active ? (
                       <ActionButton icon={Lock} label="Деактивировать" onClick={() => deactivate(row)} variant="danger" />
@@ -293,6 +333,21 @@ export default function EmployeesPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Новый пароль" type="password" value={passwordForm.password} onChange={(event) => setPasswordForm({ ...passwordForm, password: event.target.value })} />
           <Input label="Повторите пароль" type="password" value={passwordForm.password_confirm} onChange={(event) => setPasswordForm({ ...passwordForm, password_confirm: event.target.value })} />
+        </div>
+      </Modal>
+
+      <Modal
+        title="Оплата труда"
+        open={payrollModalOpen}
+        onClose={() => setPayrollModalOpen(false)}
+        footer={<><Button variant="secondary" onClick={() => setPayrollModalOpen(false)}>Отмена</Button><Button onClick={savePayroll} disabled={saving}>Сохранить</Button></>}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <SelectField label="Тип оплаты" value={payrollForm.pay_type} onChange={(value) => setPayrollForm({ ...payrollForm, pay_type: value })} options={[{ value: 'hourly', label: 'Почасовая' }, { value: 'monthly', label: 'Оклад' }]} />
+          <Input label="Оклад" type="number" value={payrollForm.monthly_salary || ''} onChange={(event) => setPayrollForm({ ...payrollForm, monthly_salary: event.target.value })} />
+          <Input label="Ставка за обычный час" type="number" value={payrollForm.regular_hourly_rate || ''} onChange={(event) => setPayrollForm({ ...payrollForm, regular_hourly_rate: event.target.value })} />
+          <Input label="Ставка за час вне графика" type="number" value={payrollForm.outside_hourly_rate || ''} onChange={(event) => setPayrollForm({ ...payrollForm, outside_hourly_rate: event.target.value })} />
+          <Input label="Доплата за один МК вне времени" type="number" value={payrollForm.outside_master_class_bonus || ''} onChange={(event) => setPayrollForm({ ...payrollForm, outside_master_class_bonus: event.target.value })} />
         </div>
       </Modal>
     </>

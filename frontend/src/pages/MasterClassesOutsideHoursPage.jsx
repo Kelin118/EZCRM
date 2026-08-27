@@ -45,6 +45,7 @@ export default function MasterClassesOutsideHoursPage() {
     search: '',
   });
   const [items, setItems] = useState([]);
+  const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const { branchFilterOptions } = useBranches();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
@@ -68,14 +69,28 @@ export default function MasterClassesOutsideHoursPage() {
     return () => { mounted = false; };
   }, [filters]);
 
+  useEffect(() => {
+    api.get('employee-payroll-profiles/').then(({ data }) => setProfiles(Array.isArray(data) ? data : data.results || [])).catch(() => setProfiles([]));
+  }, []);
+
   const teacherSummary = useMemo(() => {
     const map = new Map();
+    const profileByEmployee = new Map(profiles.map((profile) => [String(profile.employee), profile]));
     items.forEach((item) => {
       const name = item.teacher_name || 'Мастер не указан';
-      map.set(name, (map.get(name) || 0) + 1);
+      const current = map.get(name) || { name, count: 0, minutes: 0, pay: 0, missingRate: false };
+      const profile = profileByEmployee.get(String(item.teacher));
+      const rate = Number(profile?.outside_hourly_rate || 0);
+      const bonus = Number(profile?.outside_master_class_bonus || 0);
+      const duration = Number(item.duration_minutes || 0);
+      current.count += 1;
+      current.minutes += duration;
+      if (!profile || (!rate && !bonus)) current.missingRate = true;
+      else current.pay += (duration / 60) * rate + bonus;
+      map.set(name, current);
     });
-    return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [items]);
+    return Array.from(map.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [items, profiles]);
 
   const setRange = (from, to) => setFilters((current) => ({ ...current, event_date_from: from, event_date_to: to }));
 
@@ -110,7 +125,8 @@ export default function MasterClassesOutsideHoursPage() {
             {teacherSummary.length ? teacherSummary.map((item) => (
               <div key={item.name} className="rounded-2xl bg-slate-50 px-4 py-3">
                 <p className="font-semibold text-slate-900">{item.name}</p>
-                <p className="text-sm text-slate-500">{item.count} МК вне графика</p>
+                <p className="text-sm text-slate-500">{item.count} МК · {Math.floor(item.minutes / 60)} ч {item.minutes % 60} мин</p>
+                <p className={`text-sm font-semibold ${item.missingRate ? 'text-amber-700' : 'text-brand'}`}>Доплата: {item.missingRate ? 'ставка не настроена' : money(item.pay)}</p>
               </div>
             )) : <p className="text-sm text-slate-500">Нет МК вне графика за выбранный период.</p>}
           </div>
@@ -123,6 +139,7 @@ export default function MasterClassesOutsideHoursPage() {
         columns={[
           { key: 'date', header: 'Дата', render: (row) => dateOnly(row.starts_at) },
           { key: 'time', header: 'Время', render: (row) => timeOnly(row.starts_at) },
+          { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'client', header: 'Клиент', render: (row) => clientDisplay(row) },
           { key: 'phone', header: 'Телефон', render: (row) => row.client_phone || '—' },
           { key: 'title', header: 'МК' },
@@ -132,6 +149,13 @@ export default function MasterClassesOutsideHoursPage() {
           { key: 'stage', header: 'Статус', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
           { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
           { key: 'reason', header: 'Причина', render: (row) => row.outside_regular_hours_reason || '—' },
+          { key: 'extra_pay', header: 'Доплата', render: (row) => {
+            const profile = profiles.find((item) => String(item.employee) === String(row.teacher));
+            const rate = Number(profile?.outside_hourly_rate || 0);
+            const bonus = Number(profile?.outside_master_class_bonus || 0);
+            if (!profile || (!rate && !bonus)) return 'Ставка не настроена';
+            return money((Number(row.duration_minutes || 0) / 60) * rate + bonus);
+          } },
         ]}
       />
     </>

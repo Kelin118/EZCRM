@@ -3913,7 +3913,7 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
         self.other_method = PaymentMethod.objects.create(name='Card Test', code='card_test')
         self.operation = FinanceTransaction.objects.create(
             transaction_type=FinanceTransaction.Type.INCOME, amount=45000, source='manual',
-            payment_method=self.method, payment_method_name=self.method.name, created_by=self.manager_a,
+            payment_method=self.method, payment_method_name=self.method.name, created_by=self.manager_b, manager=self.manager_a,
         )
         self.unassigned = FinanceTransaction.objects.create(
             transaction_type=FinanceTransaction.Type.EXPENSE, amount=5000, source='other', payment_method_name='Старое значение',

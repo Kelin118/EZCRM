@@ -17,6 +17,9 @@ from .views import (
     DashboardStatsView,
     DailyPaymentsReportView,
     DiscountViewSet,
+    EmployeePayrollProfileViewSet,
+    EmployeeWorklogView,
+    EmployeeWorkScheduleViewSet,
     ExcelImportView,
     ClientsExportView,
     FinanceExportView,
@@ -32,6 +35,7 @@ from .views import (
     MetaIntegrationStatusView,
     MetaWebhookView,
     PaymentMethodViewSet,
+    PayrollStatementViewSet,
     MasterClassesExportView,
     GiftCertificateViewSet,
     PublicCertificateAssetView,
@@ -69,6 +73,9 @@ router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
 router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
+router.register('employee-schedules', EmployeeWorkScheduleViewSet, basename='employee-schedule')
+router.register('employee-payroll-profiles', EmployeePayrollProfileViewSet, basename='employee-payroll-profile')
+router.register('payroll', PayrollStatementViewSet, basename='payroll')
 router.register('discounts', DiscountViewSet, basename='discount')
 router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')
 router.register('messaging-channels', MessagingChannelViewSet, basename='messaging-channel')
@@ -86,6 +93,7 @@ urlpatterns = [
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('reports/summary/', ReportsSummaryView.as_view(), name='reports-summary'),
     path('reports/daily-payments/', DailyPaymentsReportView.as_view(), name='reports-daily-payments'),
+    path('employee-worklog/', EmployeeWorklogView.as_view(), name='employee-worklog'),
     path('attendance/day/', AttendanceDayView.as_view(), name='attendance-day'),
     path('integrations/meta/webhook/', MetaWebhookView.as_view(), name='meta-webhook'),
     path('integrations/meta/status/', MetaIntegrationStatusView.as_view(), name='meta-integration-status'),

@@ -18,7 +18,7 @@ from django.utils.dateparse import parse_date
 from rest_framework import serializers as drf_serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated, SAFE_METHODS
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -54,6 +54,8 @@ from .models import (
     ChatMessage,
     Client,
     Discount,
+    EmployeePayrollProfile,
+    EmployeeWorkSchedule,
     FinanceTransaction,
     GiftCertificate,
     GroupMembership,
@@ -65,6 +67,7 @@ from .models import (
     MessagingContact,
     MetaWebhookEvent,
     PaymentMethod,
+    PayrollStatement,
     Room,
     ScheduleSlot,
     StudioSettings,
@@ -120,6 +123,8 @@ from .serializers import (
     ChatMessageSerializer,
     ClientSerializer,
     DiscountSerializer,
+    EmployeePayrollProfileSerializer,
+    EmployeeWorkScheduleSerializer,
     FinanceTransactionSerializer,
     GiftCertificateSerializer,
     GroupMembershipSerializer,
@@ -130,6 +135,7 @@ from .serializers import (
     MessagingChannelSerializer,
     MetaWebhookEventSerializer,
     PaymentMethodSerializer,
+    PayrollStatementSerializer,
     PublicGiftCertificateSerializer,
     RoomSerializer,
     ScheduleSlotSerializer,
@@ -146,11 +152,27 @@ from .serializers import (
 from .meta_webhooks import normalize_kz_phone, process_meta_webhook, verify_meta_signature
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
+from .employee_worklog import build_employee_worklog
+from .payroll import apply_payroll_calculation, generate_payroll_statements
 from .subscription_dates import calculate_subscription_end_date
 from users.role_hierarchy import manageable_by_manager
 
 
 User = get_user_model()
+
+
+class EmployeeSchedulePermission(BasePermission):
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT}):
+            return True
+        return request.method in SAFE_METHODS and has_role(request.user, TEACHER)
+
+
+class PayrollPermission(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and (is_admin(request.user) or has_role(request.user, ACCOUNTANT)))
 
 
 def _filter_branch(queryset, request):
@@ -263,6 +285,7 @@ def _create_income_transaction(
     payment_date=None,
     comment,
     created_by=None,
+    manager=None,
     subscription=None,
     payment_method=None,
     payment_parts=None,
@@ -285,6 +308,7 @@ def _create_income_transaction(
         client=client,
         subscription=subscription,
         created_by=created_by,
+        manager=manager,
         payment_method=payment_method,
         payment_method_name=payment_method.name if payment_method else '',
         paid_at=paid_at,
@@ -1394,6 +1418,7 @@ class LessonViewSet(EducationBaseViewSet):
                         payment_date=purchase_date,
                         comment=addons_comment(created_subscription, 'Оплата абонемента из посещений'),
                         created_by=request.user,
+                        manager=client.manager,
                         subscription=created_subscription,
                         payment_method=payment_method,
                         payment_parts=payment_parts,
@@ -1675,6 +1700,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     payment_date=subscription.purchase_date,
                     comment=addons_comment(subscription),
                     created_by=self.request.user,
+                    manager=subscription.client.manager if subscription.client else None,
                     subscription=subscription,
                     payment_method=payment_method,
                     payment_parts=payment_parts,
@@ -1702,12 +1728,13 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.discount_amount = subscription.discount_amount
                     finance_transaction.client = subscription.client
                     finance_transaction.branch = subscription.branch
+                    finance_transaction.manager = subscription.client.manager if subscription.client else None
                     finance_transaction.source = subscription_finance_source(subscription)
                     finance_transaction.comment = addons_comment(subscription)
                     finance_transaction.paid_at = _paid_at_from_date(subscription.purchase_date)
                     finance_transaction.save(update_fields=(
                         'amount', 'subtotal_amount', 'discount', 'discount_name', 'discount_amount',
-                        'client', 'branch', 'source', 'comment', 'paid_at', 'updated_at',
+                        'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at',
                     ))
                     if payment_parts is None and finance_transaction.payment_parts.exists():
                         existing_parts = list(finance_transaction.payment_parts.all())
@@ -1729,6 +1756,7 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                         payment_date=subscription.purchase_date,
                         comment=addons_comment(subscription),
                         created_by=self.request.user,
+                        manager=subscription.client.manager if subscription.client else None,
                         subscription=subscription,
                         payment_method=payment_method,
                         payment_parts=payment_parts,
@@ -1894,6 +1922,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     paid_at=_paid_at_from_date(trial.payment_date),
                     comment='Оплата пробника',
                     created_by=self.request.user,
+                    manager=trial.manager,
                     payment_method=payment_method,
                     payment_parts=payment_parts,
                 )
@@ -1914,10 +1943,11 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.subtotal_amount = trial.price
                     finance_transaction.client = trial.client
                     finance_transaction.branch = trial.branch
+                    finance_transaction.manager = trial.manager
                     finance_transaction.source = 'trial'
                     finance_transaction.comment = 'Оплата пробника'
                     finance_transaction.paid_at = _paid_at_from_date(trial.payment_date)
-                    finance_transaction.save(update_fields=('amount', 'subtotal_amount', 'client', 'branch', 'source', 'comment', 'paid_at', 'updated_at'))
+                    finance_transaction.save(update_fields=('amount', 'subtotal_amount', 'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at'))
                     if payment_parts is None and finance_transaction.payment_parts.exists():
                         existing_parts = list(finance_transaction.payment_parts.all())
                         if len(existing_parts) == 1:
@@ -1936,6 +1966,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                         paid_at=_paid_at_from_date(trial.payment_date),
                         comment='Оплата пробника',
                         created_by=self.request.user,
+                        manager=trial.manager,
                         payment_method=payment_method,
                         payment_parts=payment_parts,
                     )
@@ -2045,6 +2076,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     paid_at=_paid_at_from_date(purchase_date),
                     comment=comment or addons_comment(subscription, 'Оплата абонемента после пробного'),
                     created_by=request.user,
+                    manager=trial.manager or (trial.client.manager if trial.client else None),
                     subscription=subscription,
                     payment_method=payment_method,
                     payment_parts=payment_parts,
@@ -2104,7 +2136,8 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         event_date_to = _date_param(self.request, 'event_date_to')
         payment_date_from = _date_param(self.request, 'payment_date_from')
         payment_date_to = _date_param(self.request, 'payment_date_to')
-        outside_regular_hours = self.request.query_params.get('outside_regular_hours') in ('1', 'true', 'True', 'yes')
+        outside_regular_hours_param = self.request.query_params.get('outside_regular_hours')
+        extra_work = self.request.query_params.get('extra_work')
 
         if stage:
             queryset = queryset.filter(stage=stage)
@@ -2135,8 +2168,11 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(payment_date__gte=payment_date_from)
         if payment_date_to:
             queryset = queryset.filter(payment_date__lte=payment_date_to)
-        if outside_regular_hours:
-            outside_ids = [item.id for item in queryset if is_master_class_outside_regular_hours(item.starts_at)]
+        if extra_work in ('1', 'true', 'True', 'yes', '0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_extra_work=extra_work in ('1', 'true', 'True', 'yes'))
+        if outside_regular_hours_param in ('1', 'true', 'True', 'yes', '0', 'false', 'False', 'no'):
+            expected = outside_regular_hours_param in ('1', 'true', 'True', 'yes')
+            outside_ids = [item.id for item in queryset if is_master_class_outside_regular_hours(item.starts_at) == expected]
             queryset = queryset.filter(id__in=outside_ids)
         return queryset.distinct().order_by('-starts_at')
 
@@ -2199,6 +2235,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     payment_date=master_class.payment_date,
                     comment='Оплата МК',
                     created_by=self.request.user,
+                    manager=master_class.manager,
                     payment_method=payment_method,
                     payment_parts=payment_parts,
                     branch=master_class.branch,
@@ -2246,6 +2283,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             finance_transaction.discount_amount = master_class.discount_amount
             finance_transaction.client = client
             finance_transaction.branch = master_class.branch
+            finance_transaction.manager = master_class.manager
             finance_transaction.payment_method = payment_method
             finance_transaction.payment_method_name = payment_method.name if payment_method else ''
             finance_transaction.paid_at = _paid_at_from_date(master_class.payment_date)
@@ -2259,6 +2297,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 'discount_amount',
                 'client',
                 'branch',
+                'manager',
                 'payment_method',
                 'payment_method_name',
                 'paid_at',
@@ -2285,6 +2324,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             payment_date=master_class.payment_date,
             comment=comment,
             created_by=self.request.user,
+            manager=master_class.manager,
             payment_method=payment_method,
             payment_parts=payment_parts,
             branch=master_class.branch,
@@ -3203,6 +3243,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     payment_date=sale.sale_date,
                     comment=self._sale_comment(sale),
                     created_by=self.request.user,
+                    manager=sale.client.manager if sale.client else (self.request.user if has_role(self.request.user, MANAGER) else None),
                     payment_method=sale.payment_method,
                     payment_parts=getattr(sale, 'selected_payment_parts', None),
                     branch=sale.branch,
@@ -3228,6 +3269,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.discount_amount = sale.discount_amount
                     finance_transaction.client = sale.client
                     finance_transaction.branch = sale.branch
+                    finance_transaction.manager = sale.client.manager if sale.client else (self.request.user if has_role(self.request.user, MANAGER) else None)
                     finance_transaction.payment_method = sale.payment_method
                     finance_transaction.payment_method_name = sale.payment_method.name if sale.payment_method else finance_transaction.payment_method_name
                     finance_transaction.paid_at = _paid_at_from_date(sale.sale_date)
@@ -3241,6 +3283,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         'discount_amount',
                         'client',
                         'branch',
+                        'manager',
                         'payment_method',
                         'payment_method_name',
                         'paid_at',
@@ -3267,6 +3310,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         payment_date=sale.sale_date,
                         comment=self._sale_comment(sale),
                         created_by=self.request.user,
+                        manager=sale.client.manager if sale.client else (self.request.user if has_role(self.request.user, MANAGER) else None),
                         payment_method=sale.payment_method,
                         payment_parts=getattr(sale, 'selected_payment_parts', None),
                         branch=sale.branch,
@@ -3284,9 +3328,187 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
             self._log_instance(AuditLog.Action.ADDON_SALE_UPDATE, sale, 'Изменена продажа доп. услуг', self._audit_changes(sale))
 
 
+class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, EmployeeSchedulePermission)
+    queryset = EmployeeWorkSchedule.objects.select_related('employee', 'branch').all()
+    serializer_class = EmployeeWorkScheduleSerializer
+    audit_entity_type = 'EmployeeWorkSchedule'
+
+    def get_queryset(self):
+        queryset = _filter_branch(super().get_queryset(), self.request)
+        employee = self.request.query_params.get('employee')
+        if employee:
+            queryset = queryset.filter(employee_id=employee)
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
+            queryset = queryset.filter(employee=self.request.user)
+        return queryset.order_by('employee__first_name', 'employee__username', 'weekday', '-valid_from')
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_CREATE, instance, 'Создан график сотрудника', self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE, instance, 'Изменён график сотрудника', self._audit_changes())
+
+
+class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, PayrollPermission)
+    queryset = EmployeePayrollProfile.objects.select_related('employee').all()
+    serializer_class = EmployeePayrollProfileSerializer
+    audit_entity_type = 'EmployeePayrollProfile'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        employee = self.request.query_params.get('employee')
+        if employee:
+            queryset = queryset.filter(employee_id=employee)
+        return queryset.order_by('employee__first_name', 'employee__username')
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.PAYROLL_PROFILE_UPDATE, instance, 'Настроены ставки сотрудника', self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.PAYROLL_PROFILE_UPDATE, instance, 'Изменены ставки сотрудника', self._audit_changes())
+
+
+class EmployeeWorklogView(APIView):
+    permission_classes = (IsAuthenticated, EmployeeSchedulePermission)
+
+    def get(self, request):
+        today = timezone.localdate()
+        date_to = _date_param(request, 'date_to') or today
+        date_from = _date_param(request, 'date_from') or (date_to - timedelta(days=6))
+        employee = request.query_params.get('employee')
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
+            employee = request.user.id
+        data = build_employee_worklog(
+            date_from=date_from,
+            date_to=date_to,
+            employee=employee,
+            branch=request.query_params.get('branch') or 'all',
+            source=request.query_params.get('source') or 'all',
+        )
+        return Response(data)
+
+
+class PayrollStatementViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, PayrollPermission)
+    queryset = PayrollStatement.objects.select_related('employee', 'branch', 'created_by', 'approved_by', 'finance_transaction').all()
+    serializer_class = PayrollStatementSerializer
+    audit_entity_type = 'PayrollStatement'
+
+    def _ensure_payroll_access(self, request):
+        if not (is_admin(request.user) or has_role(request.user, ACCOUNTANT)):
+            raise drf_serializers.ValidationError({'detail': 'Нет доступа к зарплате.'})
+
+    def get_queryset(self):
+        queryset = _filter_branch(super().get_queryset(), self.request)
+        employee = self.request.query_params.get('employee')
+        status_value = self.request.query_params.get('status')
+        date_from = _date_param(self.request, 'date_from')
+        date_to = _date_param(self.request, 'date_to')
+        if employee:
+            queryset = queryset.filter(employee_id=employee)
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if date_from:
+            queryset = queryset.filter(date_to__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date_from__lte=date_to)
+        return queryset.order_by('-date_to', 'employee__first_name', 'employee__username')
+
+    def list(self, request, *args, **kwargs):
+        self._ensure_payroll_access(request)
+        return super().list(request, *args, **kwargs)
+
+    def retrieve(self, request, *args, **kwargs):
+        self._ensure_payroll_access(request)
+        return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=False, methods=['post'], url_path='generate')
+    def generate(self, request):
+        self._ensure_payroll_access(request)
+        date_from = parse_date(request.data.get('date_from') or '')
+        date_to = parse_date(request.data.get('date_to') or '')
+        if not date_from or not date_to or date_to < date_from:
+            return Response({'detail': 'Укажите корректный период.'}, status=status.HTTP_400_BAD_REQUEST)
+        employee_id = request.data.get('employee')
+        branch = request.data.get('branch') or 'all'
+        employees = User.objects.filter(is_active=True)
+        if employee_id:
+            employees = employees.filter(id=employee_id)
+        statements = generate_payroll_statements(
+            employees=employees,
+            date_from=date_from,
+            date_to=date_to,
+            branch=branch,
+            created_by=request.user,
+        )
+        log_action(request, AuditLog.Action.PAYROLL_GENERATE, 'PayrollStatement', description='Сформирован расчёт зарплаты', changes={'date_from': str(date_from), 'date_to': str(date_to)})
+        return Response(PayrollStatementSerializer(statements, many=True).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='recalculate')
+    def recalculate(self, request, pk=None):
+        self._ensure_payroll_access(request)
+        statement = self.get_object()
+        if statement.status != PayrollStatement.Status.DRAFT:
+            return Response({'detail': 'Пересчитать можно только черновик.'}, status=status.HTTP_400_BAD_REQUEST)
+        apply_payroll_calculation(statement)
+        statement.save()
+        self._log_instance(AuditLog.Action.PAYROLL_RECALCULATE, statement, 'Пересчитана зарплата', self._audit_changes())
+        return Response(self.get_serializer(statement).data)
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
+        self._ensure_payroll_access(request)
+        statement = self.get_object()
+        statement.status = PayrollStatement.Status.APPROVED
+        statement.approved_by = request.user
+        statement.approved_at = timezone.now()
+        statement.save(update_fields=('status', 'approved_by', 'approved_at', 'updated_at'))
+        self._log_instance(AuditLog.Action.PAYROLL_APPROVE, statement, 'Зарплата утверждена', self._audit_changes())
+        return Response(self.get_serializer(statement).data)
+
+    @action(detail=True, methods=['post'], url_path='mark-paid')
+    def mark_paid(self, request, pk=None):
+        self._ensure_payroll_access(request)
+        statement = self.get_object()
+        if statement.status not in (PayrollStatement.Status.APPROVED, PayrollStatement.Status.PAID):
+            return Response({'detail': 'Выплатить можно только утверждённую зарплату.'}, status=status.HTTP_400_BAD_REQUEST)
+        payment_method = _resolve_payment_method(request.data.get('payment_method'), required=statement.total_amount > 0 and request.data.get('payment_parts') is None)
+        payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=statement.total_amount, legacy_payment_method=payment_method)
+        if not statement.finance_transaction_id:
+            transaction_item = FinanceTransaction.objects.create(
+                transaction_type=FinanceTransaction.Type.EXPENSE,
+                source='salary',
+                amount=statement.total_amount,
+                subtotal_amount=statement.total_amount,
+                branch=statement.branch,
+                manager=None,
+                client=None,
+                created_by=request.user,
+                paid_at=timezone.now(),
+                comment=f'Зарплата: {statement.employee} · {statement.date_from}–{statement.date_to}',
+            )
+            sync_finance_payment_parts(transaction_item, payment_parts)
+            statement.finance_transaction = transaction_item
+        statement.status = PayrollStatement.Status.PAID
+        statement.paid_at = timezone.now()
+        statement.save(update_fields=('status', 'paid_at', 'finance_transaction', 'updated_at'))
+        self._log_instance(AuditLog.Action.PAYROLL_PAID, statement, 'Зарплата выплачена', self._audit_changes())
+        return Response(self.get_serializer(statement).data)
+
+    def perform_update(self, serializer):
+        statement = serializer.save()
+        self._log_instance(AuditLog.Action.PAYROLL_ADJUST, statement, 'Изменена корректировка зарплаты', self._audit_changes())
+
+
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'payment_method', 'discount', 'addon_sale').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'manager', 'payment_method', 'discount', 'addon_sale', 'master_class_payment', 'master_class_payment__teacher').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -3300,6 +3522,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             'client': instance.client_id,
             'branch': instance.branch_id,
             'created_by': instance.created_by_id,
+            'manager': instance.manager_id,
             'description': instance.comment,
             'payment_parts': payment_parts_audit(instance),
         }
@@ -3312,6 +3535,9 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         discount = self.request.query_params.get('discount')
         client = self.request.query_params.get('client')
         manager = self.request.query_params.get('manager')
+        teacher = self.request.query_params.get('teacher')
+        outside_master_class = self.request.query_params.get('outside_master_class')
+        extra_master_class = self.request.query_params.get('extra_master_class')
         search = self.request.query_params.get('search')
         date_from = _date_param(self.request, 'date_from')
         date_to = _date_param(self.request, 'date_to')
@@ -3328,7 +3554,21 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if discount and discount != 'all':
             queryset = queryset.filter(discount__isnull=True) if discount == 'unassigned' else queryset.filter(discount_id=discount)
         if manager and manager != 'all':
-            queryset = queryset.filter(created_by__isnull=True) if manager == 'unassigned' else queryset.filter(created_by_id=manager)
+            queryset = queryset.filter(manager__isnull=True) if manager == 'unassigned' else queryset.filter(manager_id=manager)
+        if teacher and teacher != 'all':
+            queryset = queryset.filter(master_class_payment__teacher_id=teacher)
+        if outside_master_class in ('true', 'false', '1', '0'):
+            is_outside = outside_master_class in ('true', '1')
+            ids = [
+                item.id for item in queryset.filter(source='master_class', master_class_payment__isnull=False)
+                if is_master_class_outside_regular_hours(item.master_class_payment.starts_at) == is_outside
+            ]
+            queryset = queryset.filter(id__in=ids)
+        if extra_master_class in ('true', 'false', '1', '0'):
+            queryset = queryset.filter(
+                source='master_class',
+                master_class_payment__is_extra_work=extra_master_class in ('true', '1'),
+            )
         if client:
             queryset = queryset.filter(client_id=client)
         if search:
@@ -3344,7 +3584,10 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         return queryset.distinct().order_by('-paid_at', '-created_at')
 
     def perform_create(self, serializer):
-        finance_transaction = serializer.save(created_by=self.request.user)
+        extra = {}
+        if not serializer.validated_data.get('manager') and has_role(self.request.user, MANAGER):
+            extra['manager'] = self.request.user
+        finance_transaction = serializer.save(created_by=self.request.user, **extra)
         self._log_instance(
             AuditLog.Action.PAYMENT,
             finance_transaction,
@@ -3353,8 +3596,10 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         )
 
     def perform_update(self, serializer):
+        old_manager = serializer.instance.manager_id
         instance = serializer.save()
-        self._log_instance(AuditLog.Action.UPDATE, instance, self.audit_update_description, self._finance_audit_changes(instance))
+        action_value = AuditLog.Action.FINANCE_MANAGER_UPDATE if old_manager != instance.manager_id else AuditLog.Action.UPDATE
+        self._log_instance(action_value, instance, self.audit_update_description, self._finance_audit_changes(instance))
 
     def _cash_scope(self, queryset, branch):
         if branch and branch != 'all':

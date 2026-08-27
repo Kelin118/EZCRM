@@ -12,8 +12,8 @@ import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
-const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', paid_at: '', comment: '', branch: '' };
-const emptyFilters = { transaction_type: '', source: '', payment_method: 'all', discount: 'all', manager: 'all', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
+const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', manager: '', paid_at: '', comment: '', branch: '' };
+const emptyFilters = { transaction_type: '', source: '', payment_method: 'all', discount: 'all', manager: 'all', teacher: 'all', outside_master_class: '', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const emptyCashForm = { branch: '', amount: '', comment: '' };
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
@@ -37,7 +37,8 @@ export default function FinancePage() {
   const { options: paymentOptions } = usePaymentMethods({ activeOnly: true });
   const { options: discountOptions } = useDiscounts({ branch: crud.filters.branch });
   const { clientOptions } = useClientOptions();
-  const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
+  const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
+  const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
   const [summary, setSummary] = useState({ income: 0, expense: 0, balance: 0, transactions_count: 0, average_income: 0 });
   const [cashBalance, setCashBalance] = useState({ opening_balance: 0, cash_income: 0, cash_expense: 0, expected_balance: 0, last_reconciliation: null });
   const [cashModalOpen, setCashModalOpen] = useState(false);
@@ -80,6 +81,7 @@ export default function FinancePage() {
     { name: 'source', label: 'Источник', type: 'select', options: sourceOptions },
     { name: 'payment_parts', type: 'custom', render: (current, update) => <PaymentSplitFields totalAmount={current.amount} value={current.payment_parts} onChange={(payment_parts) => update({ ...current, payment_parts })} /> },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Автоматически' }, ...branchOptions] },
+    { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не указан' }, ...managerOptions] },
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Без клиента' },
     { name: 'subscription', label: 'Абонемент', type: 'select', options: [{ value: '', label: form.client ? 'Без абонемента' : 'Сначала выберите клиента' }, ...subscriptionOptions] },
     { name: 'paid_at', label: 'Дата операции', type: 'datetime-local' },
@@ -174,6 +176,8 @@ export default function FinancePage() {
         <SelectField label="Способ оплаты" value={crud.filters.payment_method} onChange={(value) => crud.setFilters({ ...crud.filters, payment_method: value })} options={[{ value: 'all', label: 'Все способы' }, ...paymentOptions, { value: 'unassigned', label: 'Не указан' }]} />
         <SelectField label="Скидка" value={crud.filters.discount} onChange={(value) => crud.setFilters({ ...crud.filters, discount: value })} options={[{ value: 'all', label: 'Все скидки' }, ...discountOptions, { value: 'unassigned', label: 'Без скидки' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: 'all', label: 'Все менеджеры' }, ...managerOptions, { value: 'unassigned', label: 'Не указан' }]} />
+        <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: 'all', label: 'Все мастера' }, ...teacherOptions]} />
+        <SelectField label="МК по времени" value={crud.filters.outside_master_class} onChange={(value) => crud.setFilters({ ...crud.filters, outside_master_class: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычное' }, { value: 'true', label: 'Вне времени МК' }]} />
         <SelectField label="Клиент" value={crud.filters.client} onChange={(value) => crud.setFilters({ ...crud.filters, client: value })} options={[{ value: '', label: 'Все клиенты' }, ...clientOptions]} />
         <Input label="Поиск" value={crud.filters.search} onChange={(event) => crud.setFilters({ ...crud.filters, search: event.target.value })} />
         <div className="flex items-end"><Button variant="secondary" onClick={resetFilters}>Сбросить фильтры</Button></div>
@@ -195,9 +199,17 @@ export default function FinancePage() {
           </div>
         ) : (row.payment_method_name || 'Не указан') },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
-        { key: 'source', header: 'Назначение', render: (row) => sourceLabel(row.source) },
+        { key: 'source', header: 'Назначение', render: (row) => (
+          <div>
+            <p>{row.source === 'master_class' && row.master_class_title ? `МК · ${row.master_class_title}` : sourceLabel(row.source)}</p>
+            {row.master_class_outside_regular_hours && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}
+            {row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>}
+            {row.master_class_starts_at && <p className="text-xs text-slate-500">{new Date(row.master_class_starts_at).toLocaleString('ru-RU')}</p>}
+          </div>
+        ) },
         { key: 'addon_sale_summary', header: 'Состав', render: (row) => ['addon', 'product', 'retail'].includes(row.source) ? (row.addon_sale_summary || row.comment || '—') : '—' },
-        { key: 'created_by', header: 'Менеджер', render: (row) => row.created_by_name || 'Не указан' },
+        { key: 'manager', header: 'Менеджер', render: (row) => row.manager_name || 'Не указан' },
+        { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },

@@ -1,3 +1,4 @@
+from datetime import date
 import uuid
 
 from django.conf import settings
@@ -514,6 +515,8 @@ class MasterClass(TimeStampedModel):
         related_name='master_classes',
     )
     starts_at = models.DateTimeField()
+    duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+    is_extra_work = models.BooleanField(default=False)
     stage = models.CharField(max_length=20, choices=Stage.choices, default=Stage.PLANNED)
     payment_date = models.DateField(null=True, blank=True)
     payment_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -618,6 +621,13 @@ class FinanceTransaction(TimeStampedModel):
         blank=True,
         related_name='finance_transactions',
     )
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_finance_transactions',
+    )
     paid_at = models.DateTimeField(null=True, blank=True)
     comment = models.TextField(blank=True)
 
@@ -632,6 +642,101 @@ class FinanceTransaction(TimeStampedModel):
                 self.subscription.branch_id if self.subscription_id else None
             ) or (self.client.branch_id if self.client_id else None)
         super().save(*args, **kwargs)
+
+
+class EmployeeWorkSchedule(TimeStampedModel):
+    employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='work_schedules')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='employee_work_schedules')
+    weekday = models.PositiveSmallIntegerField()
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    is_working_day = models.BooleanField(default=True)
+    valid_from = models.DateField()
+    valid_until = models.DateField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('employee', 'weekday', '-valid_from')
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.start_time >= self.end_time:
+            raise ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
+        if self.valid_until and self.valid_until < self.valid_from:
+            raise ValidationError({'valid_until': 'Дата окончания должна быть позже даты начала.'})
+        qs = EmployeeWorkSchedule.objects.filter(employee=self.employee, weekday=self.weekday)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        for item in qs:
+            left_end = self.valid_until or date.max
+            right_end = item.valid_until or date.max
+            if self.valid_from <= right_end and item.valid_from <= left_end:
+                raise ValidationError('Для сотрудника уже есть правило графика на этот день и период.')
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.employee} · {self.weekday} · {self.start_time:%H:%M}-{self.end_time:%H:%M}'
+
+
+class EmployeePayrollProfile(TimeStampedModel):
+    class PayType(models.TextChoices):
+        HOURLY = 'hourly', 'Почасовая'
+        MONTHLY = 'monthly', 'Оклад'
+
+    employee = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='payroll_profile')
+    pay_type = models.CharField(max_length=20, choices=PayType.choices, default=PayType.HOURLY)
+    monthly_salary = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    regular_hourly_rate = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    outside_hourly_rate = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    outside_master_class_bonus = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f'Payroll profile: {self.employee}'
+
+
+class PayrollStatement(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        APPROVED = 'approved', 'Approved'
+        PAID = 'paid', 'Paid'
+
+    employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='payroll_statements')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='payroll_statements')
+    date_from = models.DateField()
+    date_to = models.DateField()
+    pay_type_snapshot = models.CharField(max_length=20, default=EmployeePayrollProfile.PayType.HOURLY)
+    monthly_salary_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    regular_hourly_rate_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    outside_hourly_rate_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    outside_master_class_bonus_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    regular_minutes = models.PositiveIntegerField(default=0)
+    outside_minutes = models.PositiveIntegerField(default=0)
+    outside_master_class_count = models.PositiveIntegerField(default=0)
+    base_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    regular_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    outside_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    master_class_bonus_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    manual_adjustment = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    manual_adjustment_comment = models.TextField(blank=True)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    finance_transaction = models.OneToOneField(FinanceTransaction, on_delete=models.SET_NULL, null=True, blank=True, related_name='payroll_statement')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_payroll_statements')
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_payroll_statements')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-date_to', 'employee')
+        constraints = [
+            models.UniqueConstraint(fields=('employee', 'date_from', 'date_to'), name='unique_payroll_statement_period'),
+        ]
+
+    def __str__(self):
+        return f'{self.employee} · {self.date_from}–{self.date_to}'
 
 
 class CertificateTemplate(TimeStampedModel):
@@ -1142,6 +1247,16 @@ class AuditLog(models.Model):
         ADDON_SALE_CREATE = 'addon_sale_create', 'Addon sale create'
         ADDON_SALE_UPDATE = 'addon_sale_update', 'Addon sale update'
         CASH_RECONCILIATION = 'cash_reconciliation', 'Cash reconciliation'
+        EMPLOYEE_SCHEDULE_CREATE = 'employee_schedule_create', 'Employee schedule create'
+        EMPLOYEE_SCHEDULE_UPDATE = 'employee_schedule_update', 'Employee schedule update'
+        PAYROLL_PROFILE_UPDATE = 'payroll_profile_update', 'Payroll profile update'
+        PAYROLL_GENERATE = 'payroll_generate', 'Payroll generate'
+        PAYROLL_RECALCULATE = 'payroll_recalculate', 'Payroll recalculate'
+        PAYROLL_ADJUST = 'payroll_adjust', 'Payroll adjust'
+        PAYROLL_APPROVE = 'payroll_approve', 'Payroll approve'
+        PAYROLL_PAID = 'payroll_paid', 'Payroll paid'
+        FINANCE_MANAGER_UPDATE = 'finance_manager_update', 'Finance manager update'
+        MASTER_CLASS_DURATION_UPDATE = 'master_class_duration_update', 'Master class duration update'
         CERTIFICATE_TEMPLATE_CREATE = 'certificate_template_create', 'Certificate template create'
         CERTIFICATE_TEMPLATE_UPDATE = 'certificate_template_update', 'Certificate template update'
         CERTIFICATE_TEMPLATE_DISABLE = 'certificate_template_disable', 'Certificate template disable'

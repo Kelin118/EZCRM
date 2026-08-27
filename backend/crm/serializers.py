@@ -40,7 +40,10 @@ from .models import (
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
+    EmployeePayrollProfile,
+    EmployeeWorkSchedule,
     PaymentMethod,
+    PayrollStatement,
     Room,
     ScheduleSlot,
     StudioSettings,
@@ -849,6 +852,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     manager_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     outside_regular_hours = serializers.SerializerMethodField()
+    is_outside_regular_hours = serializers.SerializerMethodField()
+    time_outside_regular_hours = serializers.SerializerMethodField()
     outside_regular_hours_reason = serializers.SerializerMethodField()
     client = serializers.PrimaryKeyRelatedField(
         queryset=Client.objects.all(),
@@ -910,6 +915,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         local_time = self._local_time(obj)
         return bool(local_time and (local_time < time(16, 0) or local_time >= time(21, 0)))
 
+    def get_is_outside_regular_hours(self, obj):
+        return self.get_outside_regular_hours(obj)
+
+    def get_time_outside_regular_hours(self, obj):
+        return self.get_outside_regular_hours(obj)
+
     def get_outside_regular_hours_reason(self, obj):
         local_time = self._local_time(obj)
         if not local_time:
@@ -922,6 +933,9 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        duration = attrs.get('duration_minutes', self.instance.duration_minutes if self.instance else None)
+        if duration is not None and (duration <= 0 or duration > 720):
+            raise serializers.ValidationError({'duration_minutes': 'Длительность должна быть от 1 до 720 минут.'})
         price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
         branch = attrs.get('branch', self.instance.branch if self.instance else None)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
@@ -1398,7 +1412,18 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     created_by_roles = serializers.SerializerMethodField()
+    manager_name = serializers.SerializerMethodField()
     addon_sale_summary = serializers.SerializerMethodField()
+    master_class_id = serializers.SerializerMethodField()
+    master_class_title = serializers.SerializerMethodField()
+    master_class_teacher = serializers.SerializerMethodField()
+    master_class_teacher_name = serializers.SerializerMethodField()
+    master_class_starts_at = serializers.SerializerMethodField()
+    master_class_duration_minutes = serializers.SerializerMethodField()
+    master_class_is_extra_work = serializers.SerializerMethodField()
+    master_class_time_outside_regular_hours = serializers.SerializerMethodField()
+    master_class_outside_regular_hours = serializers.SerializerMethodField()
+    master_class_outside_reason = serializers.SerializerMethodField()
     payment_parts = serializers.JSONField(required=False)
 
     class Meta:
@@ -1415,11 +1440,69 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     def get_created_by_roles(self, obj):
         return obj.created_by.get_roles() if obj.created_by and hasattr(obj.created_by, 'get_roles') else []
 
+    def get_manager_name(self, obj):
+        return (obj.manager.get_full_name() or obj.manager.username) if obj.manager else None
+
     def get_addon_sale_summary(self, obj):
         sale = getattr(obj, 'addon_sale', None)
         if not sale:
             return ''
         return ', '.join(f'{item.name} ×{item.quantity}' for item in sale.items.all())
+
+    def _master_class(self, obj):
+        return getattr(obj, 'master_class_payment', None)
+
+    def get_master_class_id(self, obj):
+        item = self._master_class(obj)
+        return item.id if item else None
+
+    def get_master_class_title(self, obj):
+        item = self._master_class(obj)
+        return item.title if item else ''
+
+    def get_master_class_teacher(self, obj):
+        item = self._master_class(obj)
+        return item.teacher_id if item else None
+
+    def get_master_class_teacher_name(self, obj):
+        item = self._master_class(obj)
+        if not item or not item.teacher:
+            return ''
+        return item.teacher.get_full_name() or item.teacher.username
+
+    def get_master_class_starts_at(self, obj):
+        item = self._master_class(obj)
+        return item.starts_at if item else None
+
+    def get_master_class_duration_minutes(self, obj):
+        item = self._master_class(obj)
+        return item.duration_minutes if item else None
+
+    def get_master_class_is_extra_work(self, obj):
+        item = self._master_class(obj)
+        return bool(item and item.is_extra_work)
+
+    def get_master_class_time_outside_regular_hours(self, obj):
+        return self.get_master_class_outside_regular_hours(obj)
+
+    def _master_class_local_time(self, item):
+        if not item or not item.starts_at:
+            return None
+        return timezone.localtime(item.starts_at).time() if timezone.is_aware(item.starts_at) else item.starts_at.time()
+
+    def get_master_class_outside_regular_hours(self, obj):
+        local_time = self._master_class_local_time(self._master_class(obj))
+        return bool(local_time and (local_time < time(16, 0) or local_time >= time(21, 0)))
+
+    def get_master_class_outside_reason(self, obj):
+        local_time = self._master_class_local_time(self._master_class(obj))
+        if not local_time:
+            return ''
+        if local_time < time(16, 0):
+            return 'До рабочего времени'
+        if local_time >= time(21, 0):
+            return 'После рабочего времени'
+        return ''
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -1486,6 +1569,107 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
                     ]
             sync_finance_payment_parts(instance, payment_parts, legacy_payment_method=legacy_method)
         return instance
+
+
+class EmployeeWorkScheduleSerializer(BranchNameMixin, serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EmployeeWorkSchedule
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_employee_name(self, obj):
+        return (obj.employee.get_full_name() or obj.employee.username) if obj.employee else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        employee = attrs.get('employee', self.instance.employee if self.instance else None)
+        weekday = attrs.get('weekday', self.instance.weekday if self.instance else None)
+        start_time = attrs.get('start_time', self.instance.start_time if self.instance else None)
+        end_time = attrs.get('end_time', self.instance.end_time if self.instance else None)
+        valid_from = attrs.get('valid_from', self.instance.valid_from if self.instance else None)
+        valid_until = attrs.get('valid_until', self.instance.valid_until if self.instance else None)
+        if start_time and end_time and start_time >= end_time:
+            raise serializers.ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
+        if valid_until and valid_from and valid_until < valid_from:
+            raise serializers.ValidationError({'valid_until': 'Дата окончания должна быть позже даты начала.'})
+        if employee and weekday is not None and valid_from:
+            from datetime import date
+            queryset = EmployeeWorkSchedule.objects.filter(employee=employee, weekday=weekday)
+            if self.instance:
+                queryset = queryset.exclude(pk=self.instance.pk)
+            left_end = valid_until or date.max
+            for item in queryset:
+                right_end = item.valid_until or date.max
+                if valid_from <= right_end and item.valid_from <= left_end:
+                    raise serializers.ValidationError('Для сотрудника уже есть правило графика на этот день и период.')
+        return attrs
+
+
+class EmployeePayrollProfileSerializer(serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EmployeePayrollProfile
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_employee_name(self, obj):
+        return (obj.employee.get_full_name() or obj.employee.username) if obj.employee else ''
+
+
+class PayrollStatementSerializer(BranchNameMixin, serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = PayrollStatement
+        fields = '__all__'
+        read_only_fields = (
+            'employee',
+            'branch',
+            'date_from',
+            'date_to',
+            'pay_type_snapshot',
+            'monthly_salary_snapshot',
+            'regular_hourly_rate_snapshot',
+            'outside_hourly_rate_snapshot',
+            'outside_master_class_bonus_snapshot',
+            'regular_minutes',
+            'outside_minutes',
+            'outside_master_class_count',
+            'base_amount',
+            'regular_amount',
+            'outside_amount',
+            'master_class_bonus_amount',
+            'total_amount',
+            'status',
+            'finance_transaction',
+            'created_by',
+            'approved_by',
+            'approved_at',
+            'paid_at',
+            'created_at',
+            'updated_at',
+        )
+
+    def get_employee_name(self, obj):
+        return obj.employee.get_full_name() or obj.employee.username if obj.employee else ''
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.get_full_name() or obj.created_by.username if obj.created_by else ''
+
+    def get_approved_by_name(self, obj):
+        return obj.approved_by.get_full_name() or obj.approved_by.username if obj.approved_by else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance and self.instance.status != PayrollStatement.Status.DRAFT and attrs:
+            raise serializers.ValidationError('Изменять можно только черновик зарплаты.')
+        return attrs
 
 
 class PaymentMethodSerializer(serializers.ModelSerializer):

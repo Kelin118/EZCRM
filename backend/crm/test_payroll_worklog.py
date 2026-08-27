@@ -44,7 +44,7 @@ class PayrollWorklogApiTests(APITestCase):
         timezone.deactivate()
         super().tearDown()
 
-    def create_mc(self, starts_at, duration=60, stage='booked', teacher=None):
+    def create_mc(self, starts_at, duration=60, stage='booked', teacher=None, is_extra_work=False):
         item = MasterClass.objects.create(
             title='Рисование',
             starts_at=starts_at,
@@ -56,6 +56,7 @@ class PayrollWorklogApiTests(APITestCase):
             price=Decimal('10000.00'),
             payment_amount=Decimal('10000.00'),
             payment_date=date(2026, 8, 17),
+            is_extra_work=is_extra_work,
         )
         item.participants.add(self.client_obj)
         return item
@@ -105,15 +106,17 @@ class PayrollWorklogApiTests(APITestCase):
             'teacher': self.teacher.id,
             'payment_amount': '1000.00',
             'payment_method': self.cash.id,
+            'is_extra_work': True,
         }, format='json')
         transaction = FinanceTransaction.objects.get(master_class_payment=response.data['id'])
         self.client.force_authenticate(self.accountant)
 
-        filtered = self.client.get('/api/finance/', {'outside_master_class': 'true', 'teacher': self.teacher.id})
+        filtered = self.client.get('/api/finance/', {'extra_master_class': 'true', 'teacher': self.teacher.id})
 
         self.assertEqual(transaction.manager_id, self.manager.id)
         self.assertEqual(len(filtered.data), 1)
-        self.assertTrue(filtered.data[0]['master_class_outside_regular_hours'])
+        self.assertTrue(filtered.data[0]['master_class_is_extra_work'])
+        self.assertTrue(filtered.data[0]['master_class_time_outside_regular_hours'])
 
     def test_schedule_overlap_is_rejected_and_other_weekday_allowed(self):
         self.client.force_authenticate(self.manager)
@@ -131,6 +134,17 @@ class PayrollWorklogApiTests(APITestCase):
 
         self.assertEqual(entry['regular_minutes'], 30)
         self.assertEqual(entry['outside_minutes'], 30)
+        self.assertFalse(entry['is_extra_work'])
+        self.assertTrue(entry['time_outside_regular_hours'])
+
+    def test_worklog_manual_extra_work_is_separate_from_physical_time(self):
+        self.create_mc(aware_dt(2026, 8, 17, 18), duration=60, is_extra_work=True)
+
+        data = build_employee_worklog(date_from=date(2026, 8, 17), date_to=date(2026, 8, 17), employee=self.teacher.id)
+        entry = data['entries'][0]
+
+        self.assertTrue(entry['is_extra_work'])
+        self.assertFalse(entry['time_outside_regular_hours'])
 
     def test_cancelled_and_future_master_classes_do_not_count_as_fact(self):
         self.create_mc(aware_dt(2026, 8, 17, 16), duration=60, stage='cancelled')
@@ -157,7 +171,7 @@ class PayrollWorklogApiTests(APITestCase):
         self.assertEqual(data['summary']['regular_minutes'], 60)
 
     def test_payroll_generate_approve_and_mark_paid_is_idempotent(self):
-        self.create_mc(aware_dt(2026, 8, 17, 15, 30), duration=60)
+        self.create_mc(aware_dt(2026, 8, 17, 15, 30), duration=60, is_extra_work=True)
         self.client.force_authenticate(self.accountant)
 
         generated = self.client.post('/api/payroll/generate/', {'date_from': '2026-08-17', 'date_to': '2026-08-17', 'employee': self.teacher.id}, format='json')
@@ -173,6 +187,20 @@ class PayrollWorklogApiTests(APITestCase):
         self.assertEqual(paid_again.status_code, 200, paid_again.data)
         self.assertEqual(FinanceTransaction.objects.filter(source='salary').count(), 1)
         self.assertEqual(statement.status, PayrollStatement.Status.PAID)
+        self.assertEqual(statement.outside_master_class_count, 1)
+
+    def test_payroll_bonus_counts_manual_extra_work_only(self):
+        self.create_mc(aware_dt(2026, 8, 17, 15, 30), duration=60, is_extra_work=False)
+        marked_inside = self.create_mc(aware_dt(2026, 8, 17, 18, 0), duration=60, is_extra_work=True)
+
+        self.client.force_authenticate(self.accountant)
+        generated = self.client.post('/api/payroll/generate/', {'date_from': '2026-08-17', 'date_to': '2026-08-17', 'employee': self.teacher.id}, format='json')
+        statement = PayrollStatement.objects.get(pk=generated.data[0]['id'])
+
+        self.assertEqual(generated.status_code, 201, generated.data)
+        self.assertEqual(statement.outside_master_class_count, 1)
+        self.assertEqual(statement.master_class_bonus_amount, Decimal('1500.00'))
+        self.assertEqual(marked_inside.id, MasterClass.objects.get(is_extra_work=True).id)
 
     def test_teacher_cannot_see_payroll(self):
         self.client.force_authenticate(self.teacher)

@@ -45,22 +45,30 @@ export default function MasterClassesOutsideHoursPage() {
     search: '',
   });
   const [items, setItems] = useState([]);
+  const [unmarkedItems, setUnmarkedItems] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showUnmarked, setShowUnmarked] = useState(false);
   const { branchFilterOptions } = useBranches();
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
 
   useEffect(() => {
-    const params = { outside_regular_hours: 'true' };
+    const params = { extra_work: 'true' };
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== '' && value !== null && value !== undefined) params[key] = value;
     });
+    const unmarkedParams = { ...params, extra_work: 'false', outside_regular_hours: 'true' };
     let mounted = true;
     setLoading(true);
-    api.get('master-classes/', { params })
-      .then(({ data }) => {
-        if (mounted) setItems(Array.isArray(data) ? data : data?.results || []);
+    Promise.all([
+      api.get('master-classes/', { params }),
+      api.get('master-classes/', { params: unmarkedParams }),
+    ])
+      .then(([mainResponse, unmarkedResponse]) => {
+        if (!mounted) return;
+        setItems(Array.isArray(mainResponse.data) ? mainResponse.data : mainResponse.data?.results || []);
+        setUnmarkedItems(Array.isArray(unmarkedResponse.data) ? unmarkedResponse.data : unmarkedResponse.data?.results || []);
       })
       .catch(showApiError)
       .finally(() => {
@@ -72,6 +80,8 @@ export default function MasterClassesOutsideHoursPage() {
   useEffect(() => {
     api.get('employee-payroll-profiles/').then(({ data }) => setProfiles(Array.isArray(data) ? data : data.results || [])).catch(() => setProfiles([]));
   }, []);
+
+  const visibleItems = showUnmarked ? unmarkedItems : items;
 
   const teacherSummary = useMemo(() => {
     const map = new Map();
@@ -96,8 +106,8 @@ export default function MasterClassesOutsideHoursPage() {
 
   return (
     <>
-      <PageHeader title="МК вне графика">
-        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Вне окна 16:00–21:00: {items.length}</span>
+      <PageHeader title="МК вне времени">
+        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Дополнительных МК: {items.length}</span>
       </PageHeader>
       <Filters>
         <Input label="Дата от" type="date" value={filters.event_date_from} onChange={(event) => setFilters({ ...filters, event_date_from: event.target.value })} />
@@ -115,9 +125,16 @@ export default function MasterClassesOutsideHoursPage() {
 
       <div className="mb-5 grid gap-4 md:grid-cols-[1fr_2fr]">
         <section className="rounded-[24px] bg-slate-950 p-5 text-white shadow-card">
-          <p className="text-sm font-semibold text-white/55">МК вне графика</p>
+          <p className="text-sm font-semibold text-white/55">МК вне времени</p>
           <p className="mt-2 text-4xl font-black">{items.length}</p>
-          <p className="mt-2 text-sm text-white/60">Граница нормы: 16:00 включительно — 21:00 не включительно.</p>
+          <p className="mt-2 text-sm text-white/60">Здесь отображаются МК, которые вручную отмечены как дополнительный выход мастера.</p>
+          <div className="mt-4 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-100">
+            <p className="font-bold">Неотмеченные МК вне стандартного времени: {unmarkedItems.length}</p>
+            <p className="mt-1 text-amber-100/80">Это контроль по времени 16:00–21:00, не подтверждённая доплата.</p>
+            <Button className="mt-3" variant="secondary" onClick={() => setShowUnmarked((value) => !value)}>
+              {showUnmarked ? 'Показать дополнительные' : 'Показать'}
+            </Button>
+          </div>
         </section>
         <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
           <p className="text-sm font-bold text-slate-900">Сводка по мастерам</p>
@@ -134,8 +151,8 @@ export default function MasterClassesOutsideHoursPage() {
       </div>
 
       <Table
-        data={items}
-        empty={loading ? 'Загрузка...' : 'Нет МК вне графика'}
+        data={visibleItems}
+        empty={loading ? 'Загрузка...' : 'Нет МК вне времени'}
         columns={[
           { key: 'date', header: 'Дата', render: (row) => dateOnly(row.starts_at) },
           { key: 'time', header: 'Время', render: (row) => timeOnly(row.starts_at) },
@@ -150,6 +167,7 @@ export default function MasterClassesOutsideHoursPage() {
           { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
           { key: 'reason', header: 'Причина', render: (row) => row.outside_regular_hours_reason || '—' },
           { key: 'extra_pay', header: 'Доплата', render: (row) => {
+            if (!row.is_extra_work) return 'Не отмечено';
             const profile = profiles.find((item) => String(item.employee) === String(row.teacher));
             const rate = Number(profile?.outside_hourly_rate || 0);
             const bonus = Number(profile?.outside_master_class_bonus || 0);

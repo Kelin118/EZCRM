@@ -50,7 +50,7 @@ export default function EmployeeWorklogPage() {
         { key: 'date', header: 'Дата' },
         { key: 'employee_name', header: 'Сотрудник' },
         { key: 'source', header: 'Источник', render: (row) => row.source === 'master_class' ? 'МК' : 'Урок' },
-        { key: 'title', header: 'Работа', render: (row) => <div>{row.title}{row.outside_regular_master_class_hours && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}{row.warning && <p className="text-xs text-amber-700">{row.warning}</p>}</div> },
+        { key: 'title', header: 'Работа', render: (row) => <div>{row.title}{row.is_extra_work && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}{row.warning && <p className="text-xs text-amber-700">{row.warning}</p>}</div> },
         { key: 'starts_at', header: 'Начало', render: (row) => time(row.starts_at) },
         { key: 'ends_at', header: 'Конец', render: (row) => time(row.ends_at) },
         { key: 'duration_minutes', header: 'Всего', render: (row) => minutes(row.duration_minutes) },

@@ -29,6 +29,7 @@ const empty = {
   teacher: '',
   starts_at: '',
   duration_minutes: 60,
+  is_extra_work: false,
   stage: 'lead',
   payment_date: '',
   capacity: 0,
@@ -120,7 +121,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         </div>
         <div className="grid justify-items-end gap-1">
           <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
-          {(item.is_outside_regular_hours || item.outside_regular_hours) && <Badge value="outside">Вне времени МК</Badge>}
+          {item.is_extra_work && <Badge value="outside">Вне времени МК</Badge>}
         </div>
       </div>
       <dl className="mt-3 grid gap-2 text-sm text-slate-600">
@@ -139,7 +140,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', extra_work: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
@@ -179,6 +180,25 @@ export default function MasterClassesPage() {
     { name: 'discount', type: 'custom', className: '', render: () => <DiscountSelect value={form.discount} onChange={changeDiscount} branch={form.branch} /> },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     { name: 'teacher', label: 'Куратор', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
+    {
+      name: 'is_extra_work',
+      type: 'custom',
+      className: 'md:col-span-2',
+      render: () => (
+        <label className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={Boolean(form.is_extra_work)}
+            onChange={(event) => setForm({ ...form, is_extra_work: event.target.checked })}
+          />
+          <span>
+            <span className="block font-bold">Вне времени мастер-классов</span>
+            <span className="mt-1 block text-xs font-semibold">Отметьте, если мастер выходит на этот МК дополнительно. Такие записи попадут в отдельный учёт и расчёт доплат.</span>
+          </span>
+        </label>
+      ),
+    },
     ...baseFields.slice(1),
     {
       name: 'price_summary',
@@ -196,8 +216,8 @@ export default function MasterClassesPage() {
       type: 'custom',
       render: () => (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          <p className="font-bold">Вне времени мастер-классов</p>
-          <p className="mt-1">Этот МК проходит вне стандартного времени 16:00–21:00 и будет отображён в учёте дополнительной работы.</p>
+          <p className="font-bold">Время вне стандартного окна МК</p>
+          <p className="mt-1">Время находится вне стандартного окна МК 16:00–21:00. Проверьте, нужно ли отметить эту запись как «Вне времени мастер-классов».</p>
         </div>
       ),
     },
@@ -267,7 +287,8 @@ export default function MasterClassesPage() {
         <Input label="Дата проведения" type="date" value={crud.filters.event_date} onChange={(e) => crud.setFilters({ ...crud.filters, event_date: e.target.value })} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
-        <SelectField label="Время проведения" value={crud.filters.outside_regular_hours} onChange={(value) => crud.setFilters({ ...crud.filters, outside_regular_hours: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычное время' }, { value: 'true', label: 'Вне времени МК' }]} />
+        <SelectField label="Учёт времени" value={crud.filters.extra_work} onChange={(value) => crud.setFilters({ ...crud.filters, extra_work: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычные' }, { value: 'true', label: 'Вне времени МК' }]} />
+        <SelectField label="Время проведения" value={crud.filters.outside_regular_hours} onChange={(value) => crud.setFilters({ ...crud.filters, outside_regular_hours: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'В окне 16:00–21:00' }, { value: 'true', label: 'Вне 16:00–21:00' }]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Оплата от" type="date" value={crud.filters.payment_date_from} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_from: e.target.value })} />
         <Input label="Оплата до" type="date" value={crud.filters.payment_date_to} onChange={(e) => crud.setFilters({ ...crud.filters, payment_date_to: e.target.value })} />
@@ -294,7 +315,7 @@ export default function MasterClassesPage() {
             return <div><p className="font-semibold text-slate-900">{value.date}</p>{value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;
           } },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
-          { key: 'time_kind', header: 'Время', render: (row) => row.is_outside_regular_hours || row.outside_regular_hours ? <Badge value="outside">Вне времени МК</Badge> : 'Обычное' },
+          { key: 'time_kind', header: 'Учёт', render: (row) => row.is_extra_work ? <Badge value="outside">Вне времени МК</Badge> : 'Обычный' },
           { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },

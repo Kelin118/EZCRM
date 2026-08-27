@@ -182,6 +182,7 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
         self.other_teacher = User.objects.create_user(username='mc-teacher-2', password='pass', role='teacher', roles=['teacher'])
         self.branch = Branch.objects.create(name='МК Абая')
         self.other_branch = Branch.objects.create(name='МК Сарыарка')
+        self.cash = PaymentMethod.objects.create(name='МК Cash', code='mc_cash')
         self.client_obj = Client.objects.create(first_name='Алина', last_name='Алимова', parent_name='Айжан', phone='87071234567', branch=self.branch)
         self.other_client = Client.objects.create(first_name='Диана', last_name='Садыкова', branch=self.branch)
 
@@ -189,7 +190,7 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
         timezone.deactivate()
         super().tearDown()
 
-    def create_master_class(self, *, client=None, title='Рисование', starts_at=None, teacher=None, branch=None, payment_date=None):
+    def create_master_class(self, *, client=None, title='Рисование', starts_at=None, teacher=None, branch=None, payment_date=None, is_extra_work=False, payment_amount=Decimal('0.00'), payment_method=None):
         master_class = MasterClass.objects.create(
             title=title,
             starts_at=starts_at or aware_dt(2026, 8, 17, 16),
@@ -198,9 +199,25 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
             branch=branch or self.branch,
             payment_date=payment_date,
             price=Decimal('10000.00'),
+            payment_amount=payment_amount,
+            is_extra_work=is_extra_work,
         )
         if client is not None:
             master_class.participants.add(client)
+        if payment_amount > 0 and payment_method:
+            transaction = FinanceTransaction.objects.create(
+                transaction_type=FinanceTransaction.Type.INCOME,
+                amount=payment_amount,
+                source='master_class',
+                client=client,
+                branch=branch or self.branch,
+                manager=self.manager,
+                payment_method=payment_method,
+                payment_method_name=payment_method.name,
+                paid_at=aware_dt(2026, 8, 17, 12),
+            )
+            master_class.finance_transaction = transaction
+            master_class.save(update_fields=['finance_transaction'])
         return master_class
 
     def list_master_classes(self, params):
@@ -284,6 +301,61 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
         self.assert_outside_ids([])
 
+    def test_extra_work_defaults_false_and_returns_separate_time_flags(self):
+        item = self.create_master_class(client=self.client_obj, starts_at=aware_dt(2026, 8, 17, 15, 0))
+
+        data = self.list_master_classes({'event_date': '2026-08-17'})[0]
+
+        self.assertEqual(data['id'], item.id)
+        self.assertFalse(data['is_extra_work'])
+        self.assertTrue(data['time_outside_regular_hours'])
+        self.assertTrue(data['outside_regular_hours'])
+
+    def test_extra_work_filter_uses_manual_flag_not_time(self):
+        marked_inside = self.create_master_class(client=self.client_obj, starts_at=aware_dt(2026, 8, 17, 18), is_extra_work=True)
+        self.create_master_class(client=self.client_obj, title='Ранний МК', starts_at=aware_dt(2026, 8, 17, 15), is_extra_work=False)
+
+        items = self.list_master_classes({'extra_work': 'true'})
+
+        self.assertEqual([item['id'] for item in items], [marked_inside.id])
+        self.assertFalse(items[0]['time_outside_regular_hours'])
+        self.assertTrue(items[0]['is_extra_work'])
+
+    def test_physical_outside_filter_stays_independent_from_extra_work(self):
+        self.create_master_class(client=self.client_obj, starts_at=aware_dt(2026, 8, 17, 18), is_extra_work=True)
+        outside = self.create_master_class(client=self.client_obj, title='Ранний МК', starts_at=aware_dt(2026, 8, 17, 15), is_extra_work=False)
+
+        items = self.list_master_classes({'outside_regular_hours': 'true'})
+
+        self.assertEqual([item['id'] for item in items], [outside.id])
+        self.assertFalse(items[0]['is_extra_work'])
+
+    def test_finance_extra_master_class_filter_uses_manual_flag(self):
+        marked = self.create_master_class(
+            client=self.client_obj,
+            starts_at=aware_dt(2026, 8, 17, 18),
+            is_extra_work=True,
+            payment_amount=Decimal('5000.00'),
+            payment_method=self.cash,
+        )
+        self.create_master_class(
+            client=self.client_obj,
+            title='Ранний МК',
+            starts_at=aware_dt(2026, 8, 17, 15),
+            is_extra_work=False,
+            payment_amount=Decimal('5000.00'),
+            payment_method=self.cash,
+        )
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.get('/api/finance/', {'extra_master_class': 'true', 'teacher': self.teacher.id})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['master_class_id'], marked.id)
+        self.assertTrue(response.data[0]['master_class_is_extra_work'])
+        self.assertFalse(response.data[0]['master_class_time_outside_regular_hours'])
+
     def test_outside_with_date_range_works(self):
         first = self.create_master_class(client=self.client_obj, starts_at=aware_dt(2026, 8, 17, 15))
         self.create_master_class(client=self.client_obj, title='Лепка', starts_at=aware_dt(2026, 8, 18, 15))
@@ -302,7 +374,7 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
         self.assert_outside_ids([first.id], branch=self.branch.id)
 
-    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00'):
+    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False):
         self.client.force_authenticate(self.manager)
         return self.client.post(
             '/api/master-classes/',
@@ -313,9 +385,20 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
                 'manager': self.manager.id,
                 'teacher': self.teacher.id,
                 'branch': self.branch.id,
+                'is_extra_work': is_extra_work,
             },
             format='json',
         )
+
+    def test_create_and_update_extra_work_flag(self):
+        response = self.post_master_class(is_extra_work=True)
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data['is_extra_work'])
+
+        patch = self.client.patch(f"/api/master-classes/{response.data['id']}/", {'is_extra_work': False}, format='json')
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertFalse(patch.data['is_extra_work'])
 
     def test_same_client_same_date_same_title_is_rejected(self):
         first = self.post_master_class()
@@ -336,6 +419,13 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
         self.post_master_class(title='Рисование акварелью')
 
         response = self.post_master_class(title='  рисование   акварелью  ')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_extra_work_does_not_bypass_duplicate_check(self):
+        self.post_master_class(is_extra_work=False)
+
+        response = self.post_master_class(is_extra_work=True)
 
         self.assertEqual(response.status_code, 400)
 

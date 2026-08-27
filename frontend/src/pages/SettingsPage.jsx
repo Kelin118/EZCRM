@@ -745,7 +745,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
               {section.category === 'service' && (
                 <>
-                  <th className="border-b border-slate-100 px-4 py-3 font-bold">??? ??????</th>
+                  <th className="border-b border-slate-100 px-4 py-3 font-bold">Тип услуги</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Занятий</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Срок действия</th>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Дни недели</th>
@@ -767,7 +767,7 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
                   <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
                   {section.category === 'service' && (
                     <>
-                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.service_type === 'camp' ? '??????' : '??????? ????'}</td>
+                      <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.service_type === 'camp' ? 'Лагерь' : 'Основной курс'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.lessons_count || '—'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.validity_days ? `${item.validity_days} дн.` : '—'}</td>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{formatScheduleDays(item.schedule_days) || '—'}</td>

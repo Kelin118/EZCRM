@@ -159,8 +159,9 @@ class LeadPermission(RolePermission):
     allowed_by_role = {
         MANAGER: {
             'read', 'list', 'retrieve', 'create', 'update', 'partial_update',
-            'mark_read', 'mark_unread', 'assign', 'link_client', 'create_client',
+            'manual_create', 'mark_read', 'mark_unread', 'assign', 'link_client', 'create_client',
             'convert_to_trial', 'close', 'reopen', 'messages', 'unread_count',
+            'set_status',
         },
     }
 

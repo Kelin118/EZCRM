@@ -4662,3 +4662,246 @@ class ReportsConversionSummaryTests(APITestCase):
         self.assertNotIn('Купили МК', sales_headers)
         teacher_headers = [cell.value for cell in workbook['Конверсия преподавателей'][1]]
         self.assertEqual(teacher_headers, ['Преподаватель', 'Пробников', 'Купили абонемент', 'Конверсия %'])
+
+
+class ManualLeadApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='lead-admin', password='pass')
+        self.manager = User.objects.create_user(username='lead-manager', password='pass', role='manager', roles=['manager'])
+        self.teacher = User.objects.create_user(username='lead-teacher', password='pass', role='teacher', roles=['teacher'])
+        self.branch = Branch.objects.create(name='Lead branch')
+        self.client.force_authenticate(self.manager)
+
+    def lead_payload(self, **overrides):
+        payload = {
+            'contact_name': 'Айгуль',
+            'contact_phone': '+7 777 111 22 33',
+            'branch': self.branch.id,
+            'first_message': 'Интересуется рисованием',
+            'create_client': False,
+        }
+        payload.update(overrides)
+        return payload
+
+    def make_lead(self, *, phone='77771112233', status=Lead.Status.NEW, client=None):
+        now = timezone.make_aware(datetime(2026, 7, 10, 10, 0))
+        return Lead.objects.create(
+            source=Lead.Source.MANUAL,
+            status=status,
+            title='Обращение',
+            contact_name='Контакт',
+            contact_phone=phone,
+            manager=self.manager,
+            branch=self.branch,
+            client=client,
+            first_message='Первое',
+            last_message='Последнее',
+            first_message_at=now,
+            last_message_at=now,
+        )
+
+    def test_manual_create_requires_name_or_phone(self):
+        response = self.client.post('/api/leads/manual-create/', {'contact_name': '', 'contact_phone': ''}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['detail'], 'Укажите имя или телефон обратившегося.')
+
+    def test_manual_create_sets_manual_fields_normalizes_phone_and_audit(self):
+        response = self.client.post('/api/leads/manual-create/', self.lead_payload(), format='json')
+        self.assertEqual(response.status_code, 201)
+        lead = Lead.objects.get()
+        self.assertEqual(lead.source, Lead.Source.MANUAL)
+        self.assertEqual(lead.status, Lead.Status.NEW)
+        self.assertEqual(lead.manager, self.manager)
+        self.assertEqual(lead.branch, self.branch)
+        self.assertEqual(lead.contact_phone, '77771112233')
+        self.assertEqual(lead.first_message, 'Интересуется рисованием')
+        self.assertEqual(lead.unread_count, 0)
+        self.assertEqual(LeadMessage.objects.count(), 0)
+        self.assertTrue(AuditLog.objects.filter(entity_type='Lead', description='Обращение добавлено вручную').exists())
+
+    def test_manual_create_rejects_active_duplicate_and_allows_closed_duplicate(self):
+        self.make_lead(phone='77771112233', status=Lead.Status.IN_PROGRESS)
+        response = self.client.post('/api/leads/manual-create/', self.lead_payload(contact_phone='8 777 111 22 33'), format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['detail'], 'У этого контакта уже есть активное обращение.')
+        self.assertIn('existing_lead', response.data)
+        self.assertEqual(Lead.objects.count(), 1)
+
+        Lead.objects.update(status=Lead.Status.LOST, closed_at=timezone.now())
+        response = self.client.post('/api/leads/manual-create/', self.lead_payload(contact_phone='8 777 111 22 33'), format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_manual_create_links_existing_client_without_duplicate(self):
+        existing = Client.objects.create(first_name='Алина', phone='77771112233', branch=self.branch, manager=self.manager)
+        response = self.client.post('/api/leads/manual-create/', self.lead_payload(create_client=True), format='json')
+        self.assertEqual(response.status_code, 201)
+        lead = Lead.objects.get()
+        self.assertEqual(lead.client, existing)
+        self.assertEqual(Client.objects.count(), 1)
+
+    def test_manual_create_can_create_client_atomically(self):
+        response = self.client.post('/api/leads/manual-create/', self.lead_payload(
+            create_client=True,
+            client={
+                'first_name': 'Айгуль',
+                'last_name': 'Садыкова',
+                'parent_name': 'Мама',
+                'phone': '+7 777 111 22 33',
+                'branch': self.branch.id,
+                'manager': self.manager.id,
+                'notes': 'Новый клиент',
+            },
+        ), format='json')
+        self.assertEqual(response.status_code, 201)
+        lead = Lead.objects.select_related('client').get()
+        self.assertEqual(lead.client.first_name, 'Айгуль')
+        self.assertEqual(lead.client.phone, '77771112233')
+
+    def test_assign_qualified_close_and_reopen_workflow(self):
+        lead = self.make_lead(status=Lead.Status.NEW)
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(f'/api/leads/{lead.id}/assign/', {'manager': self.manager.id}, format='json')
+        self.assertEqual(response.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.manager, self.manager)
+        self.assertEqual(lead.status, Lead.Status.IN_PROGRESS)
+
+        response = self.client.post(f'/api/leads/{lead.id}/set-status/', {'status': Lead.Status.QUALIFIED}, format='json')
+        self.assertEqual(response.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.QUALIFIED)
+        self.assertIsNone(lead.closed_at)
+
+        response = self.client.post(f'/api/leads/{lead.id}/set-status/', {'status': Lead.Status.WON}, format='json')
+        self.assertEqual(response.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.WON)
+        self.assertIsNotNone(lead.closed_at)
+
+        response = self.client.post(f'/api/leads/{lead.id}/reopen/', format='json')
+        self.assertEqual(response.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.IN_PROGRESS)
+        self.assertIsNone(lead.closed_at)
+
+    def test_trial_conversion_and_sale_mark_source_lead_won(self):
+        service = CatalogItem.objects.create(
+            name='AB-4',
+            price='24000.00',
+            category=CatalogItem.Category.SERVICE,
+            lessons_count=4,
+            validity_days=28,
+        )
+        method = PaymentMethod.objects.create(name='Kaspi', is_active=True)
+        client = Client.objects.create(first_name='Клиент', phone='77771112233', branch=self.branch, manager=self.manager)
+        lead = self.make_lead(status=Lead.Status.QUALIFIED, client=client)
+
+        response = self.client.post(f'/api/leads/{lead.id}/convert-to-trial/', {
+            'scheduled_at': '2026-07-11T10:00',
+            'manager': self.manager.id,
+            'branch': self.branch.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.TRIAL_BOOKED)
+        self.assertIsNotNone(lead.converted_trial_id)
+
+        response = self.client.post(f'/api/trials/{lead.converted_trial_id}/convert-to-subscription/', {
+            'service': service.id,
+            'start_date': '2026-07-11',
+            'purchase_date': '2026-07-11',
+            'payment_amount': '24000.00',
+            'payment_method': method.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, Lead.Status.WON)
+        self.assertIsNotNone(lead.closed_at)
+
+
+class LeadFunnelReportTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='lead-report-admin', password='pass')
+        self.manager = User.objects.create_user(username='lead-report-manager', password='pass', first_name='Айдана', role='manager', roles=['manager'])
+        self.branch = Branch.objects.create(name='Lead report branch')
+        self.other_branch = Branch.objects.create(name='Other lead branch')
+        self.client_obj = Client.objects.create(first_name='Лид', last_name='Клиент', branch=self.branch)
+        self.client.force_authenticate(self.admin)
+
+    def make_trial(self, **overrides):
+        defaults = {
+            'client': self.client_obj,
+            'manager': self.manager,
+            'branch': self.branch,
+            'scheduled_at': timezone.make_aware(datetime(2026, 7, 12, 10, 0)),
+        }
+        defaults.update(overrides)
+        return Trial.objects.create(**defaults)
+
+    def make_lead(self, *, status=Lead.Status.NEW, source=Lead.Source.MANUAL, manager=None, branch=None, first_at=None, last_at=None, converted_trial=None):
+        first_at = first_at or timezone.make_aware(datetime(2026, 7, 10, 10, 0))
+        last_at = last_at or first_at
+        return Lead.objects.create(
+            source=source,
+            status=status,
+            title='Обращение',
+            contact_name='Айгуль',
+            contact_phone='77771112233',
+            manager=manager,
+            branch=branch if branch is not None else self.branch,
+            converted_trial=converted_trial,
+            first_message='Первое',
+            last_message='Последнее',
+            first_message_at=first_at,
+            last_message_at=last_at,
+        )
+
+    def get_summary(self, **params):
+        defaults = {'date_from': '2026-07-01', 'date_to': '2026-07-31', 'branch': str(self.branch.id)}
+        defaults.update(params)
+        response = self.client.get('/api/reports/summary/', defaults)
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def test_lead_funnel_counts_and_uses_first_message_date(self):
+        bought_trial = self.make_trial(bought_subscription=True)
+        booked_trial = self.make_trial()
+        self.make_lead(manager=self.manager, source=Lead.Source.MANUAL, last_at=timezone.make_aware(datetime(2026, 8, 10, 10, 0)))
+        self.make_lead(status=Lead.Status.LOST, manager=None, source=Lead.Source.WHATSAPP)
+        self.make_lead(status=Lead.Status.TRIAL_BOOKED, manager=self.manager, converted_trial=booked_trial)
+        self.make_lead(status=Lead.Status.TRIAL_BOOKED, manager=self.manager, converted_trial=bought_trial)
+        self.make_lead(status=Lead.Status.WON, manager=self.manager)
+        self.make_lead(status=Lead.Status.SPAM, manager=self.manager)
+        self.make_lead(
+            manager=self.manager,
+            first_at=timezone.make_aware(datetime(2026, 8, 1, 10, 0)),
+            last_at=timezone.make_aware(datetime(2026, 7, 15, 10, 0)),
+        )
+
+        summary = self.get_summary()
+        funnel = summary['lead_funnel']
+        self.assertEqual(funnel['leads_total'], 5)
+        self.assertEqual(funnel['trials_booked'], 2)
+        self.assertEqual(funnel['sales'], 2)
+        self.assertEqual(funnel['lost'], 1)
+        self.assertEqual(funnel['lead_to_trial_conversion'], '40.00')
+        self.assertEqual(funnel['lead_to_sale_conversion'], '40.00')
+        self.assertEqual(funnel['trial_to_sale_conversion'], '50.00')
+
+        manager_rows = {item['manager_name']: item for item in summary['lead_conversion_by_manager']}
+        self.assertEqual(manager_rows['Айдана']['leads_total'], 4)
+        self.assertEqual(manager_rows['Не назначен']['leads_total'], 1)
+        source_rows = {item['source']: item for item in summary['lead_conversion_by_source']}
+        self.assertEqual(source_rows[Lead.Source.MANUAL]['leads_total'], 4)
+        self.assertEqual(source_rows[Lead.Source.WHATSAPP]['leads_total'], 1)
+
+    def test_lead_funnel_zero_denominators_and_branch_filter(self):
+        self.make_lead(branch=self.other_branch)
+        summary = self.get_summary()
+        self.assertEqual(summary['lead_funnel']['leads_total'], 0)
+        self.assertEqual(summary['lead_funnel']['lead_to_trial_conversion'], '0.00')
+        self.assertEqual(summary['lead_conversion_by_manager'], [])
+        self.assertEqual(summary['lead_conversion_by_source'], [])

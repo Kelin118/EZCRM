@@ -219,6 +219,12 @@ def _money_str(value):
     return str(_money(value))
 
 
+def _percent_str(numerator, denominator):
+    if not denominator:
+        return '0.00'
+    return str((Decimal(numerator) / Decimal(denominator) * Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+
 def _paid_at_from_date(value):
     if not value:
         return timezone.now()
@@ -2093,6 +2099,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             trial.bought_subscription = True
             trial.subscription = subscription
             trial.save(update_fields=('status', 'bought_subscription', 'subscription', 'updated_at'))
+            trial.source_leads.update(status=Lead.Status.WON, closed_at=timezone.now())
 
         log_action(
             request,
@@ -3040,6 +3047,70 @@ class LeadViewSet(BaseAuthenticatedViewSet):
     serializer_class = LeadSerializer
     audit_entity_type = 'Lead'
 
+    def _normalized_phone(self, value):
+        return normalize_kz_phone(value).strip()
+
+    def _find_client_by_phone(self, phone):
+        normalized = self._normalized_phone(phone)
+        if not normalized:
+            return None
+        client = Client.objects.filter(phone=normalized).first()
+        if client:
+            return client
+        for client in Client.objects.all():
+            if self._normalized_phone(client.phone) == normalized:
+                return client
+        return None
+
+    def _find_active_lead_by_phone(self, phone, client=None):
+        normalized = self._normalized_phone(phone)
+        if not normalized and not client:
+            return None
+        queryset = Lead.objects.select_related('client').filter(status__in=Lead.ACTIVE_STATUSES)
+        for lead in queryset:
+            if normalized and self._normalized_phone(lead.contact_phone) == normalized:
+                return lead
+            if client and lead.client_id == client.id:
+                return lead
+            if normalized and lead.client_id and self._normalized_phone(lead.client.phone) == normalized:
+                return lead
+        return None
+
+    def _lead_duplicate_response(self, lead):
+        return Response(
+            {
+                'detail': 'У этого контакта уже есть активное обращение.',
+                'existing_lead': {
+                    'id': lead.id,
+                    'contact_name': lead.contact_name,
+                    'contact_phone': lead.contact_phone,
+                    'status': lead.status,
+                },
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def _resolve_manual_manager(self, manager_id):
+        if manager_id in (None, ''):
+            if has_role(self.request.user, MANAGER):
+                return self.request.user
+            return None
+        manager = User.objects.filter(pk=manager_id, is_active=True).first()
+        if not manager or not (is_admin(manager) or has_role(manager, MANAGER)):
+            raise drf_serializers.ValidationError({'manager': 'Выберите активного менеджера.'})
+        return manager
+
+    def _resolve_branch(self, branch_id):
+        if branch_id in (None, '', 'all', 'unassigned'):
+            return None
+        branch = Branch.objects.filter(pk=branch_id).first()
+        if not branch:
+            raise drf_serializers.ValidationError({'branch': 'Филиал не найден.'})
+        return branch
+
+    def _truthy(self, value):
+        return value is True or str(value).lower() in {'1', 'true', 'yes', 'on'}
+
     def get_queryset(self):
         queryset = (
             Lead.objects
@@ -3084,10 +3155,97 @@ class LeadViewSet(BaseAuthenticatedViewSet):
         if unread in {'1', 'true', 'yes'}:
             queryset = queryset.filter(unread_count__gt=0)
         if date_from:
-            queryset = queryset.filter(last_message_at__date__gte=date_from)
+            queryset = queryset.filter(first_message_at__date__gte=date_from)
         if date_to:
-            queryset = queryset.filter(last_message_at__date__lte=date_to)
+            queryset = queryset.filter(first_message_at__date__lte=date_to)
         return queryset.distinct()
+
+    @action(detail=False, methods=['post'], url_path='manual-create')
+    def manual_create(self, request):
+        contact_name = str(request.data.get('contact_name') or '').strip()
+        contact_phone = self._normalized_phone(request.data.get('contact_phone') or request.data.get('phone') or '')
+        first_message = str(request.data.get('first_message') or request.data.get('comment') or '').strip()
+        if not contact_name and not contact_phone:
+            raise drf_serializers.ValidationError({'detail': 'Укажите имя или телефон обратившегося.'})
+
+        manager = self._resolve_manual_manager(request.data.get('manager'))
+        branch = self._resolve_branch(request.data.get('branch'))
+        existing_client = None
+        explicit_client_id = request.data.get('existing_client') or request.data.get('client_id')
+        raw_client = request.data.get('client')
+        if explicit_client_id in (None, '') and not isinstance(raw_client, dict):
+            explicit_client_id = raw_client
+        if explicit_client_id not in (None, ''):
+            existing_client = Client.objects.filter(pk=explicit_client_id).first()
+            if not existing_client:
+                raise drf_serializers.ValidationError({'client': 'Клиент не найден.'})
+        elif contact_phone:
+            existing_client = self._find_client_by_phone(contact_phone)
+
+        duplicate = self._find_active_lead_by_phone(contact_phone, client=existing_client)
+        if duplicate:
+            return self._lead_duplicate_response(duplicate)
+
+        client_payload = raw_client if isinstance(raw_client, dict) else {}
+        with transaction.atomic():
+            now = timezone.now()
+            lead = Lead.objects.create(
+                source=Lead.Source.MANUAL,
+                channel=None,
+                contact=None,
+                client=existing_client,
+                manager=manager,
+                branch=branch,
+                status=Lead.Status.NEW,
+                title=contact_name or contact_phone or 'Обращение',
+                contact_name=contact_name,
+                contact_phone=contact_phone,
+                first_message=first_message,
+                last_message=first_message,
+                first_message_at=now,
+                last_message_at=now,
+                unread_count=0,
+                notes=first_message,
+            )
+
+            should_create_client = self._truthy(request.data.get('create_client'))
+            if should_create_client:
+                client_phone = self._normalized_phone(client_payload.get('phone') or contact_phone)
+                client = existing_client or self._find_client_by_phone(client_phone)
+                if not client:
+                    client_branch = self._resolve_branch(client_payload.get('branch')) or branch
+                    client_manager = self._resolve_manual_manager(client_payload.get('manager')) or manager
+                    client = Client.objects.create(
+                        first_name=str(client_payload.get('first_name') or contact_name or contact_phone or 'Клиент').strip(),
+                        last_name=str(client_payload.get('last_name') or '').strip(),
+                        parent_name=str(client_payload.get('parent_name') or '').strip(),
+                        phone=client_phone,
+                        branch=client_branch,
+                        manager=client_manager,
+                        notes=str(client_payload.get('notes') or first_message or 'Создан из ручного обращения').strip(),
+                    )
+                lead.client = client
+                if not lead.branch_id and client.branch_id:
+                    lead.branch = client.branch
+                lead.save(update_fields=('client', 'branch', 'updated_at'))
+
+            log_action(
+                request,
+                AuditLog.Action.CREATE,
+                'Lead',
+                entity_id=lead.id,
+                entity_name=str(lead),
+                description='Обращение добавлено вручную',
+                changes={
+                    'source': lead.source,
+                    'manager': lead.manager_id,
+                    'branch': lead.branch_id,
+                    'client': lead.client_id,
+                    'contact_phone': lead.contact_phone,
+                },
+            )
+
+        return Response(self.get_serializer(lead).data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'], url_path='unread-count')
     def unread_count(self, request):
@@ -3128,8 +3286,14 @@ class LeadViewSet(BaseAuthenticatedViewSet):
         if not manager or not (is_admin(manager) or has_role(manager, MANAGER)):
             raise drf_serializers.ValidationError({'manager': 'Выберите активного менеджера.'})
         lead.manager = manager
-        lead.save(update_fields=('manager', 'updated_at'))
-        self._log_instance(AuditLog.Action.LEAD_ASSIGN, lead, 'Назначен менеджер обращения', {'manager': manager.pk})
+        update_fields = ['manager', 'updated_at']
+        changes = {'manager': manager.pk}
+        if lead.status == Lead.Status.NEW:
+            lead.status = Lead.Status.IN_PROGRESS
+            update_fields.append('status')
+            changes['status'] = lead.status
+        lead.save(update_fields=update_fields)
+        self._log_instance(AuditLog.Action.LEAD_ASSIGN, lead, 'Назначен менеджер обращения', changes)
         return Response(self.get_serializer(lead).data)
 
     @action(detail=True, methods=['post'], url_path='link-client')
@@ -3159,6 +3323,17 @@ class LeadViewSet(BaseAuthenticatedViewSet):
         if lead.client_id:
             raise drf_serializers.ValidationError({'client': 'Обращение уже связано с клиентом.'})
         phone = normalize_kz_phone(request.data.get('phone') or lead.contact_phone)
+        existing_client = self._find_client_by_phone(phone)
+        if existing_client:
+            lead.client = existing_client
+            if not lead.branch_id:
+                lead.branch = existing_client.branch
+            lead.save(update_fields=('client', 'branch', 'updated_at'))
+            if lead.contact_id:
+                lead.contact.client = existing_client
+                lead.contact.save(update_fields=('client', 'updated_at'))
+            self._log_instance(AuditLog.Action.LEAD_LINK_CLIENT, lead, 'Обращение связано с найденным клиентом', {'client': existing_client.pk})
+            return Response(self.get_serializer(lead).data)
         client = Client.objects.create(
             first_name=request.data.get('first_name') or lead.contact_name or lead.contact_username or 'Клиент',
             last_name=request.data.get('last_name', ''),
@@ -3203,6 +3378,31 @@ class LeadViewSet(BaseAuthenticatedViewSet):
             lead.status = Lead.Status.TRIAL_BOOKED
             lead.save(update_fields=('converted_trial', 'status', 'updated_at'))
         self._log_instance(AuditLog.Action.LEAD_CONVERT_TO_TRIAL, lead, 'Обращение переведено в пробник', {'trial': trial.pk})
+        return Response(self.get_serializer(lead).data)
+
+    @action(detail=True, methods=['post'], url_path='set-status')
+    def set_status(self, request, pk=None):
+        lead = self.get_object()
+        status_value = request.data.get('status')
+        allowed_statuses = {
+            Lead.Status.NEW,
+            Lead.Status.IN_PROGRESS,
+            Lead.Status.QUALIFIED,
+            Lead.Status.WON,
+            Lead.Status.LOST,
+            Lead.Status.SPAM,
+        }
+        if lead.converted_trial_id:
+            allowed_statuses.add(Lead.Status.TRIAL_BOOKED)
+        if status_value not in allowed_statuses:
+            raise drf_serializers.ValidationError({'status': 'Выберите допустимый статус обращения.'})
+        lead.status = status_value
+        if status_value in {Lead.Status.WON, Lead.Status.LOST, Lead.Status.SPAM}:
+            lead.closed_at = timezone.now()
+        else:
+            lead.closed_at = None
+        lead.save(update_fields=('status', 'closed_at', 'updated_at'))
+        self._log_instance(AuditLog.Action.LEAD_STATUS_UPDATE, lead, 'Изменён статус обращения', {'status': lead.status})
         return Response(self.get_serializer(lead).data)
 
     @action(detail=True, methods=['post'])
@@ -4687,6 +4887,58 @@ class DailyPaymentsReportView(APIView):
         })
 
 
+def _lead_sales_queryset(queryset):
+    return queryset.filter(
+        Q(status=Lead.Status.WON)
+        | Q(converted_trial__bought_subscription=True)
+        | Q(converted_trial__status=Trial.Status.BOUGHT)
+        | Q(converted_trial__subscription_id__isnull=False)
+    ).distinct()
+
+
+def _lead_funnel_summary(queryset):
+    leads_total = queryset.count()
+    trials_booked = queryset.filter(converted_trial__isnull=False).distinct().count()
+    sales = _lead_sales_queryset(queryset).count()
+    sales_from_trial = _lead_sales_queryset(queryset.filter(converted_trial__isnull=False)).count()
+    return {
+        'leads_total': leads_total,
+        'in_progress': queryset.filter(status=Lead.Status.IN_PROGRESS).count(),
+        'qualified': queryset.filter(status=Lead.Status.QUALIFIED).count(),
+        'trials_booked': trials_booked,
+        'sales': sales,
+        'lost': queryset.filter(status=Lead.Status.LOST).count(),
+        'lead_to_trial_conversion': _percent_str(trials_booked, leads_total),
+        'lead_to_sale_conversion': _percent_str(sales, leads_total),
+        'trial_to_sale_conversion': _percent_str(sales_from_trial, trials_booked),
+    }
+
+
+def _lead_conversion_row(queryset, *, manager=None, source=None):
+    leads_total = queryset.count()
+    trials_booked = queryset.filter(converted_trial__isnull=False).distinct().count()
+    sales = _lead_sales_queryset(queryset).count()
+    row = {
+        'leads_total': leads_total,
+        'trials_booked': trials_booked,
+        'sales': sales,
+        'lead_to_trial_conversion': _percent_str(trials_booked, leads_total),
+        'lead_to_sale_conversion': _percent_str(sales, leads_total),
+    }
+    if manager is not None:
+        row.update({
+            'manager': manager.id,
+            'manager_id': manager.id,
+            'manager_name': manager.get_full_name() or manager.username,
+        })
+    if source is not None:
+        row.update({
+            'source': source,
+            'source_display': dict(Lead.Source.choices).get(source, source),
+        })
+    return row
+
+
 class ReportsSummaryView(APIView):
     permission_classes = (IsAuthenticated, ReportsPermission)
 
@@ -4698,12 +4950,14 @@ class ReportsSummaryView(APIView):
         trials = Trial.objects.all()
         master_classes = MasterClass.objects.all()
         lessons = Lesson.objects.all()
+        leads = Lead.objects.select_related('manager', 'branch', 'converted_trial')
         visits = Visit.objects.select_related('client', 'lesson', 'lesson__group', 'teacher')
         branch = request.query_params.get('branch')
         transactions = apply_branch_filter(transactions, branch)
         trials = apply_branch_filter(trials, branch)
         master_classes = apply_branch_filter(master_classes, branch)
         lessons = apply_branch_filter(lessons, branch)
+        leads = apply_branch_filter(leads, branch)
         visits = apply_branch_filter(visits, branch)
 
         if date_from:
@@ -4711,13 +4965,16 @@ class ReportsSummaryView(APIView):
             trials = trials.filter(scheduled_at__date__gte=date_from)
             master_classes = master_classes.filter(starts_at__date__gte=date_from)
             lessons = lessons.filter(lesson_date__gte=date_from)
+            leads = leads.filter(first_message_at__date__gte=date_from)
             visits = visits.filter(visited_at__date__gte=date_from)
         if date_to:
             transactions = transactions.filter(paid_at__date__lte=date_to)
             trials = trials.filter(scheduled_at__date__lte=date_to)
             master_classes = master_classes.filter(starts_at__date__lte=date_to)
             lessons = lessons.filter(lesson_date__lte=date_to)
+            leads = leads.filter(first_message_at__date__lte=date_to)
             visits = visits.filter(visited_at__date__lte=date_to)
+        leads_for_funnel = leads.exclude(status=Lead.Status.SPAM)
 
         income_total = _decimal(
             transactions.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))[
@@ -4838,6 +5095,27 @@ class ReportsSummaryView(APIView):
             key=lambda item: (-item['conversion'], -item['trials_total'], item['teacher_name']),
         )
 
+        lead_funnel = _lead_funnel_summary(leads_for_funnel)
+        lead_conversion_by_manager = []
+        lead_manager_ids = set(leads_for_funnel.values_list('manager_id', flat=True))
+        for manager_id in lead_manager_ids:
+            manager_leads = leads_for_funnel.filter(manager_id=manager_id)
+            if manager_id:
+                manager = manager_leads.first().manager
+                lead_conversion_by_manager.append(_lead_conversion_row(manager_leads, manager=manager))
+            else:
+                row = _lead_conversion_row(manager_leads)
+                row.update({'manager': None, 'manager_id': None, 'manager_name': 'Не назначен'})
+                lead_conversion_by_manager.append(row)
+        lead_conversion_by_manager = sorted(
+            lead_conversion_by_manager,
+            key=lambda item: (-item['leads_total'], item['manager_name']),
+        )
+
+        lead_conversion_by_source = []
+        for source in sorted(set(leads_for_funnel.values_list('source', flat=True))):
+            lead_conversion_by_source.append(_lead_conversion_row(leads_for_funnel.filter(source=source), source=source))
+
         attendance_by_group = []
         for group in StudyGroup.objects.filter(lessons__in=lessons).distinct().order_by('name'):
             group_lessons = lessons.filter(group=group)
@@ -4940,6 +5218,9 @@ class ReportsSummaryView(APIView):
                 'income_by_source': income_by_source,
                 'income_by_managers': income_by_manager,
                 'sales_by_manager': sales_by_manager,
+                'lead_funnel': lead_funnel,
+                'lead_conversion_by_manager': lead_conversion_by_manager,
+                'lead_conversion_by_source': lead_conversion_by_source,
                 'trial_conversion_by_teacher': trial_conversion_by_teacher,
                 'attendance_by_group': attendance_by_group,
                 'attendance_by_teacher': attendance_by_teacher,

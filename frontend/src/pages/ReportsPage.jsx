@@ -41,6 +41,7 @@ export default function ReportsPage() {
   const dailyFinance = summary.daily_finance || [];
   const sourceData = summary.income_by_source || [];
   const groupAttendance = summary.attendance_by_group || [];
+  const leadFunnel = summary.lead_funnel || {};
 
   return (
     <div className="grid gap-6">
@@ -110,6 +111,48 @@ export default function ReportsPage() {
               { key: 'income', header: 'Доход', render: (row) => money(row.income) },
               { key: 'expense', header: 'Расход', render: (row) => money(row.expense) },
               { key: 'balance', header: 'Баланс', render: (row) => money(row.balance) },
+            ]}
+          />
+        </div>
+      </ReportSection>
+
+      <ReportSection title="Воронка обращений">
+        <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+          <StatCard title="Обращения" value={leadFunnel.leads_total || 0} />
+          <StatCard title="В работе" value={leadFunnel.in_progress || 0} tone="accent" />
+          <StatCard title="Квалифицированы" value={leadFunnel.qualified || 0} tone="green" />
+          <StatCard title="Пробники" value={leadFunnel.trials_booked || 0} />
+          <StatCard title="Продажи" value={leadFunnel.sales || 0} tone="green" />
+          <StatCard title="Не купили" value={leadFunnel.lost || 0} tone="red" />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-3">
+          <FunnelCard title="Обращение → пробник" value={leadFunnel.lead_to_trial_conversion} />
+          <FunnelCard title="Обращение → продажа" value={leadFunnel.lead_to_sale_conversion} />
+          <FunnelCard title="Пробник → продажа" value={leadFunnel.trial_to_sale_conversion} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Table
+            data={summary.lead_conversion_by_manager || []}
+            empty="Нет обращений по менеджерам за период"
+            columns={[
+              { key: 'manager_name', header: 'Менеджер' },
+              { key: 'leads_total', header: 'Обращения' },
+              { key: 'trials_booked', header: 'Пробники' },
+              { key: 'sales', header: 'Продажи' },
+              { key: 'lead_to_trial_conversion', header: 'В пробник', render: (row) => percent(row.lead_to_trial_conversion) },
+              { key: 'lead_to_sale_conversion', header: 'В продажу', render: (row) => percent(row.lead_to_sale_conversion) },
+            ]}
+          />
+          <Table
+            data={summary.lead_conversion_by_source || []}
+            empty="Нет обращений по источникам за период"
+            columns={[
+              { key: 'source_display', header: 'Источник' },
+              { key: 'leads_total', header: 'Обращения' },
+              { key: 'trials_booked', header: 'Пробники' },
+              { key: 'sales', header: 'Продажи' },
+              { key: 'lead_to_trial_conversion', header: 'В пробник', render: (row) => percent(row.lead_to_trial_conversion) },
+              { key: 'lead_to_sale_conversion', header: 'В продажу', render: (row) => percent(row.lead_to_sale_conversion) },
             ]}
           />
         </div>
@@ -223,6 +266,21 @@ function Chart({ title, children }) {
       <ResponsiveContainer width="100%" height="88%">
         {children}
       </ResponsiveContainer>
+    </section>
+  );
+}
+
+function FunnelCard({ title, value }) {
+  const safeValue = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
+      <p className="text-sm font-bold text-slate-500">{title}</p>
+      <div className="mt-3 flex items-end justify-between gap-4">
+        <p className="text-3xl font-black text-slate-900">{percent(safeValue)}</p>
+        <div className="h-12 w-24 overflow-hidden rounded-t-2xl bg-slate-100">
+          <div className="h-full rounded-t-2xl bg-brand" style={{ width: `${safeValue}%` }} />
+        </div>
+      </div>
     </section>
   );
 }

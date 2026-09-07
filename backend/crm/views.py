@@ -151,6 +151,13 @@ from .serializers import (
     refresh_certificate_status,
 )
 from .meta_webhooks import normalize_kz_phone, process_meta_webhook, verify_meta_signature
+from .meta_api import (
+    MetaApiError,
+    exchange_embedded_signup_code,
+    get_whatsapp_phone_number,
+    get_whatsapp_phone_numbers,
+    subscribe_whatsapp_app,
+)
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
 from .employee_worklog import build_employee_worklog, split_work_interval_by_schedule
@@ -3009,8 +3016,118 @@ class MetaIntegrationStatusView(APIView):
         return Response({
             'webhook_configured': bool(getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', '')),
             'app_secret_configured': bool(getattr(settings, 'META_APP_SECRET', '')),
+            'app_id_configured': bool(getattr(settings, 'META_APP_ID', '')),
+            'embedded_signup_configured': bool(getattr(settings, 'META_WHATSAPP_CONFIG_ID', '')),
+            'public_config': {
+                'app_id': getattr(settings, 'META_APP_ID', ''),
+                'whatsapp_config_id': getattr(settings, 'META_WHATSAPP_CONFIG_ID', ''),
+                'graph_api_version': getattr(settings, 'META_GRAPH_API_VERSION', 'v20.0'),
+            },
             'whatsapp': provider_payload(MessagingChannel.Provider.WHATSAPP),
             'instagram': provider_payload(MessagingChannel.Provider.INSTAGRAM),
+        })
+
+
+class MetaEmbeddedSignupCompleteView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        if not is_admin(request.user):
+            return Response({'detail': 'Нет доступа к подключению WhatsApp Business.'}, status=status.HTTP_403_FORBIDDEN)
+
+        code = str(request.data.get('code') or '').strip()
+        waba_id = str(request.data.get('waba_id') or '').strip()
+        phone_number_id = str(request.data.get('phone_number_id') or '').strip()
+        business_id = str(request.data.get('business_id') or '').strip()
+        if not code:
+            raise drf_serializers.ValidationError({'code': 'Authorization code обязателен.'})
+        if not waba_id:
+            raise drf_serializers.ValidationError({'waba_id': 'WABA ID обязателен.'})
+        if not getattr(settings, 'META_APP_ID', '') or not getattr(settings, 'META_APP_SECRET', ''):
+            return Response({'detail': 'Meta App ID или App Secret не настроены.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        branch = None
+        branch_id = request.data.get('branch')
+        if branch_id not in (None, '', 'all', 'unassigned'):
+            branch = Branch.objects.filter(pk=branch_id).first()
+            if not branch:
+                raise drf_serializers.ValidationError({'branch': 'Филиал не найден.'})
+
+        default_manager = None
+        default_manager_id = request.data.get('default_manager')
+        if default_manager_id not in (None, ''):
+            default_manager = User.objects.filter(pk=default_manager_id, is_active=True).first()
+            if not default_manager or not (is_admin(default_manager) or has_role(default_manager, MANAGER)):
+                raise drf_serializers.ValidationError({'default_manager': 'Выберите активного менеджера.'})
+
+        try:
+            access_token = exchange_embedded_signup_code(code)
+            subscribe_whatsapp_app(waba_id, access_token)
+            if phone_number_id:
+                phone_number_data = get_whatsapp_phone_number(phone_number_id, access_token)
+            else:
+                phone_numbers = get_whatsapp_phone_numbers(waba_id, access_token)
+                if len(phone_numbers) > 1:
+                    return Response(
+                        {
+                            'detail': 'В аккаунте WhatsApp найдено несколько номеров.',
+                            'phone_numbers': phone_numbers,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if not phone_numbers:
+                    return Response({'detail': 'В аккаунте WhatsApp не найден номер.'}, status=status.HTTP_400_BAD_REQUEST)
+                phone_number_data = phone_numbers[0]
+                phone_number_id = str(phone_number_data.get('id') or '').strip()
+        except MetaApiError as error:
+            response_payload = {'detail': 'Meta не завершила подключение WhatsApp.'}
+            if error.code:
+                response_payload['meta_error_code'] = error.code
+            response_status = status.HTTP_400_BAD_REQUEST if error.status_code == 400 else status.HTTP_502_BAD_GATEWAY
+            return Response(response_payload, status=response_status)
+
+        verified_phone_number_id = str(phone_number_data.get('id') or phone_number_id).strip()
+        if not verified_phone_number_id:
+            return Response({'detail': 'Meta не вернула Phone Number ID.'}, status=status.HTTP_400_BAD_REQUEST)
+        display_phone_number = phone_number_data.get('display_phone_number') or ''
+        verified_name = phone_number_data.get('verified_name') or ''
+        channel_name = f'WhatsApp · {verified_name or display_phone_number or verified_phone_number_id}'
+
+        channel, _created = MessagingChannel.objects.update_or_create(
+            provider=MessagingChannel.Provider.WHATSAPP,
+            external_account_id=verified_phone_number_id,
+            defaults={
+                'name': channel_name,
+                'phone_number': display_phone_number,
+                'branch': branch,
+                'default_manager': default_manager,
+                'is_active': True,
+                'last_error': '',
+            },
+        )
+        log_action(
+            request,
+            AuditLog.Action.MESSAGING_CHANNEL_CREATE,
+            'MessagingChannel',
+            entity_id=channel.id,
+            entity_name=str(channel),
+            description='WhatsApp Business подключён через Embedded Signup',
+            changes={
+                'provider': channel.provider,
+                'waba_id': waba_id,
+                'phone_number_id': verified_phone_number_id,
+                'business_id': business_id,
+                'branch': branch.id if branch else None,
+                'default_manager': default_manager.id if default_manager else None,
+            },
+        )
+        return Response({
+            'success': True,
+            'channel': MessagingChannelSerializer(channel).data,
+            'waba_id': waba_id,
+            'phone_number_id': verified_phone_number_id,
+            'phone_number': display_phone_number,
+            'verified_name': verified_name,
         })
 
 

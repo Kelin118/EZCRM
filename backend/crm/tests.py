@@ -56,6 +56,7 @@ from .group_schedule import schedule_display, subscription_expected_end_date, su
 from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
 from .views import _client_active_subscription
+from .meta_api import MetaApiError
 from .export_excel import export_finance, export_summary_report
 
 
@@ -4332,6 +4333,167 @@ class CertificateApiTests(APITestCase):
         workbook = load_workbook(BytesIO(response.content))
         self.assertIn('Certificates', workbook.sheetnames)
         self.assertIn('Visits', workbook.sheetnames)
+
+
+@override_settings(
+    META_APP_ID='app-123',
+    META_APP_SECRET='test-secret',
+    META_WHATSAPP_CONFIG_ID='config-123',
+    META_GRAPH_API_VERSION='v26.0',
+    META_WEBHOOK_DISABLE_SIGNATURE_VALIDATION=True,
+)
+class MetaEmbeddedSignupTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_superuser(username='meta-admin', password='pass')
+        self.manager = User.objects.create_user(username='meta-manager', password='pass', role='manager', roles=['manager'])
+        self.branch = Branch.objects.create(name='Meta onboarding branch')
+        self.client.force_authenticate(self.admin)
+
+    def test_status_returns_public_config_without_secret(self):
+        response = self.client.get('/api/integrations/meta/status/')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['app_id_configured'])
+        self.assertTrue(response.data['embedded_signup_configured'])
+        self.assertEqual(response.data['public_config']['app_id'], 'app-123')
+        self.assertEqual(response.data['public_config']['whatsapp_config_id'], 'config-123')
+        self.assertEqual(response.data['public_config']['graph_api_version'], 'v26.0')
+        self.assertNotIn('test-secret', json.dumps(response.data, default=str))
+
+    def test_complete_requires_admin(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {'code': 'code', 'waba_id': 'waba'}, format='json')
+        self.assertEqual(response.status_code, 403)
+
+    def test_complete_validates_required_fields(self):
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {'waba_id': 'waba'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {'code': 'code'}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+    @patch('crm.views.get_whatsapp_phone_number')
+    @patch('crm.views.subscribe_whatsapp_app')
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_complete_uses_payload_phone_id_creates_channel_and_never_returns_token(self, exchange, subscribe, get_phone):
+        exchange.return_value = 'temporary-token'
+        get_phone.return_value = {'id': 'phone-123', 'display_phone_number': '+7 707 000 00 00', 'verified_name': 'EZCRM'}
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {
+            'code': 'auth-code',
+            'waba_id': 'waba-123',
+            'phone_number_id': 'phone-123',
+            'business_id': 'business-123',
+            'branch': self.branch.id,
+            'default_manager': self.manager.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        exchange.assert_called_once_with('auth-code')
+        subscribe.assert_called_once_with('waba-123', 'temporary-token')
+        get_phone.assert_called_once_with('phone-123', 'temporary-token')
+        channel = MessagingChannel.objects.get(provider=MessagingChannel.Provider.WHATSAPP)
+        self.assertEqual(channel.external_account_id, 'phone-123')
+        self.assertNotEqual(channel.external_account_id, 'waba-123')
+        self.assertEqual(channel.phone_number, '+7 707 000 00 00')
+        self.assertEqual(channel.name, 'WhatsApp · EZCRM')
+        self.assertEqual(channel.branch, self.branch)
+        self.assertEqual(channel.default_manager, self.manager)
+        payload = json.dumps(response.data, default=str)
+        self.assertNotIn('temporary-token', payload)
+        self.assertNotIn('auth-code', payload)
+        self.assertNotIn('test-secret', payload)
+
+    @patch('crm.views.get_whatsapp_phone_numbers')
+    @patch('crm.views.subscribe_whatsapp_app')
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_complete_discovers_single_phone_number(self, exchange, subscribe, get_numbers):
+        exchange.return_value = 'temporary-token'
+        get_numbers.return_value = [{'id': 'phone-456', 'display_phone_number': '+7 701 111 11 11', 'verified_name': 'School'}]
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {
+            'code': 'auth-code',
+            'waba_id': 'waba-456',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['phone_number_id'], 'phone-456')
+        self.assertTrue(MessagingChannel.objects.filter(external_account_id='phone-456').exists())
+        get_numbers.assert_called_once_with('waba-456', 'temporary-token')
+        subscribe.assert_called_once_with('waba-456', 'temporary-token')
+
+    @patch('crm.views.get_whatsapp_phone_numbers')
+    @patch('crm.views.subscribe_whatsapp_app')
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_complete_returns_409_for_multiple_phone_numbers(self, exchange, subscribe, get_numbers):
+        exchange.return_value = 'temporary-token'
+        get_numbers.return_value = [
+            {'id': 'phone-1', 'display_phone_number': '+7 701 111 11 11', 'verified_name': 'One'},
+            {'id': 'phone-2', 'display_phone_number': '+7 702 222 22 22', 'verified_name': 'Two'},
+        ]
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {
+            'code': 'auth-code',
+            'waba_id': 'waba-789',
+        }, format='json')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(len(response.data['phone_numbers']), 2)
+        self.assertFalse(MessagingChannel.objects.exists())
+
+    @patch('crm.views.get_whatsapp_phone_number')
+    @patch('crm.views.subscribe_whatsapp_app')
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_complete_is_idempotent_for_same_phone_number(self, exchange, subscribe, get_phone):
+        exchange.return_value = 'temporary-token'
+        get_phone.return_value = {'id': 'phone-999', 'display_phone_number': '+7 777 999 99 99', 'verified_name': 'First'}
+        payload = {'code': 'auth-code', 'waba_id': 'waba-999', 'phone_number_id': 'phone-999'}
+        first = self.client.post('/api/integrations/meta/embedded-signup/complete/', payload, format='json')
+        self.assertEqual(first.status_code, 200)
+        get_phone.return_value = {'id': 'phone-999', 'display_phone_number': '+7 777 999 99 99', 'verified_name': 'Updated'}
+        second = self.client.post('/api/integrations/meta/embedded-signup/complete/', payload, format='json')
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(MessagingChannel.objects.filter(provider=MessagingChannel.Provider.WHATSAPP, external_account_id='phone-999').count(), 1)
+        self.assertEqual(MessagingChannel.objects.get(external_account_id='phone-999').name, 'WhatsApp · Updated')
+
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_meta_error_is_controlled_and_sanitized(self, exchange):
+        exchange.side_effect = MetaApiError(code=123, status_code=400)
+        response = self.client.post('/api/integrations/meta/embedded-signup/complete/', {'code': 'auth-code', 'waba_id': 'waba'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['detail'], 'Meta не завершила подключение WhatsApp.')
+        self.assertEqual(response.data['meta_error_code'], 123)
+        payload = json.dumps(response.data, default=str)
+        self.assertNotIn('auth-code', payload)
+        self.assertNotIn('test-secret', payload)
+
+    @patch('crm.views.get_whatsapp_phone_number')
+    @patch('crm.views.subscribe_whatsapp_app')
+    @patch('crm.views.exchange_embedded_signup_code')
+    def test_webhook_after_channel_create_finds_phone_number_channel(self, exchange, subscribe, get_phone):
+        exchange.return_value = 'temporary-token'
+        get_phone.return_value = {'id': 'phone-webhook', 'display_phone_number': '+7 707 777 77 77', 'verified_name': 'Webhook'}
+        complete = self.client.post('/api/integrations/meta/embedded-signup/complete/', {
+            'code': 'auth-code',
+            'waba_id': 'waba-webhook',
+            'phone_number_id': 'phone-webhook',
+            'default_manager': self.manager.id,
+        }, format='json')
+        self.assertEqual(complete.status_code, 200)
+        payload = {
+            'object': 'whatsapp_business_account',
+            'entry': [{
+                'changes': [{
+                    'value': {
+                        'metadata': {'phone_number_id': 'phone-webhook'},
+                        'contacts': [{'wa_id': '77070000000', 'profile': {'name': 'Айгуль'}}],
+                        'messages': [{
+                            'id': 'wamid.embedded.1',
+                            'from': '77070000000',
+                            'timestamp': '1780000000',
+                            'type': 'text',
+                            'text': {'body': 'Здравствуйте'},
+                        }],
+                    },
+                }],
+            }],
+        }
+        webhook = self.client.post('/api/integrations/meta/webhook/', payload, format='json')
+        self.assertEqual(webhook.status_code, 200)
+        self.assertEqual(Lead.objects.filter(channel__external_account_id='phone-webhook').count(), 1)
 
 
 @override_settings(META_WEBHOOK_VERIFY_TOKEN='verify-me', META_APP_SECRET='test-secret')

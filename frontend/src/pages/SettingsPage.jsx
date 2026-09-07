@@ -1,5 +1,5 @@
 import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSquare, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
 import { canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
@@ -9,6 +9,7 @@ import Modal from '../components/ui/Modal.jsx';
 import { PageHeader } from './pageUtils.jsx';
 import { formatScheduleDays, weekdayOptions } from '../utils/subscriptionDates.js';
 import { formatDiscountValue, normalizeDecimalString, parseDecimal } from '../utils/discounts.js';
+import { loadMetaSdk, parseEmbeddedSignupMessage, startWhatsAppBusinessAppOnboarding } from '../utils/metaEmbeddedSignup.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 
 const empty = {
@@ -94,6 +95,11 @@ export default function SettingsPage() {
   const [channelModal, setChannelModal] = useState({ open: false, item: null });
   const [channelForm, setChannelForm] = useState(emptyChannelForm);
   const [managerOptions, setManagerOptions] = useState([]);
+  const [embeddedSignup, setEmbeddedSignup] = useState({ code: '', waba_id: '', phone_number_id: '', business_id: '', message: '', error: '', success: null, phone_numbers: [] });
+  const [embeddedBranch, setEmbeddedBranch] = useState('');
+  const [embeddedManager, setEmbeddedManager] = useState('');
+  const [embeddedConnecting, setEmbeddedConnecting] = useState(false);
+  const completeStartedRef = useRef(false);
 
   const activeSection = useMemo(
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
@@ -115,10 +121,127 @@ export default function SettingsPage() {
     loadManagers();
   }, []);
 
+  useEffect(() => {
+    if (!canEditChannels || !integrationStatus?.public_config?.app_id) return;
+    loadMetaSdk(integrationStatus.public_config).catch(() => {
+      setEmbeddedSignup((current) => ({ ...current, error: 'Не удалось загрузить Meta SDK.' }));
+    });
+  }, [canEditChannels, integrationStatus?.public_config?.app_id, integrationStatus?.public_config?.graph_api_version]);
+
+  useEffect(() => {
+    const handleMessage = (event) => {
+      const payload = parseEmbeddedSignupMessage(event);
+      if (!payload) return;
+      const eventName = payload.event;
+      if (eventName === 'CANCEL') {
+        setEmbeddedConnecting(false);
+        completeStartedRef.current = false;
+        setEmbeddedSignup((current) => ({ ...current, message: 'Подключение WhatsApp отменено.', error: '', success: false }));
+        return;
+      }
+      if (eventName === 'ERROR') {
+        setEmbeddedConnecting(false);
+        completeStartedRef.current = false;
+        setEmbeddedSignup((current) => ({ ...current, error: payload.data?.error_message || payload.data?.message || 'Meta вернула ошибку подключения WhatsApp.', message: '', success: false }));
+        return;
+      }
+      if (eventName === 'FINISH' || eventName === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
+        setEmbeddedSignup((current) => ({
+          ...current,
+          waba_id: payload.data?.waba_id || current.waba_id,
+          phone_number_id: payload.data?.phone_number_id || current.phone_number_id,
+          business_id: payload.data?.business_id || current.business_id,
+          message: 'Meta подтвердила номер. Завершаем подключение...',
+          error: '',
+        }));
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  useEffect(() => {
+    const completeEmbeddedSignup = async () => {
+      if (!embeddedConnecting || completeStartedRef.current || !embeddedSignup.code || !embeddedSignup.waba_id) return;
+      completeStartedRef.current = true;
+      try {
+        const { data } = await api.post('integrations/meta/embedded-signup/complete/', {
+          code: embeddedSignup.code,
+          waba_id: embeddedSignup.waba_id,
+          phone_number_id: embeddedSignup.phone_number_id || null,
+          business_id: embeddedSignup.business_id || null,
+          branch: embeddedBranch || null,
+          default_manager: embeddedManager || null,
+        });
+        setEmbeddedConnecting(false);
+        setEmbeddedSignup((current) => ({
+          ...current,
+          message: `WhatsApp Business подключён. Номер: ${data.phone_number || data.verified_name || data.phone_number_id}. Входящие сообщения будут появляться в разделе Обращения.`,
+          error: '',
+          success: true,
+          phone_numbers: [],
+        }));
+        await loadChannels();
+      } catch (error) {
+        setEmbeddedConnecting(false);
+        completeStartedRef.current = false;
+        if (error.response?.status === 409 && Array.isArray(error.response?.data?.phone_numbers)) {
+          setEmbeddedSignup((current) => ({
+            ...current,
+            message: error.response.data.detail || 'Выберите номер WhatsApp.',
+            error: '',
+            success: false,
+            phone_numbers: error.response.data.phone_numbers,
+          }));
+          return;
+        }
+        setEmbeddedSignup((current) => ({
+          ...current,
+          error: getApiErrorMessage(error),
+          message: '',
+          success: false,
+        }));
+      }
+    };
+    completeEmbeddedSignup();
+  }, [embeddedConnecting, embeddedSignup.code, embeddedSignup.waba_id, embeddedSignup.phone_number_id, embeddedSignup.business_id, embeddedBranch, embeddedManager]);
+
   const loadManagers = async () => {
     const { data } = await api.get('users/staff-options/', { params: { role: 'manager', active: '1' } });
     const list = Array.isArray(data) ? data : data.results || [];
     setManagerOptions(list.map((item) => ({ value: String(item.id), label: item.display_name || item.full_name || item.username })));
+  };
+
+  const startEmbeddedSignup = () => {
+    const publicConfig = integrationStatus?.public_config;
+    if (!publicConfig?.app_id || !publicConfig?.whatsapp_config_id) {
+      setEmbeddedSignup((current) => ({ ...current, error: 'Meta App ID или WhatsApp Config ID не настроены.', message: '', success: false }));
+      return;
+    }
+    completeStartedRef.current = false;
+    setEmbeddedConnecting(true);
+    setEmbeddedSignup({ code: '', waba_id: '', phone_number_id: '', business_id: '', message: 'Откройте окно Meta и завершите подключение WhatsApp Business.', error: '', success: null, phone_numbers: [] });
+    try {
+      startWhatsAppBusinessAppOnboarding(publicConfig, (response) => {
+        const code = response?.authResponse?.code;
+        if (!code) {
+          setEmbeddedConnecting(false);
+          completeStartedRef.current = false;
+          setEmbeddedSignup((current) => ({ ...current, error: 'Meta не вернула authorization code.', message: '', success: false }));
+          return;
+        }
+        setEmbeddedSignup((current) => ({ ...current, code, error: '', message: current.waba_id ? 'Завершаем подключение...' : 'Meta авторизация получена. Ждём данные WhatsApp Business...' }));
+      });
+    } catch {
+      setEmbeddedConnecting(false);
+      setEmbeddedSignup((current) => ({ ...current, error: 'Meta SDK ещё не готов. Попробуйте через несколько секунд.', message: '', success: false }));
+    }
+  };
+
+  const selectEmbeddedPhoneNumber = (phoneNumberId) => {
+    completeStartedRef.current = false;
+    setEmbeddedConnecting(true);
+    setEmbeddedSignup((current) => ({ ...current, phone_number_id: phoneNumberId, phone_numbers: [], message: 'Завершаем подключение выбранного номера...', error: '' }));
   };
 
   const loadChannels = async () => {
@@ -422,6 +545,70 @@ export default function SettingsPage() {
                 <p className="font-bold text-slate-900">Каналы</p>
                 <p>WhatsApp: {integrationStatus.whatsapp?.channel_count || 0} · Instagram: {integrationStatus.instagram?.channel_count || 0}</p>
               </div>
+            </div>
+          )}
+          {canEditChannels && (
+            <div className="mb-4 rounded-[24px] border border-brand/15 bg-brand/5 p-5">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">Подключить WhatsApp Business</h3>
+                  <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
+                    Подключает существующий номер WhatsApp Business к CRM. WhatsApp на телефоне продолжит работать.
+                  </p>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                      Филиал
+                      <select
+                        value={embeddedBranch}
+                        onChange={(event) => setEmbeddedBranch(event.target.value)}
+                        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                      >
+                        <option value="">Не распределено</option>
+                        {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                      Менеджер по умолчанию
+                      <select
+                        value={embeddedManager}
+                        onChange={(event) => setEmbeddedManager(event.target.value)}
+                        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                      >
+                        <option value="">Не назначен</option>
+                        {managerOptions.map((manager) => <option key={manager.value} value={manager.value}>{manager.label}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <Button
+                  className="min-w-64"
+                  onClick={startEmbeddedSignup}
+                  disabled={embeddedConnecting || !integrationStatus?.app_id_configured || !integrationStatus?.embedded_signup_configured}
+                >
+                  {embeddedConnecting ? 'Подключение...' : 'Подключить WhatsApp Business'}
+                </Button>
+              </div>
+              {!integrationStatus?.app_id_configured || !integrationStatus?.embedded_signup_configured ? (
+                <p className="mt-3 text-sm font-semibold text-amber-700">Укажите META_APP_ID и META_WHATSAPP_CONFIG_ID в backend env.</p>
+              ) : null}
+              {embeddedSignup.message && <div className={`mt-3 rounded-2xl px-4 py-3 text-sm font-semibold ${embeddedSignup.success ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-50 text-slate-700'}`}>{embeddedSignup.message}</div>}
+              {embeddedSignup.error && <div className="mt-3 rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{embeddedSignup.error}</div>}
+              {embeddedSignup.phone_numbers.length > 0 && (
+                <div className="mt-3 grid gap-2 rounded-2xl bg-white p-3 text-sm">
+                  <p className="font-black text-slate-900">Выберите номер WhatsApp</p>
+                  {embeddedSignup.phone_numbers.map((phoneNumber) => (
+                    <button
+                      type="button"
+                      key={phoneNumber.id}
+                      onClick={() => selectEmbeddedPhoneNumber(phoneNumber.id)}
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-left font-semibold text-slate-700 transition hover:border-brand/40 hover:bg-brand/5"
+                    >
+                      {phoneNumber.verified_name || phoneNumber.display_phone_number || phoneNumber.id}
+                      {phoneNumber.display_phone_number && phoneNumber.verified_name ? <span className="ml-2 text-slate-400">{phoneNumber.display_phone_number}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {canEditChannels && <Button className="mb-4" onClick={() => { setChannelForm(emptyChannelForm); setChannelModal({ open: true, item: null }); }}><Plus size={16} />Добавить канал</Button>}

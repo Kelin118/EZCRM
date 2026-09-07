@@ -3,7 +3,7 @@ from datetime import datetime, time, timedelta
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import EmployeeWorkSchedule, Lesson, MasterClass
+from .models import EmployeeWorkSchedule, Lesson, MasterClass, MasterClassStaffAssignment
 
 
 EXCLUDED_MASTER_CLASS_STAGES = {'cancelled', 'lost', 'lead'}
@@ -56,49 +56,69 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
     warnings = 0
 
     if source in ('all', 'master_class'):
-        master_classes = MasterClass.objects.select_related('teacher', 'branch').prefetch_related('participants').filter(
+        master_classes = MasterClass.objects.select_related('teacher', 'branch').prefetch_related('participants', 'staff_assignments__employee').filter(
             starts_at__date__gte=date_from,
             starts_at__date__lte=date_to,
-            teacher__isnull=False,
         ).exclude(stage__in=EXCLUDED_MASTER_CLASS_STAGES)
         if employee:
-            master_classes = master_classes.filter(teacher_id=employee)
+            master_classes = master_classes.filter(Q(teacher_id=employee) | Q(staff_assignments__employee_id=employee))
         if branch and branch != 'all':
             master_classes = master_classes.filter(branch__isnull=True) if branch == 'unassigned' else master_classes.filter(branch_id=branch)
-        for item in master_classes:
-            warning = ''
-            duration = item.duration_minutes
-            end_at = item.starts_at + timedelta(minutes=duration) if duration else None
-            if not duration:
-                warning = 'Длительность не указана'
-                regular = outside = 0
-                warnings += 1
-            elif item.starts_at > now and not include_future:
-                warning = 'Запланировано'
-                regular = outside = 0
-            else:
-                split = split_work_interval_by_schedule(item.teacher, item.starts_at, end_at)
-                regular = split['regular_minutes']
-                outside = split['outside_minutes']
-            entries.append({
-                'source': 'master_class',
-                'source_id': item.id,
-                'employee': item.teacher_id,
-                'employee_name': item.teacher.get_full_name() or item.teacher.username,
-                'branch': item.branch_id,
-                'branch_name': item.branch.name if item.branch else '',
-                'date': _local(item.starts_at).date().isoformat(),
-                'starts_at': item.starts_at,
-                'ends_at': end_at,
-                'duration_minutes': duration or 0,
-                'regular_minutes': regular,
-                'outside_minutes': outside,
-                'is_extra_work': item.is_extra_work,
-                'time_outside_regular_hours': is_outside_regular_master_class_hours(item.starts_at),
-                'outside_regular_master_class_hours': item.is_extra_work,
-                'title': item.title,
-                'warning': warning,
-            })
+        for item in master_classes.distinct():
+            assignments = list(item.staff_assignments.all())
+            if not assignments and item.teacher_id:
+                assignments = [
+                    MasterClassStaffAssignment(
+                        id=None,
+                        master_class=item,
+                        employee=item.teacher,
+                        role=MasterClassStaffAssignment.Role.LEAD,
+                        is_extra_work=item.is_extra_work,
+                        duration_minutes=None,
+                    )
+                ]
+            if employee:
+                assignments = [assignment for assignment in assignments if str(assignment.employee_id) == str(employee)]
+            for assignment in assignments:
+                staff_member = assignment.employee
+                if not staff_member:
+                    continue
+                warning = ''
+                duration = assignment.duration_minutes if assignment.duration_minutes is not None else item.duration_minutes
+                end_at = item.starts_at + timedelta(minutes=duration) if duration else None
+                if not duration:
+                    warning = 'Длительность не указана'
+                    regular = outside = 0
+                    warnings += 1
+                elif item.starts_at > now and not include_future:
+                    warning = 'Запланировано'
+                    regular = outside = 0
+                else:
+                    split = split_work_interval_by_schedule(staff_member, item.starts_at, end_at)
+                    regular = split['regular_minutes']
+                    outside = split['outside_minutes']
+                entries.append({
+                    'source': 'master_class',
+                    'source_id': item.id,
+                    'master_class_staff_assignment_id': assignment.id,
+                    'staff_role': assignment.role,
+                    'staff_role_display': assignment.get_role_display(),
+                    'employee': staff_member.id,
+                    'employee_name': staff_member.get_full_name() or staff_member.username,
+                    'branch': item.branch_id,
+                    'branch_name': item.branch.name if item.branch else '',
+                    'date': _local(item.starts_at).date().isoformat(),
+                    'starts_at': item.starts_at,
+                    'ends_at': end_at,
+                    'duration_minutes': duration or 0,
+                    'regular_minutes': regular,
+                    'outside_minutes': outside,
+                    'is_extra_work': assignment.is_extra_work,
+                    'time_outside_regular_hours': is_outside_regular_master_class_hours(item.starts_at),
+                    'outside_regular_master_class_hours': assignment.is_extra_work,
+                    'title': item.title,
+                    'warning': warning,
+                })
 
     if source in ('all', 'lesson'):
         lessons = Lesson.objects.select_related('teacher', 'branch', 'group').filter(

@@ -37,6 +37,7 @@ from .models import (
     Lead,
     LeadMessage,
     MasterClass,
+    MasterClassStaffAssignment,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -59,6 +60,15 @@ from .payment_parts import payment_parts_representation, sync_finance_payment_pa
 from .discounts import calculate_discount, validate_discount_for_sale
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
 from .subscription_dates import calculate_subscription_end_date
+
+
+def user_display_name(user):
+    return user.get_full_name() or user.username if user else ''
+
+
+def lead_first(assignments):
+    return sorted(assignments, key=lambda assignment: (0 if assignment.role == MasterClassStaffAssignment.Role.LEAD else 1, user_display_name(assignment.employee)))
+
 
 class BranchSerializer(serializers.ModelSerializer):
     class Meta:
@@ -845,6 +855,47 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
         return instance
 
 
+class MasterClassStaffAssignmentSerializer(serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    role_display = serializers.SerializerMethodField()
+    effective_duration_minutes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MasterClassStaffAssignment
+        fields = (
+            'id',
+            'employee',
+            'employee_name',
+            'role',
+            'role_display',
+            'is_extra_work',
+            'duration_minutes',
+            'effective_duration_minutes',
+        )
+        read_only_fields = ('id', 'employee_name', 'role_display', 'effective_duration_minutes')
+
+    def get_employee_name(self, obj):
+        return user_display_name(obj.employee)
+
+    def get_role_display(self, obj):
+        return obj.get_role_display()
+
+    def get_effective_duration_minutes(self, obj):
+        return obj.duration_minutes if obj.duration_minutes is not None else obj.master_class.duration_minutes
+
+    def validate_employee(self, value):
+        if not value or not value.is_active:
+            raise serializers.ValidationError('Выберите активного сотрудника.')
+        if not (getattr(value, 'is_superuser', False) or (hasattr(value, 'has_role') and value.has_role('teacher'))):
+            raise serializers.ValidationError('Сотрудник должен иметь роль преподавателя.')
+        return value
+
+    def validate_duration_minutes(self, value):
+        if value is not None and (value <= 0 or value > 720):
+            raise serializers.ValidationError('Длительность работы мастера должна быть от 1 до 720 минут.')
+        return value
+
+
 class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_display_name = serializers.SerializerMethodField()
@@ -855,6 +906,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     is_outside_regular_hours = serializers.SerializerMethodField()
     time_outside_regular_hours = serializers.SerializerMethodField()
     outside_regular_hours_reason = serializers.SerializerMethodField()
+    staff_assignments = MasterClassStaffAssignmentSerializer(many=True, required=False)
     client = serializers.PrimaryKeyRelatedField(
         queryset=Client.objects.all(),
         write_only=True,
@@ -867,6 +919,82 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     class Meta:
         model = MasterClass
         fields = '__all__'
+
+    def _sync_staff_assignments(self, master_class, assignments, explicit):
+        if explicit:
+            master_class.staff_assignments.all().delete()
+            for assignment in assignments:
+                MasterClassStaffAssignment.objects.create(master_class=master_class, **assignment)
+        else:
+            teacher = master_class.teacher
+            if teacher:
+                lead = master_class.staff_assignments.filter(role=MasterClassStaffAssignment.Role.LEAD).first()
+                duplicate = master_class.staff_assignments.filter(employee=teacher).exclude(role=MasterClassStaffAssignment.Role.LEAD).first()
+                if duplicate and not lead:
+                    duplicate.role = MasterClassStaffAssignment.Role.LEAD
+                    duplicate.is_extra_work = master_class.is_extra_work
+                    duplicate.duration_minutes = None
+                    duplicate.save(update_fields=('role', 'is_extra_work', 'duration_minutes', 'updated_at'))
+                    lead = duplicate
+                elif duplicate and lead and duplicate.pk != lead.pk:
+                    duplicate.delete()
+                if lead:
+                    lead.employee = teacher
+                    lead.is_extra_work = master_class.is_extra_work
+                    lead.duration_minutes = None
+                    lead.save(update_fields=('employee', 'is_extra_work', 'duration_minutes', 'updated_at'))
+                else:
+                    MasterClassStaffAssignment.objects.create(
+                        master_class=master_class,
+                        employee=teacher,
+                        role=MasterClassStaffAssignment.Role.LEAD,
+                        is_extra_work=master_class.is_extra_work,
+                        duration_minutes=None,
+                    )
+                master_class.staff_assignments.filter(role=MasterClassStaffAssignment.Role.LEAD).exclude(employee=teacher).delete()
+            else:
+                master_class.staff_assignments.filter(role=MasterClassStaffAssignment.Role.LEAD).delete()
+
+        lead = master_class.staff_assignments.filter(role=MasterClassStaffAssignment.Role.LEAD).select_related('employee').first()
+        next_teacher = lead.employee if lead else None
+        next_is_extra_work = master_class.staff_assignments.filter(is_extra_work=True).exists()
+        update_fields = []
+        if master_class.teacher_id != (next_teacher.id if next_teacher else None):
+            master_class.teacher = next_teacher
+            update_fields.append('teacher')
+        if master_class.is_extra_work != next_is_extra_work:
+            master_class.is_extra_work = next_is_extra_work
+            update_fields.append('is_extra_work')
+        if update_fields:
+            update_fields.append('updated_at')
+            master_class.save(update_fields=update_fields)
+
+    def _validate_staff_assignments(self, attrs, assignments, explicit):
+        duration = attrs.get('duration_minutes', self.instance.duration_minutes if self.instance else None)
+        if explicit:
+            employee_ids = []
+            lead_count = 0
+            for assignment in assignments:
+                employee = assignment.get('employee')
+                if employee:
+                    employee_ids.append(employee.id)
+                if assignment.get('role') == MasterClassStaffAssignment.Role.LEAD:
+                    lead_count += 1
+                assignment_duration = assignment.get('duration_minutes')
+                effective_duration = assignment_duration if assignment_duration is not None else duration
+                if assignment.get('is_extra_work') and not effective_duration:
+                    raise serializers.ValidationError({'staff_assignments': 'Для дополнительного выхода укажите длительность работы мастера.'})
+            if len(employee_ids) != len(set(employee_ids)):
+                raise serializers.ValidationError({'staff_assignments': 'Один сотрудник не может быть добавлен дважды.'})
+            if lead_count > 1:
+                raise serializers.ValidationError({'staff_assignments': 'На одном МК может быть только один основной мастер.'})
+        else:
+            teacher = attrs.get('teacher', self.instance.teacher if self.instance else None)
+            is_extra_work = attrs.get('is_extra_work', self.instance.is_extra_work if self.instance else False)
+            if is_extra_work and not teacher:
+                raise serializers.ValidationError({'teacher': 'Для дополнительного выхода выберите мастера.'})
+            if is_extra_work and (duration is None or duration <= 0):
+                raise serializers.ValidationError({'duration_minutes': 'Для дополнительного выхода укажите длительность МК.'})
 
     def _primary_client(self, obj):
         return obj.participants.first()
@@ -884,6 +1012,20 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             else (payment_method.name if payment_method else '')
         )
         data['payment_parts'] = payment_parts_representation(finance_transaction) if finance_transaction else []
+        assignments = list(instance.staff_assignments.all())
+        if assignments:
+            data['staff_assignments'] = MasterClassStaffAssignmentSerializer(lead_first(assignments), many=True).data
+        elif instance.teacher:
+            data['staff_assignments'] = [{
+                'id': None,
+                'employee': instance.teacher_id,
+                'employee_name': user_display_name(instance.teacher),
+                'role': MasterClassStaffAssignment.Role.LEAD,
+                'role_display': 'Основной мастер',
+                'is_extra_work': instance.is_extra_work,
+                'duration_minutes': None,
+                'effective_duration_minutes': instance.duration_minutes,
+            }]
         return data
 
     def get_client_name(self, obj):
@@ -933,13 +1075,10 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        staff_assignments = attrs.get('staff_assignments')
+        staff_assignments_explicit = 'staff_assignments' in getattr(self, 'initial_data', {})
         duration = attrs.get('duration_minutes', self.instance.duration_minutes if self.instance else None)
-        teacher = attrs.get('teacher', self.instance.teacher if self.instance else None)
-        is_extra_work = attrs.get('is_extra_work', self.instance.is_extra_work if self.instance else False)
-        if is_extra_work and not teacher:
-            raise serializers.ValidationError({'teacher': 'Для дополнительного выхода выберите мастера.'})
-        if is_extra_work and (duration is None or duration <= 0):
-            raise serializers.ValidationError({'duration_minutes': 'Для дополнительного выхода укажите длительность МК.'})
+        self._validate_staff_assignments(attrs, staff_assignments or [], staff_assignments_explicit)
         if duration is not None and (duration <= 0 or duration > 720):
             raise serializers.ValidationError({'duration_minutes': 'Длительность должна быть от 1 до 720 минут.'})
         price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
@@ -976,6 +1115,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         client = validated_data.pop('client', None)
+        staff_assignments = validated_data.pop('staff_assignments', None)
+        staff_assignments_explicit = 'staff_assignments' in getattr(self, 'initial_data', {})
         payment_parts = validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
         payment_method = validated_data.pop('payment_method', None)
@@ -984,6 +1125,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         master_class = super().create(validated_data)
         if client:
             master_class.participants.add(client)
+        self._sync_staff_assignments(master_class, staff_assignments or [], staff_assignments_explicit)
         master_class.selected_payment_method = payment_method
         master_class.selected_payment_parts = payment_parts
         return master_class
@@ -991,6 +1133,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     def update(self, instance, validated_data):
         missing = object()
         client = validated_data.pop('client', missing)
+        staff_assignments = validated_data.pop('staff_assignments', None)
+        staff_assignments_explicit = 'staff_assignments' in getattr(self, 'initial_data', {})
         payment_parts = validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
         payment_method = validated_data.pop('payment_method', missing)
@@ -1002,6 +1146,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
                 master_class.participants.set([client])
             else:
                 master_class.participants.clear()
+        self._sync_staff_assignments(master_class, staff_assignments or [], staff_assignments_explicit)
         if payment_method is not missing:
             master_class.selected_payment_method = payment_method
         elif instance.finance_transaction_id:
@@ -1427,6 +1572,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     master_class_starts_at = serializers.SerializerMethodField()
     master_class_duration_minutes = serializers.SerializerMethodField()
     master_class_is_extra_work = serializers.SerializerMethodField()
+    master_class_staff = serializers.SerializerMethodField()
     master_class_time_outside_regular_hours = serializers.SerializerMethodField()
     master_class_outside_regular_hours = serializers.SerializerMethodField()
     master_class_outside_reason = serializers.SerializerMethodField()
@@ -1487,6 +1633,36 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     def get_master_class_is_extra_work(self, obj):
         item = self._master_class(obj)
         return bool(item and item.is_extra_work)
+
+    def get_master_class_staff(self, obj):
+        item = self._master_class(obj)
+        if not item:
+            return []
+        assignments = lead_first(list(item.staff_assignments.all()))
+        if not assignments and item.teacher:
+            return [{
+                'id': None,
+                'employee': item.teacher_id,
+                'employee_name': user_display_name(item.teacher),
+                'role': MasterClassStaffAssignment.Role.LEAD,
+                'role_display': 'Основной мастер',
+                'is_extra_work': item.is_extra_work,
+                'duration_minutes': None,
+                'effective_duration_minutes': item.duration_minutes,
+            }]
+        return [
+            {
+                'id': assignment.id,
+                'employee': assignment.employee_id,
+                'employee_name': user_display_name(assignment.employee),
+                'role': assignment.role,
+                'role_display': assignment.get_role_display(),
+                'is_extra_work': assignment.is_extra_work,
+                'duration_minutes': assignment.duration_minutes,
+                'effective_duration_minutes': assignment.duration_minutes if assignment.duration_minutes is not None else item.duration_minutes,
+            }
+            for assignment in assignments
+        ]
 
     def get_master_class_time_outside_regular_hours(self, obj):
         return self.get_master_class_outside_regular_hours(obj)

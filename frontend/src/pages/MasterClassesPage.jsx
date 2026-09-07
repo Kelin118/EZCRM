@@ -84,7 +84,36 @@ const isOutsideRegularHours = (value) => {
   return minutes < 16 * 60 || minutes >= 21 * 60;
 };
 
-const profileForTeacher = (profiles, teacherId) => profiles.find((profile) => String(profile.employee) === String(teacherId));
+const assignmentEmployee = (assignment) => (assignment?.employee === null || assignment?.employee === undefined ? '' : String(assignment.employee));
+const assignmentDuration = (assignment) => (assignment?.duration_minutes === null || assignment?.duration_minutes === undefined || assignment?.duration_minutes === '' ? '' : assignment.duration_minutes);
+const normalizeStaffAssignments = (item = {}) => {
+  const source = Array.isArray(item.staff_assignments) && item.staff_assignments.length
+    ? item.staff_assignments
+    : (item.teacher ? [{ employee: item.teacher, role: 'lead', is_extra_work: Boolean(item.is_extra_work), duration_minutes: null }] : []);
+  const sortedSource = [...source].sort((a, b) => (a.role === 'lead' ? 0 : 1) - (b.role === 'lead' ? 0 : 1));
+  const normalized = sortedSource.map((assignment, index) => ({
+    id: assignment.id,
+    employee: assignmentEmployee(assignment),
+    employee_name: assignment.employee_name,
+    role: assignment.role || (index === 0 ? 'lead' : 'assistant'),
+    is_extra_work: Boolean(assignment.is_extra_work),
+    duration_minutes: assignmentDuration(assignment),
+    full_duration: assignment.duration_minutes === null || assignment.duration_minutes === undefined || assignment.duration_minutes === '',
+  }));
+  if (!normalized.some((assignment) => assignment.role === 'lead')) {
+    normalized.unshift({ employee: '', role: 'lead', is_extra_work: false, duration_minutes: '', full_duration: true });
+  }
+  return normalized;
+};
+const staffForDisplay = (item = {}) => normalizeStaffAssignments(item).filter((assignment) => assignment.employee);
+const staffNames = (item = {}) => {
+  const staff = staffForDisplay(item);
+  const lead = staff.find((assignment) => assignment.role === 'lead') || staff[0];
+  const assistants = staff.filter((assignment) => assignment !== lead);
+  const leadName = lead?.employee_name || item.teacher_name || 'Не указан';
+  const assistantNames = assistants.map((assignment) => assignment.employee_name).filter(Boolean);
+  return { staff, leadName, assistantNames, extraCount: staff.filter((assignment) => assignment.is_extra_work).length };
+};
 
 function dispatchError(message) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
@@ -114,6 +143,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
   const clientName = clientDisplay(item);
   const clientInfo = clientSecondary(item);
   const timeOutside = item.time_outside_regular_hours ?? item.outside_regular_hours ?? item.is_outside_regular_hours;
+  const { leadName, assistantNames, extraCount } = staffNames(item);
 
   return (
     <KanbanCard draggable={canEdit} {...dragProps}>
@@ -124,7 +154,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         </div>
         <div className="grid justify-items-end gap-1">
           <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
-          {item.is_extra_work && <Badge value="outside">Вне времени МК</Badge>}
+          {extraCount > 0 && <Badge value="outside">Вне времени МК · {extraCount}</Badge>}
           {!item.is_extra_work && timeOutside && <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">Вне 16:00–21:00</span>}
         </div>
       </div>
@@ -133,7 +163,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата МК</dt><dd className="text-right font-medium">{dateTime(item.starts_at)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Длительность</dt><dd className="text-right font-medium">{item.duration_minutes ? `${item.duration_minutes} мин` : 'Не указана'}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(item.title)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Куратор</dt><dd className="text-right font-medium">{dash(item.teacher_name || item.teacher)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Мастер</dt><dd className="text-right font-medium">{leadName}{assistantNames.length ? ` +${assistantNames.length}` : ''}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма оплаты</dt><dd className="text-right font-semibold text-brand">{money(item.payment_amount)}</dd></div>
       </dl>
@@ -152,7 +182,7 @@ export default function MasterClassesPage() {
   const [viewMode, setViewMode] = useState('table');
   const [saving, setSaving] = useState(false);
   const [duplicateError, setDuplicateError] = useState(null);
-  const [payrollProfiles, setPayrollProfiles] = useState([]);
+  const [payPreview, setPayPreview] = useState([]);
   const [unmarkedOutsideCount, setUnmarkedOutsideCount] = useState(0);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
@@ -162,25 +192,13 @@ export default function MasterClassesPage() {
   const { getDiscountById } = useDiscounts({ branch: form.branch });
   const selectedDiscount = getDiscountById(form.discount);
   const formOutsideRegularHours = isOutsideRegularHours(form.starts_at);
-  const selectedTeacherOption = teacherOptions.find((item) => String(item.value) === String(form.teacher));
-  const selectedPayrollProfile = profileForTeacher(payrollProfiles, form.teacher);
-  const outsideRate = Number(selectedPayrollProfile?.outside_hourly_rate || 0);
-  const extraBonus = Number(selectedPayrollProfile?.outside_master_class_bonus || 0);
-  const extraDuration = Number(form.duration_minutes || 0);
-  const hasExtraRate = Boolean(selectedPayrollProfile) && (outsideRate > 0 || extraBonus > 0);
-  const extraWorkPreview = (extraDuration / 60) * outsideRate + extraBonus;
+  const staffAssignments = normalizeStaffAssignments(form);
   const discountAmount = calculateDiscountAmount(form.price, selectedDiscount);
   const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
   const changeDiscount = (value) => {
     const discount = getDiscountById(value);
     setForm({ ...form, discount: value, payment_amount: calculateDiscountedTotal(form.price, discount) });
   };
-
-  useEffect(() => {
-    api.get('employee-payroll-profiles/')
-      .then(({ data }) => setPayrollProfiles(Array.isArray(data) ? data : data.results || []))
-      .catch(() => setPayrollProfiles([]));
-  }, []);
 
   useEffect(() => {
     const params = { ...crud.filters, outside_regular_hours: 'true', extra_work: 'false' };
@@ -194,6 +212,58 @@ export default function MasterClassesPage() {
       })
       .catch(() => setUnmarkedOutsideCount(0));
   }, [crud.filters]);
+
+  useEffect(() => {
+    const assignments = normalizeStaffAssignments(form).filter((assignment) => assignment.employee);
+    if (!assignments.length || !form.starts_at) {
+      setPayPreview([]);
+      return;
+    }
+    let mounted = true;
+    api.post('master-classes/pay-preview/', {
+      starts_at: form.starts_at,
+      duration_minutes: form.duration_minutes || null,
+      staff_assignments: assignments.map((assignment) => ({
+        employee: Number(assignment.employee),
+        is_extra_work: Boolean(assignment.is_extra_work),
+        duration_minutes: assignment.full_duration ? null : Number(assignment.duration_minutes || 0),
+      })),
+    })
+      .then(({ data }) => {
+        if (mounted) setPayPreview(data.items || []);
+      })
+      .catch(() => {
+        if (mounted) setPayPreview([]);
+      });
+    return () => { mounted = false; };
+  }, [form.staff_assignments, form.teacher, form.is_extra_work, form.starts_at, form.duration_minutes]);
+
+  const applyStaffAssignments = (assignments) => {
+    const normalized = assignments.map((assignment, index) => ({
+      ...assignment,
+      employee: assignmentEmployee(assignment),
+      role: index === 0 ? 'lead' : 'assistant',
+      is_extra_work: Boolean(assignment.is_extra_work),
+      duration_minutes: assignment.full_duration ? '' : assignmentDuration(assignment),
+      full_duration: Boolean(assignment.full_duration),
+    }));
+    const lead = normalized.find((assignment) => assignment.role === 'lead') || normalized[0];
+    setForm({
+      ...form,
+      staff_assignments: normalized,
+      teacher: lead?.employee || '',
+      is_extra_work: normalized.some((assignment) => assignment.is_extra_work),
+    });
+  };
+
+  const staffPayload = () => staffAssignments
+    .map((assignment, index) => ({
+      employee: Number(assignment.employee),
+      role: index === 0 ? 'lead' : 'assistant',
+      is_extra_work: Boolean(assignment.is_extra_work),
+      duration_minutes: assignment.full_duration ? null : Number(assignment.duration_minutes || 0),
+    }))
+    .filter((assignment) => assignment.employee);
   const fields = [
     duplicateError && {
       name: 'duplicate_warning',
@@ -211,59 +281,115 @@ export default function MasterClassesPage() {
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
     { name: 'discount', type: 'custom', className: '', render: () => <DiscountSelect value={form.discount} onChange={changeDiscount} branch={form.branch} /> },
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
-    { name: 'teacher', label: 'Мастер / преподаватель', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...teacherOptions] },
     baseFields[1],
     baseFields[2],
     {
-      name: 'is_extra_work',
+      name: 'staff_assignments',
       type: 'custom',
       className: 'md:col-span-2',
       render: () => (
-        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-          <p className="font-black">Учёт работы мастера</p>
-          <label className="mt-3 flex items-start gap-3">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={Boolean(form.is_extra_work)}
-              onChange={(event) => setForm({ ...form, is_extra_work: event.target.checked })}
-            />
-            <span>
-              <span className="block font-bold">Вне времени мастер-классов</span>
-              <span className="mt-1 block text-xs font-semibold text-amber-900/80">
-                Отметьте, если мастер выходит на этот мастер-класс дополнительно. Запись будет учтена при расчёте дополнительной работы и зарплаты.
-              </span>
-            </span>
-          </label>
+        <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-black text-slate-900">Мастера</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">Основной мастер и помощники этого МК. Дополнительный выход отмечается отдельно для каждого сотрудника.</p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => applyStaffAssignments([...staffAssignments, { employee: '', role: 'assistant', is_extra_work: false, duration_minutes: '', full_duration: true }])}
+            >
+              + Добавить мастера
+            </Button>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {staffAssignments.map((assignment, index) => {
+              const selectedEmployees = staffAssignments.map((item, itemIndex) => (itemIndex === index ? null : item.employee)).filter(Boolean);
+              const options = teacherOptions.filter((option) => !selectedEmployees.includes(String(option.value)) || String(option.value) === String(assignment.employee));
+              const preview = payPreview.find((item) => String(item.employee) === String(assignment.employee));
+              return (
+                <div key={assignment.id || index} className="rounded-2xl border border-white bg-white p-3 shadow-sm">
+                  <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                    <label className="grid gap-1.5 font-semibold text-slate-700">
+                      {index === 0 ? 'Основной мастер' : 'Помощник'}
+                      <select
+                        value={assignment.employee}
+                        onChange={(event) => applyStaffAssignments(staffAssignments.map((item, itemIndex) => (itemIndex === index ? { ...item, employee: event.target.value } : item)))}
+                        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                      >
+                        <option value="">Не выбран</option>
+                        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                    </label>
+                    {index > 0 && (
+                      <div className="flex items-end">
+                        <Button variant="secondary" onClick={() => applyStaffAssignments(staffAssignments.filter((_, itemIndex) => itemIndex !== index))}>Удалить</Button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <label className="flex items-start gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-amber-900">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={Boolean(assignment.is_extra_work)}
+                        onChange={(event) => applyStaffAssignments(staffAssignments.map((item, itemIndex) => (itemIndex === index ? { ...item, is_extra_work: event.target.checked } : item)))}
+                      />
+                      <span>
+                        <span className="block font-bold">Дополнительный выход</span>
+                        <span className="mt-1 block text-xs font-semibold">Учитывать для этого сотрудника как дополнительный выход.</span>
+                      </span>
+                    </label>
+                    <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                      <label className="flex items-center gap-2 font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={assignment.full_duration}
+                          onChange={(event) => applyStaffAssignments(staffAssignments.map((item, itemIndex) => (itemIndex === index ? { ...item, full_duration: event.target.checked, duration_minutes: event.target.checked ? '' : item.duration_minutes } : item)))}
+                        />
+                        Весь МК
+                      </label>
+                      {!assignment.full_duration && (
+                        <Input
+                          label="Длительность работы, минут"
+                          type="number"
+                          value={assignment.duration_minutes}
+                          onChange={(event) => applyStaffAssignments(staffAssignments.map((item, itemIndex) => (itemIndex === index ? { ...item, duration_minutes: event.target.value } : item)))}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  {assignment.employee && preview && (
+                    <div className={`mt-3 rounded-2xl p-3 text-sm ${preview.rate_configured ? 'bg-brand/5 text-slate-700' : 'bg-amber-50 text-amber-900'}`}>
+                      <p className="font-bold">Предварительный расчёт оплаты</p>
+                      {!preview.rate_configured ? (
+                        <p className="mt-1">Ставка не настроена. Настройте ставку в разделе Сотрудники → Оплата труда.</p>
+                      ) : (
+                        <div className="mt-1 grid gap-1">
+                          <p>Длительность: {preview.effective_duration_minutes || 0} мин</p>
+                          {preview.pay_type === 'monthly' && <p>Оклад — обычное время входит в оклад.</p>}
+                          <p>По графику: {money(preview.regular_amount)}</p>
+                          <p>Вне графика сотрудника: {money(preview.outside_amount)}</p>
+                          <p>Доплата за МК: {money(preview.extra_master_class_bonus)}</p>
+                          <p className="font-black text-slate-900">Предварительно: {money(preview.estimated_total)}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
           {formOutsideRegularHours && (
-            <div className="mt-4 rounded-2xl bg-white/70 p-3">
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900">
               <p className="font-bold">Время вне стандартного окна МК</p>
               <p className="mt-1">Этот мастер-класс проходит вне обычного времени 16:00–21:00.</p>
-              {!form.is_extra_work && (
-                <Button className="mt-3" variant="secondary" onClick={() => setForm({ ...form, is_extra_work: true })}>
-                  Отметить как дополнительный выход
-                </Button>
-              )}
+              <Button className="mt-3" variant="secondary" onClick={() => applyStaffAssignments(staffAssignments.map((assignment) => ({ ...assignment, is_extra_work: true })))}>
+                Отметить всех мастеров как дополнительный выход
+              </Button>
             </div>
           )}
           {!formOutsideRegularHours && form.is_extra_work && (
-            <p className="mt-4 rounded-2xl bg-white/70 p-3 font-semibold">МК находится в стандартном времени, но отмечен как дополнительный выход.</p>
-          )}
-          {form.is_extra_work && (
-            <div className={`mt-4 rounded-2xl p-3 ${hasExtraRate ? 'bg-white/80' : 'bg-amber-100 text-amber-900'}`}>
-              <p className="font-bold">Предварительный расчёт дополнительной работы</p>
-              {!hasExtraRate ? (
-                <p className="mt-1">Ставка дополнительной работы для этого мастера не настроена. Настройте ставку в разделе Сотрудники → Оплата труда.</p>
-              ) : (
-                <div className="mt-2 grid gap-1 text-sm">
-                  <p>Мастер: {selectedTeacherOption?.label || 'Не выбран'}</p>
-                  <p>Длительность: {extraDuration || 0} мин</p>
-                  <p>Ставка дополнительной работы: {money(outsideRate)} / час</p>
-                  <p>Доплата за МК: {money(extraBonus)}</p>
-                  <p className="font-black text-slate-900">Предварительно: {money(extraWorkPreview)}</p>
-                </div>
-              )}
-            </div>
+            <p className="mt-4 rounded-2xl bg-brand/5 p-3 font-semibold text-slate-700">МК находится в стандартном времени, но один или несколько мастеров отмечены как дополнительный выход.</p>
           )}
         </section>
       ),
@@ -296,11 +422,15 @@ export default function MasterClassesPage() {
 
   const saveMasterClass = async () => {
     setDuplicateError(null);
-    if (form.is_extra_work && !form.teacher) {
+    const assignments = staffPayload();
+    if (assignments.some((assignment) => assignment.is_extra_work && !assignment.employee)) {
       dispatchError('Для дополнительного выхода выберите мастера.');
       return;
     }
-    if (form.is_extra_work && Number(form.duration_minutes || 0) <= 0) {
+    if (assignments.some((assignment) => {
+      const effectiveDuration = assignment.duration_minutes ?? Number(form.duration_minutes || 0);
+      return assignment.is_extra_work && Number(effectiveDuration || 0) <= 0;
+    })) {
       dispatchError('Для дополнительного выхода укажите длительность МК.');
       return;
     }
@@ -310,7 +440,13 @@ export default function MasterClassesPage() {
     }
     setSaving(true);
     try {
-      const payload = normalizePayload({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+      const payload = normalizePayload({
+        ...form,
+        teacher: assignments.find((assignment) => assignment.role === 'lead')?.employee || null,
+        is_extra_work: assignments.some((assignment) => assignment.is_extra_work),
+        staff_assignments: assignments,
+        payment_parts: paymentPartsPayload(form.payment_parts),
+      });
       if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
       else await api.post('master-classes/', payload);
       crud.setModalOpen(false);
@@ -387,6 +523,15 @@ export default function MasterClassesPage() {
             </div>
           ) },
           { key: 'title', header: 'Предмет' },
+          { key: 'staff', header: 'Мастера', render: (row) => {
+            const { leadName, assistantNames } = staffNames(row);
+            return (
+              <div className="text-sm">
+                <p className="font-semibold text-slate-900">Основной: {leadName}</p>
+                {assistantNames.length ? <p className="text-xs font-medium text-slate-500">Помощники: {assistantNames.join(', ')}</p> : null}
+              </div>
+            );
+          } },
           { key: 'starts_at', header: 'Дата проведения МК', render: (row) => {
             const value = eventDateTime(row.starts_at);
             return <div><p className="font-semibold text-slate-900">{value.date}</p>{value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;

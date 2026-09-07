@@ -14,7 +14,7 @@ from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
-from django.utils.dateparse import parse_date
+from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import serializers as drf_serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -63,6 +63,7 @@ from .models import (
     Lead,
     LeadMessage,
     MasterClass,
+    MasterClassStaffAssignment,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -152,7 +153,7 @@ from .serializers import (
 from .meta_webhooks import normalize_kz_phone, process_meta_webhook, verify_meta_signature
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
-from .employee_worklog import build_employee_worklog
+from .employee_worklog import build_employee_worklog, split_work_interval_by_schedule
 from .payroll import apply_payroll_calculation, generate_payroll_statements
 from .subscription_dates import calculate_subscription_end_date
 from users.role_hierarchy import manageable_by_manager
@@ -2117,9 +2118,21 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         )
 
 
+def _parse_master_class_starts_at(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        starts_at = value
+    else:
+        starts_at = parse_datetime(str(value))
+    if starts_at and timezone.is_naive(starts_at):
+        starts_at = timezone.make_aware(starts_at)
+    return starts_at
+
+
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
-    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related('participants').all()
+    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related('participants', 'staff_assignments__employee').all()
     serializer_class = MasterClassSerializer
     audit_entity_type = 'MasterClass'
     audit_update_description = 'Изменён МК'
@@ -2144,7 +2157,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         if manager:
             queryset = queryset.filter(manager_id=manager)
         if teacher:
-            queryset = queryset.filter(teacher_id=teacher)
+            queryset = queryset.filter(Q(teacher_id=teacher) | Q(staff_assignments__employee_id=teacher))
         if client:
             queryset = queryset.filter(participants__id=client)
         if search:
@@ -2157,7 +2170,11 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 | Q(participants__phone__icontains=search)
             )
         if _my_param(self.request):
-            queryset = queryset.filter(manager=self.request.user) | queryset.filter(teacher=self.request.user)
+            queryset = queryset.filter(
+                Q(manager=self.request.user)
+                | Q(teacher=self.request.user)
+                | Q(staff_assignments__employee=self.request.user)
+            )
         if event_date:
             queryset = queryset.filter(starts_at__date=event_date)
         if event_date_from:
@@ -2176,6 +2193,59 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(id__in=outside_ids)
         return queryset.distinct().order_by('-starts_at')
 
+    @action(detail=False, methods=['post'], url_path='pay-preview')
+    def pay_preview(self, request):
+        starts_at = _parse_master_class_starts_at(request.data.get('starts_at'))
+        duration = request.data.get('duration_minutes')
+        duration = int(duration) if duration not in (None, '') else None
+        assignments = request.data.get('staff_assignments') or []
+        if not isinstance(assignments, list):
+            raise drf_serializers.ValidationError({'staff_assignments': 'Передайте список мастеров.'})
+
+        items = []
+        for assignment in assignments:
+            employee_id = assignment.get('employee')
+            if not employee_id:
+                continue
+            employee = User.objects.filter(pk=employee_id, is_active=True).first()
+            if not employee:
+                continue
+            assignment_duration = assignment.get('duration_minutes')
+            effective_duration = int(assignment_duration) if assignment_duration not in (None, '') else duration
+            is_extra_work = bool(assignment.get('is_extra_work'))
+            regular_minutes = outside_minutes = 0
+            if starts_at and effective_duration and effective_duration > 0:
+                split = split_work_interval_by_schedule(employee, starts_at, starts_at + timedelta(minutes=effective_duration))
+                regular_minutes = split['regular_minutes']
+                outside_minutes = split['outside_minutes']
+
+            profile = EmployeePayrollProfile.objects.filter(employee=employee, is_active=True).first()
+            rate_configured = bool(profile and (profile.pay_type == EmployeePayrollProfile.PayType.MONTHLY or profile.regular_hourly_rate or profile.outside_hourly_rate or profile.outside_master_class_bonus))
+            regular_rate = _money(profile.regular_hourly_rate if profile else 0)
+            outside_rate = _money(profile.outside_hourly_rate if profile else 0)
+            bonus_rate = _money(profile.outside_master_class_bonus if profile else 0)
+            if profile and profile.pay_type == EmployeePayrollProfile.PayType.MONTHLY:
+                regular_amount = Decimal('0.00')
+            else:
+                regular_amount = _money(Decimal(regular_minutes) / Decimal(60) * regular_rate)
+            outside_amount = _money(Decimal(outside_minutes) / Decimal(60) * outside_rate)
+            bonus = bonus_rate if is_extra_work else Decimal('0.00')
+            items.append({
+                'employee': employee.id,
+                'employee_name': _person_name(employee),
+                'effective_duration_minutes': effective_duration,
+                'regular_minutes': regular_minutes,
+                'outside_minutes': outside_minutes,
+                'is_extra_work': is_extra_work,
+                'pay_type': profile.pay_type if profile else '',
+                'regular_amount': str(regular_amount),
+                'outside_amount': str(outside_amount),
+                'extra_master_class_bonus': str(bonus),
+                'estimated_total': str(_money(regular_amount + outside_amount + bonus)),
+                'rate_configured': rate_configured,
+            })
+        return Response({'items': items})
+
     def _duplicate_payload(self, duplicate):
         client = duplicate.participants.first()
         return {
@@ -2184,6 +2254,18 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             'title': duplicate.title,
             'starts_at': duplicate.starts_at.isoformat() if duplicate.starts_at else None,
         }
+
+    def _staff_audit_snapshot(self, master_class):
+        return [
+            {
+                'employee': assignment.employee_id,
+                'employee_name': _person_name(assignment.employee),
+                'role': assignment.role,
+                'is_extra_work': assignment.is_extra_work,
+                'duration_minutes': assignment.duration_minutes,
+            }
+            for assignment in master_class.staff_assignments.select_related('employee').order_by('role', 'employee_id')
+        ]
 
     def _find_duplicate(self, *, client, starts_at, title, exclude_id=None):
         if not client or not starts_at or not title:
@@ -2339,6 +2421,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         previous_stage = serializer.instance.stage
         instance = serializer.instance
+        before_staff = self._staff_audit_snapshot(instance)
         client = serializer.validated_data.get('client')
         if 'client' not in serializer.validated_data:
             client = instance.participants.first()
@@ -2356,6 +2439,9 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         changes = self._audit_changes()
         if previous_stage != master_class.stage:
             changes['stage'] = {'from': previous_stage, 'to': master_class.stage}
+        after_staff = self._staff_audit_snapshot(master_class)
+        if before_staff != after_staff:
+            changes['staff_assignments'] = {'before': before_staff, 'after': after_staff}
         self._log_instance(AuditLog.Action.UPDATE, master_class, 'Изменён МК', changes)
 
 
@@ -3508,7 +3594,7 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'manager', 'payment_method', 'discount', 'addon_sale', 'master_class_payment', 'master_class_payment__teacher').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item').all()
+    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'manager', 'payment_method', 'discount', 'addon_sale', 'master_class_payment', 'master_class_payment__teacher').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item', 'master_class_payment__staff_assignments__employee').all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -3556,7 +3642,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if manager and manager != 'all':
             queryset = queryset.filter(manager__isnull=True) if manager == 'unassigned' else queryset.filter(manager_id=manager)
         if teacher and teacher != 'all':
-            queryset = queryset.filter(master_class_payment__teacher_id=teacher)
+            queryset = queryset.filter(Q(master_class_payment__teacher_id=teacher) | Q(master_class_payment__staff_assignments__employee_id=teacher))
         if outside_master_class in ('true', 'false', '1', '0'):
             is_outside = outside_master_class in ('true', '1')
             ids = [

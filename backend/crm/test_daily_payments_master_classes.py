@@ -6,7 +6,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, PaymentMethod
+from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, MasterClassStaffAssignment, PaymentMethod
 
 
 def aware_dt(year, month, day, hour=0, minute=0):
@@ -180,6 +180,10 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
         self.manager = User.objects.create_user(username='mc-manager', password='pass', role='manager', roles=['manager'])
         self.teacher = User.objects.create_user(username='mc-teacher', password='pass', role='teacher', roles=['teacher'])
         self.other_teacher = User.objects.create_user(username='mc-teacher-2', password='pass', role='teacher', roles=['teacher'])
+        self.assistant = User.objects.create_user(username='mc-assistant', password='pass', role='teacher', roles=['teacher'])
+        self.third_teacher = User.objects.create_user(username='mc-teacher-3', password='pass', role='teacher', roles=['teacher'])
+        self.fourth_teacher = User.objects.create_user(username='mc-teacher-4', password='pass', role='teacher', roles=['teacher'])
+        self.not_teacher = User.objects.create_user(username='mc-not-teacher', password='pass', role='manager', roles=['manager'])
         self.branch = Branch.objects.create(name='МК Абая')
         self.other_branch = Branch.objects.create(name='МК Сарыарка')
         self.cash = PaymentMethod.objects.create(name='МК Cash', code='mc_cash')
@@ -374,7 +378,7 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
         self.assert_outside_ids([first.id], branch=self.branch.id)
 
-    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False, teacher='default', duration_minutes=60):
+    def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False, teacher='default', duration_minutes=60, staff_assignments=None):
         self.client.force_authenticate(self.manager)
         payload = {
             'title': title,
@@ -388,11 +392,21 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
             payload['teacher'] = self.teacher.id if teacher == 'default' else teacher
         if duration_minutes != 'omit':
             payload['duration_minutes'] = duration_minutes
+        if staff_assignments is not None:
+            payload['staff_assignments'] = staff_assignments
         return self.client.post(
             '/api/master-classes/',
             payload,
             format='json',
         )
+
+    def staff(self, employee, role='assistant', is_extra_work=False, duration_minutes=None):
+        return {
+            'employee': employee.id if hasattr(employee, 'id') else employee,
+            'role': role,
+            'is_extra_work': is_extra_work,
+            'duration_minutes': duration_minutes,
+        }
 
     def test_create_and_update_extra_work_flag(self):
         response = self.post_master_class(is_extra_work=False)
@@ -440,6 +454,147 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
         self.assertEqual(patch.status_code, 200, patch.data)
         self.assertTrue(patch.data['is_extra_work'])
+
+    def test_legacy_teacher_payload_creates_lead_assignment(self):
+        response = self.post_master_class()
+        master_class = MasterClass.objects.get(pk=response.data['id'])
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(master_class.staff_assignments.count(), 1)
+        assignment = master_class.staff_assignments.get()
+        self.assertEqual(assignment.employee_id, self.teacher.id)
+        self.assertEqual(assignment.role, MasterClassStaffAssignment.Role.LEAD)
+
+    def test_create_with_multiple_staff_assignments_syncs_teacher_and_extra_work(self):
+        response = self.post_master_class(
+            title='Большой МК',
+            staff_assignments=[
+                self.staff(self.teacher, role='lead'),
+                self.staff(self.assistant, is_extra_work=True, duration_minutes=60),
+                self.staff(self.third_teacher),
+                self.staff(self.fourth_teacher),
+            ],
+        )
+        master_class = MasterClass.objects.get(pk=response.data['id'])
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(master_class.teacher_id, self.teacher.id)
+        self.assertTrue(master_class.is_extra_work)
+        self.assertEqual(master_class.staff_assignments.count(), 4)
+        assistant = master_class.staff_assignments.get(employee=self.assistant)
+        self.assertEqual(assistant.duration_minutes, 60)
+        self.assertEqual(next(item for item in response.data['staff_assignments'] if item['employee'] == self.assistant.id)['effective_duration_minutes'], 60)
+
+    def test_staff_assignments_reject_duplicate_employee(self):
+        response = self.post_master_class(
+            staff_assignments=[
+                self.staff(self.teacher, role='lead'),
+                self.staff(self.teacher, role='assistant'),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('staff_assignments', response.data)
+
+    def test_staff_assignments_reject_two_leads(self):
+        response = self.post_master_class(
+            staff_assignments=[
+                self.staff(self.teacher, role='lead'),
+                self.staff(self.assistant, role='lead'),
+            ],
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('staff_assignments', response.data)
+
+    def test_staff_assignments_reject_non_teacher_employee(self):
+        response = self.post_master_class(staff_assignments=[self.staff(self.not_teacher, role='lead')])
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_staff_assignment_duration_bounds(self):
+        zero = self.post_master_class(title='Zero duration staff', staff_assignments=[self.staff(self.teacher, role='lead', duration_minutes=0)])
+        too_long = self.post_master_class(title='Long duration staff', staff_assignments=[self.staff(self.teacher, role='lead', duration_minutes=721)])
+
+        self.assertEqual(zero.status_code, 400)
+        self.assertEqual(too_long.status_code, 400)
+
+    def test_staff_assignment_extra_requires_effective_duration(self):
+        response = self.post_master_class(duration_minutes=None, staff_assignments=[self.staff(self.teacher, role='lead', is_extra_work=True)])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('staff_assignments', response.data)
+
+    def test_update_add_remove_assistant_and_change_lead(self):
+        response = self.post_master_class(staff_assignments=[self.staff(self.teacher, role='lead')])
+        master_class_id = response.data['id']
+        self.client.force_authenticate(self.manager)
+
+        add = self.client.patch(f'/api/master-classes/{master_class_id}/', {
+            'staff_assignments': [self.staff(self.teacher, role='lead'), self.staff(self.assistant, role='assistant', is_extra_work=True)],
+        }, format='json')
+        change = self.client.patch(f'/api/master-classes/{master_class_id}/', {
+            'staff_assignments': [self.staff(self.other_teacher, role='lead')],
+        }, format='json')
+        master_class = MasterClass.objects.get(pk=master_class_id)
+
+        self.assertEqual(add.status_code, 200, add.data)
+        self.assertTrue(add.data['is_extra_work'])
+        self.assertEqual(change.status_code, 200, change.data)
+        self.assertEqual(master_class.teacher_id, self.other_teacher.id)
+        self.assertFalse(master_class.is_extra_work)
+        self.assertEqual(master_class.staff_assignments.count(), 1)
+
+    def test_extra_work_false_filter_uses_staff_aggregate(self):
+        marked = self.post_master_class(title='Marked', staff_assignments=[self.staff(self.teacher, role='lead', is_extra_work=True)])
+        plain = self.post_master_class(title='Plain', staff_assignments=[self.staff(self.assistant, role='lead', is_extra_work=False)])
+
+        items = self.list_master_classes({'extra_work': 'false'})
+
+        self.assertEqual(marked.status_code, 201)
+        self.assertEqual(plain.status_code, 201)
+        self.assertEqual([item['id'] for item in items], [plain.data['id']])
+
+    def test_teacher_filter_finds_lead_and_assistant_without_duplicates(self):
+        response = self.post_master_class(
+            title='Staff filter',
+            staff_assignments=[
+                self.staff(self.teacher, role='lead'),
+                self.staff(self.assistant, role='assistant'),
+            ],
+        )
+
+        lead_items = self.list_master_classes({'teacher': self.teacher.id})
+        assistant_items = self.list_master_classes({'teacher': self.assistant.id})
+
+        self.assertEqual([item['id'] for item in lead_items], [response.data['id']])
+        self.assertEqual([item['id'] for item in assistant_items], [response.data['id']])
+
+    def test_finance_teacher_filter_finds_assistant_without_duplicates(self):
+        response = self.post_master_class(
+            title='Finance staff filter',
+            staff_assignments=[
+                self.staff(self.teacher, role='lead'),
+                self.staff(self.assistant, role='assistant', is_extra_work=True),
+            ],
+        )
+        master_class = MasterClass.objects.get(pk=response.data['id'])
+        transaction = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('3000.00'),
+            source='master_class',
+            paid_at=aware_dt(2026, 8, 17, 12),
+        )
+        master_class.finance_transaction = transaction
+        master_class.save(update_fields=('finance_transaction',))
+        self.client.force_authenticate(self.manager)
+
+        finance = self.client.get('/api/finance/', {'teacher': self.assistant.id})
+
+        self.assertEqual(finance.status_code, 200, finance.data)
+        self.assertEqual(len(finance.data), 1)
+        self.assertEqual(finance.data[0]['master_class_id'], master_class.id)
+        self.assertEqual(len(finance.data[0]['master_class_staff']), 2)
 
     def test_same_client_same_date_same_title_is_rejected(self):
         first = self.post_master_class()

@@ -26,6 +26,13 @@ const sourceOptions = [
 ];
 const sourceLabel = (value) => sourceOptions.find((item) => item.value === value)?.label || value || 'Другое';
 const typeLabel = (value) => (value === 'income' ? 'Доход' : value === 'expense' ? 'Расход' : value);
+const masterClassStaffNames = (row) => (Array.isArray(row.master_class_staff) ? row.master_class_staff : [])
+  .map((item) => item.employee_name)
+  .filter(Boolean);
+const masterClassExtraStaffNames = (row) => (Array.isArray(row.master_class_staff) ? row.master_class_staff : [])
+  .filter((item) => item.is_extra_work)
+  .map((item) => item.employee_name)
+  .filter(Boolean);
 
 function dispatchError(message) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
@@ -203,7 +210,8 @@ export default function FinancePage() {
           <div>
             <p>{row.source === 'master_class' && row.master_class_title ? `МК · ${row.master_class_title}` : sourceLabel(row.source)}</p>
             {row.master_class_is_extra_work && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}
-            {row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>}
+            {row.master_class_staff?.length ? <p className="text-xs text-slate-500">Мастера: {masterClassStaffNames(row).join(', ')}</p> : (row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>)}
+            {masterClassExtraStaffNames(row).length ? <p className="text-xs font-semibold text-amber-700">Доп. выход: {masterClassExtraStaffNames(row).join(', ')}</p> : null}
             {row.master_class_starts_at && <p className="text-xs text-slate-500">{new Date(row.master_class_starts_at).toLocaleString('ru-RU')}</p>}
           </div>
         ) },

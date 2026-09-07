@@ -540,6 +540,36 @@ class MasterClass(TimeStampedModel):
         return self.title
 
 
+class MasterClassStaffAssignment(TimeStampedModel):
+    class Role(models.TextChoices):
+        LEAD = 'lead', 'Основной мастер'
+        ASSISTANT = 'assistant', 'Помощник'
+
+    master_class = models.ForeignKey(MasterClass, on_delete=models.CASCADE, related_name='staff_assignments')
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='master_class_staff_assignments',
+    )
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.ASSISTANT)
+    is_extra_work = models.BooleanField(default=False)
+    duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(fields=('master_class', 'employee'), name='unique_master_class_staff_employee'),
+            models.UniqueConstraint(
+                fields=('master_class',),
+                condition=models.Q(role='lead'),
+                name='unique_master_class_lead_staff',
+            ),
+        )
+        ordering = ('master_class', 'role', 'employee')
+
+    def __str__(self):
+        return f'{self.master_class} · {self.employee} · {self.get_role_display()}'
+
+
 class Task(TimeStampedModel):
     class Status(models.TextChoices):
         NEW = 'new', 'New'

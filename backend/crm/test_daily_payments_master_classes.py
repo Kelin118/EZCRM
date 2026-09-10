@@ -6,7 +6,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, MasterClassStaffAssignment, PaymentMethod
+from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, MasterClassPayment, MasterClassStaffAssignment, PaymentMethod
 
 
 def aware_dt(year, month, day, hour=0, minute=0):
@@ -170,6 +170,40 @@ class DailyPaymentsReportTests(APITestCase):
                 self.client.force_authenticate(user)
                 response = self.client.get('/api/reports/daily-payments/', {'date': self.date})
                 self.assertEqual(response.status_code, 200)
+
+    def test_master_class_multiple_payments_are_counted_once_each(self):
+        student = Client.objects.create(first_name='Daily', last_name='Master', branch=self.branch)
+        master_class = MasterClass.objects.create(
+            title='Daily MC',
+            starts_at=aware_dt(2026, 8, 18, 16),
+            manager=self.manager,
+            teacher=self.teacher,
+            branch=self.branch,
+            price=Decimal('10000.00'),
+            payment_amount=Decimal('0.00'),
+        )
+        master_class.participants.add(student)
+        for amount, method in (('4000.00', self.cash), ('6000.00', self.card)):
+            transaction = self.transaction(amount, method, branch=self.branch, paid_at=aware_dt(2026, 8, 18, 12))
+            transaction.source = 'master_class'
+            transaction.client = student
+            transaction.manager = self.manager
+            transaction.save(update_fields=('source', 'client', 'manager', 'updated_at'))
+            MasterClassPayment.objects.create(
+                master_class=master_class,
+                payment_type=MasterClassPayment.PaymentType.ADDITIONAL,
+                amount=Decimal(amount),
+                payment_date=timezone.localdate(transaction.paid_at),
+                accepted_by=self.manager,
+                finance_transaction=transaction,
+            )
+
+        row = self.branch_row(self.report())
+
+        self.assertEqual(Decimal(row['cash_income']), Decimal('4000.00'))
+        self.assertEqual(Decimal(row['card_income']), Decimal('6000.00'))
+        self.assertEqual(Decimal(row['total_income']), Decimal('10000.00'))
+        self.assertEqual(Decimal(self.report()['totals']['income_total']), Decimal('10000.00'))
 
 
 @override_settings(TIME_ZONE='Asia/Qyzylorda')

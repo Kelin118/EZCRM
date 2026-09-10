@@ -76,6 +76,13 @@ const readOnlyFields = new Set([
   'finance_transaction',
   'lesson_deducted',
   'manager_work_schedule',
+  'amount_due',
+  'paid_total',
+  'remaining_amount',
+  'overpaid_amount',
+  'payment_status',
+  'payments',
+  'payment_method_name',
 ]);
 
 const timeFields = new Set(['start_time', 'end_time']);

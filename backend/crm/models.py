@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 
 from django.conf import settings
@@ -538,6 +539,80 @@ class MasterClass(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+    @staticmethod
+    def money(value):
+        return Decimal(value or 0).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    @property
+    def amount_due(self):
+        return self.money(max(self.money(self.price) - self.money(self.discount_amount), Decimal('0.00')))
+
+    @property
+    def paid_total(self):
+        prefetched = getattr(self, '_prefetched_objects_cache', {}).get('payments')
+        if prefetched is not None:
+            if prefetched:
+                return self.money(sum((payment.amount for payment in prefetched), Decimal('0.00')))
+            if self.finance_transaction_id and self.payment_amount:
+                return self.money(self.payment_amount)
+            return self.money(0)
+        total = self.payments.aggregate(total=models.Sum('amount'))['total']
+        if total is None and self.finance_transaction_id and self.payment_amount:
+            return self.money(self.payment_amount)
+        return self.money(total)
+
+    @property
+    def remaining_amount(self):
+        return self.money(max(self.amount_due - self.paid_total, Decimal('0.00')))
+
+    @property
+    def overpaid_amount(self):
+        return self.money(max(self.paid_total - self.amount_due, Decimal('0.00')))
+
+    @property
+    def payment_status(self):
+        if self.overpaid_amount > 0:
+            return 'overpaid'
+        if self.paid_total <= 0:
+            return 'unpaid'
+        if self.remaining_amount > 0:
+            return 'partial'
+        return 'paid'
+
+
+class MasterClassPayment(TimeStampedModel):
+    class PaymentType(models.TextChoices):
+        PREPAYMENT = 'prepayment', 'Prepayment'
+        ADDITIONAL = 'additional', 'Additional'
+        LEGACY = 'legacy', 'Legacy'
+
+    master_class = models.ForeignKey(MasterClass, on_delete=models.CASCADE, related_name='payments')
+    payment_type = models.CharField(max_length=20, choices=PaymentType.choices, default=PaymentType.ADDITIONAL)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_date = models.DateField(default=timezone.localdate)
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='accepted_master_class_payments',
+    )
+    finance_transaction = models.OneToOneField(
+        'FinanceTransaction',
+        on_delete=models.CASCADE,
+        related_name='master_class_payment_entry',
+    )
+    comment = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ('payment_date', 'created_at', 'id')
+        constraints = (
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='master_class_payment_amount_positive'),
+        )
+
+    def __str__(self):
+        return f'{self.master_class} - {self.amount}'
 
 
 class MasterClassStaffAssignment(TimeStampedModel):

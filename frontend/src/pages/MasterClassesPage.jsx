@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios.js';
 import KanbanBoard from '../components/ui/KanbanBoard.jsx';
 import KanbanCard from '../components/ui/KanbanCard.jsx';
+import Modal from '../components/ui/Modal.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import { canDeleteDangerous, canManageSales, getStoredUser } from '../auth.js';
@@ -11,6 +12,8 @@ import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
 
 const masterClassStages = [
   { value: 'lead', label: 'Лид' },
@@ -31,12 +34,16 @@ const empty = {
   duration_minutes: 60,
   is_extra_work: false,
   stage: 'lead',
-  payment_date: '',
   capacity: 0,
   price: 0,
   payment_amount: 0,
   discount: '',
   payment_parts: [],
+  initial_payment_enabled: false,
+  initial_payment_amount: '',
+  initial_payment_date: '',
+  initial_payment_parts: [],
+  initial_payment_comment: '',
   participants: [],
 };
 
@@ -45,14 +52,15 @@ const baseFields = [
   { name: 'starts_at', label: 'Дата и время', type: 'datetime-local' },
   { name: 'duration_minutes', label: 'Длительность, минут', type: 'number' },
   { name: 'stage', label: 'Этап', type: 'select', options: masterClassStages },
-  { name: 'payment_date', label: 'Дата оплаты', type: 'date' },
   { name: 'capacity', label: 'Мест', type: 'number' },
   { name: 'price', label: 'Цена', type: 'number' },
-  { name: 'payment_amount', label: 'Оплачено', type: 'number' },
   { name: 'description', label: 'Комментарий', type: 'textarea' },
 ];
 
 const stageLabel = (value) => masterClassStages.find((stage) => stage.value === value)?.label || value || '—';
+const paymentTypeLabels = { prepayment: 'Предоплата', additional: 'Доплата', legacy: 'Старая оплата' };
+const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Частично', paid: 'Оплачено', overpaid: 'Переплата' };
+const paymentStatusBadge = (value) => ({ unpaid: 'cancelled', partial: 'booked', paid: 'paid', overpaid: 'outside' }[value] || value);
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
 const eventDateTime = (value) => {
   if (!value) return { date: '—', time: '' };
@@ -150,6 +158,20 @@ const staffNames = (item = {}) => {
   const assistantNames = assistants.map((assignment) => assignment.employee_name).filter(Boolean);
   return { staff, leadName, assistantNames, extraCount: staff.filter((assignment) => assignment.is_extra_work).length };
 };
+const paymentPartsFromApi = (payment = {}) => (Array.isArray(payment.payment_parts) ? payment.payment_parts : [])
+  .map((part) => ({ payment_method: String(part.payment_method), amount: part.amount }));
+const paymentPartsText = (payment = {}) => {
+  const parts = Array.isArray(payment.payment_parts) ? payment.payment_parts : [];
+  if (!parts.length) return payment.payment_method_name || 'Не указан';
+  return parts.map((part) => `${part.payment_method_name || 'Способ оплаты'}: ${money(part.amount)}`).join(' / ');
+};
+const emptyPaymentForm = (amount = '') => ({
+  payment_type: 'additional',
+  amount,
+  payment_date: todayIso(),
+  payment_parts: [],
+  comment: '',
+});
 
 function managerScheduleTitle(schedule = managerScheduleFallback) {
   const lines = [];
@@ -256,8 +278,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Длительность</dt><dd className="text-right font-medium">{item.duration_minutes ? `${item.duration_minutes} мин` : 'Не указана'}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(item.title)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Мастер</dt><dd className="text-right font-medium">{leadName}{assistantNames.length ? ` +${assistantNames.length}` : ''}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма оплаты</dt><dd className="text-right font-semibold text-brand">{money(item.payment_amount)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплачено</dt><dd className="text-right font-semibold text-brand">{money(item.paid_total ?? item.payment_amount)} / {money(item.amount_due ?? item.price)}</dd></div>
       </dl>
       {item.description && <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
       {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
@@ -278,6 +299,9 @@ export default function MasterClassesPage() {
   const [managerSchedulePreview, setManagerSchedulePreview] = useState(null);
   const [managerScheduleLoading, setManagerScheduleLoading] = useState(false);
   const [unmarkedOutsideCount, setUnmarkedOutsideCount] = useState(0);
+  const [paymentModal, setPaymentModal] = useState({ open: false, payment: null });
+  const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
+  const [paymentSaving, setPaymentSaving] = useState(false);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -290,9 +314,12 @@ export default function MasterClassesPage() {
   const discountAmount = calculateDiscountAmount(form.price, selectedDiscount);
   const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
   const currentManagerSchedule = managerSchedulePreview || form.manager_work_schedule || managerScheduleFallback;
+  const amountDue = Number(form.amount_due ?? totalAfterDiscount ?? 0);
+  const paidTotal = Number(form.paid_total ?? form.payment_amount ?? 0);
+  const remainingAmount = Number(form.remaining_amount ?? Math.max(amountDue - paidTotal, 0));
+  const overpaidAmount = Number(form.overpaid_amount ?? Math.max(paidTotal - amountDue, 0));
   const changeDiscount = (value) => {
-    const discount = getDiscountById(value);
-    setForm({ ...form, discount: value, payment_amount: calculateDiscountedTotal(form.price, discount) });
+    setForm({ ...form, discount: value });
   };
 
   useEffect(() => {
@@ -395,6 +422,74 @@ export default function MasterClassesPage() {
       duration_minutes: assignment.full_duration ? null : Number(assignment.duration_minutes || 0),
     }))
     .filter((assignment) => assignment.employee);
+
+  const refreshCurrentMasterClass = async () => {
+    if (!form.id) return;
+    const { data } = await api.get(`master-classes/${form.id}/`);
+    crud.setEditing(data);
+    await crud.reload();
+  };
+
+  const openPaymentModal = (payment = null) => {
+    setPaymentModal({ open: true, payment });
+    setPaymentForm(payment ? {
+      id: payment.id,
+      payment_type: payment.payment_type || 'additional',
+      amount: payment.amount,
+      payment_date: payment.payment_date || todayIso(),
+      payment_parts: paymentPartsFromApi(payment),
+      comment: payment.comment || '',
+    } : emptyPaymentForm(remainingAmount > 0 ? remainingAmount : ''));
+  };
+
+  const closePaymentModal = () => {
+    setPaymentModal({ open: false, payment: null });
+    setPaymentSaving(false);
+  };
+
+  const savePayment = async () => {
+    const amount = Number(paymentForm.amount || 0);
+    if (amount <= 0) {
+      dispatchError('Сумма оплаты должна быть больше нуля.');
+      return;
+    }
+    if (paymentPartsTotal(paymentForm.payment_parts) !== amount) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
+      return;
+    }
+    setPaymentSaving(true);
+    try {
+      const payload = {
+        payment_type: paymentForm.payment_type || 'additional',
+        amount: paymentForm.amount,
+        payment_date: paymentForm.payment_date || todayIso(),
+        payment_parts: paymentPartsPayload(paymentForm.payment_parts),
+        comment: paymentForm.comment || '',
+      };
+      if (paymentModal.payment?.id) {
+        await api.patch(`master-classes/${form.id}/payments/${paymentModal.payment.id}/`, payload);
+      } else {
+        await api.post(`master-classes/${form.id}/payments/`, payload);
+      }
+      closePaymentModal();
+      await refreshCurrentMasterClass();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setPaymentSaving(false);
+    }
+  };
+
+  const deletePayment = async (payment) => {
+    if (!window.confirm('Удалить оплату мастер-класса?')) return;
+    try {
+      await api.delete(`master-classes/${form.id}/payments/${payment.id}/`);
+      await refreshCurrentMasterClass();
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+
   const fields = [
     duplicateError && {
       name: 'duplicate_warning',
@@ -546,13 +641,83 @@ export default function MasterClassesPage() {
     {
       name: 'payment_parts',
       type: 'custom',
-      render: (current, update) => (
-        <PaymentSplitFields
-          totalAmount={current.payment_amount}
-          value={current.payment_parts}
-          onChange={(payment_parts) => update({ ...current, payment_parts })}
-        />
-      ),
+      className: 'md:col-span-2',
+      render: (current, update) => {
+        const payments = Array.isArray(current.payments) ? [...current.payments].sort((a, b) => String(a.payment_date || '').localeCompare(String(b.payment_date || '')) || a.id - b.id) : [];
+        const nextInitialDate = current.initial_payment_date || todayIso();
+        return (
+          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="font-black text-slate-900">Оплата мастер-класса</p>
+                <div className="mt-2 grid gap-2 text-xs font-semibold text-slate-600 sm:grid-cols-4">
+                  <span>К оплате: <b className="text-slate-900">{money(amountDue)}</b></span>
+                  <span>Оплачено: <b className="text-slate-900">{money(paidTotal)}</b></span>
+                  <span>Остаток: <b className="text-slate-900">{money(remainingAmount)}</b></span>
+                  <span>Статус: <b className="text-slate-900">{paymentStatusLabels[current.payment_status] || 'Не оплачено'}</b></span>
+                </div>
+                {overpaidAmount > 0 && <p className="mt-2 font-bold text-amber-700">Переплата: {money(overpaidAmount)}</p>}
+              </div>
+              {current.id && canEdit && <Button variant="secondary" onClick={() => openPaymentModal()}>Добавить оплату</Button>}
+            </div>
+
+            {!current.id && (
+              <div className="mt-4 rounded-2xl bg-white p-4 shadow-sm">
+                <label className="flex items-center gap-3 font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(current.initial_payment_enabled)}
+                    onChange={(event) => update({
+                      ...current,
+                      initial_payment_enabled: event.target.checked,
+                      initial_payment_date: event.target.checked ? nextInitialDate : current.initial_payment_date,
+                      initial_payment_amount: event.target.checked && !current.initial_payment_amount ? totalAfterDiscount : current.initial_payment_amount,
+                    })}
+                  />
+                  Внести предоплату сейчас
+                </label>
+                {current.initial_payment_enabled && (
+                  <div className="mt-4 grid gap-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Input label="Сумма предоплаты" type="number" value={current.initial_payment_amount} onChange={(event) => update({ ...current, initial_payment_amount: event.target.value })} />
+                      <Input label="Дата оплаты" type="date" value={nextInitialDate} onChange={(event) => update({ ...current, initial_payment_date: event.target.value })} />
+                    </div>
+                    <PaymentSplitFields
+                      totalAmount={current.initial_payment_amount}
+                      value={current.initial_payment_parts}
+                      onChange={(initial_payment_parts) => update({ ...current, initial_payment_parts })}
+                    />
+                    <Input label="Комментарий к оплате" value={current.initial_payment_comment} onChange={(event) => update({ ...current, initial_payment_comment: event.target.value })} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {current.id && (
+              <div className="mt-4 grid gap-3">
+                {payments.length ? payments.map((payment) => (
+                  <div key={payment.id} className="rounded-2xl bg-white p-4 shadow-sm">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="font-bold text-slate-900">{paymentTypeLabels[payment.payment_type] || payment.payment_type} · {money(payment.amount)}</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">{dash(payment.payment_date)} · {payment.accepted_by_name || 'Кассир не указан'}</p>
+                        <p className="mt-2 text-xs text-slate-600">{paymentPartsText(payment)}</p>
+                        {payment.comment && <p className="mt-2 text-xs text-slate-500">{payment.comment}</p>}
+                      </div>
+                      <div className="flex gap-2">
+                        {canEdit && <Button variant="secondary" onClick={() => openPaymentModal(payment)}>Изменить</Button>}
+                        {canDelete && <Button variant="danger" onClick={() => deletePayment(payment)}>Удалить</Button>}
+                      </div>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-2xl bg-white p-4 font-semibold text-slate-500">Оплат пока нет</div>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      },
     },
   ].filter(Boolean);
   const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
@@ -571,7 +736,22 @@ export default function MasterClassesPage() {
       dispatchError('Для дополнительного выхода укажите длительность МК.');
       return;
     }
-    if (Number(form.payment_amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.payment_amount || 0)) {
+    if (form.initial_payment_enabled) {
+      const initialAmount = Number(form.initial_payment_amount || 0);
+      if (initialAmount <= 0) {
+        dispatchError('Сумма предоплаты должна быть больше нуля.');
+        return;
+      }
+      if (initialAmount > totalAfterDiscount) {
+        dispatchError('Сумма предоплаты превышает итог мастер-класса.');
+        return;
+      }
+      if (paymentPartsTotal(form.initial_payment_parts) !== initialAmount) {
+        dispatchError('Сумма оплат по способам должна совпадать с суммой предоплаты.');
+        return;
+      }
+    }
+    if (!form.id && Number(form.payment_amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.payment_amount || 0)) {
       dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
       return;
     }
@@ -584,6 +764,33 @@ export default function MasterClassesPage() {
         staff_assignments: assignments,
         payment_parts: paymentPartsPayload(form.payment_parts),
       });
+      [
+        'initial_payment_enabled',
+        'initial_payment_amount',
+        'initial_payment_date',
+        'initial_payment_parts',
+        'initial_payment_comment',
+        'payments',
+        'amount_due',
+        'paid_total',
+        'remaining_amount',
+        'overpaid_amount',
+        'payment_status',
+        'payment_parts',
+        'payment_method',
+        'payment_method_name',
+      ].forEach((key) => { delete payload[key]; });
+      if (!form.id && form.initial_payment_enabled) {
+        payload.payment_amount = 0;
+        payload.payment_date = null;
+        payload.initial_payment = {
+          payment_type: 'prepayment',
+          amount: form.initial_payment_amount,
+          payment_date: form.initial_payment_date || todayIso(),
+          payment_parts: paymentPartsPayload(form.initial_payment_parts),
+          comment: form.initial_payment_comment || '',
+        };
+      }
       if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
       else await api.post('master-classes/', payload);
       crud.setModalOpen(false);
@@ -684,11 +891,39 @@ export default function MasterClassesPage() {
           { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },
-          { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
+          { key: 'paid_total', header: 'Оплачено', render: (row) => money(row.paid_total ?? row.payment_amount) },
+          { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
+          { key: 'payment_status', header: 'Статус оплаты', render: (row) => <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
           { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
         ]} />
       )}
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />
+      <Modal
+        title={paymentModal.payment ? 'Изменить оплату' : 'Добавить оплату'}
+        open={paymentModal.open}
+        onClose={closePaymentModal}
+        footer={<><Button variant="secondary" onClick={closePaymentModal}>Отмена</Button><Button onClick={savePayment} disabled={paymentSaving}>{paymentSaving ? 'Сохраняем...' : 'Сохранить'}</Button></>}
+      >
+        <div className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <SelectField
+              label="Тип платежа"
+              value={paymentForm.payment_type}
+              onChange={(value) => setPaymentForm({ ...paymentForm, payment_type: value })}
+              options={[{ value: 'prepayment', label: 'Предоплата' }, { value: 'additional', label: 'Доплата' }, { value: 'legacy', label: 'Старая оплата' }]}
+            />
+            <Input label="Сумма" type="number" value={paymentForm.amount} onChange={(event) => setPaymentForm({ ...paymentForm, amount: event.target.value })} />
+            <Input label="Дата оплаты" type="date" value={paymentForm.payment_date} onChange={(event) => setPaymentForm({ ...paymentForm, payment_date: event.target.value })} />
+          </div>
+          <PaymentSplitFields
+            totalAmount={paymentForm.amount}
+            value={paymentForm.payment_parts}
+            disabled={paymentSaving}
+            onChange={(payment_parts) => setPaymentForm({ ...paymentForm, payment_parts })}
+          />
+          <Input label="Комментарий" value={paymentForm.comment} onChange={(event) => setPaymentForm({ ...paymentForm, comment: event.target.value })} />
+        </div>
+      </Modal>
     </>
   );
 }

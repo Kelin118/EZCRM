@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import serializers as drf_serializers, status, viewsets
@@ -63,6 +64,7 @@ from .models import (
     Lead,
     LeadMessage,
     MasterClass,
+    MasterClassPayment,
     MasterClassStaffAssignment,
     MessagingChannel,
     MessagingContact,
@@ -132,6 +134,7 @@ from .serializers import (
     LessonSerializer,
     LeadSerializer,
     LeadMessageSerializer,
+    MasterClassPaymentSerializer,
     MasterClassSerializer,
     MessagingChannelSerializer,
     MetaWebhookEventSerializer,
@@ -330,6 +333,54 @@ def _create_income_transaction(
     )
     sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
     return finance_transaction
+
+
+def _master_class_payment_type_name(payment_type):
+    return {
+        MasterClassPayment.PaymentType.PREPAYMENT: 'Предоплата',
+        MasterClassPayment.PaymentType.ADDITIONAL: 'Доплата',
+        MasterClassPayment.PaymentType.LEGACY: 'Старая оплата',
+    }.get(payment_type, 'Оплата')
+
+
+def _master_class_payment_comment(master_class, payment_type, comment=''):
+    prefix = f'{_master_class_payment_type_name(payment_type)} МК'
+    title = f': {master_class.title}' if master_class.title else ''
+    suffix = f' · {comment}' if comment else ''
+    return f'{prefix}{title}{suffix}'
+
+
+def _sync_master_class_payment_summary(master_class):
+    payments = list(
+        MasterClassPayment.objects
+        .filter(master_class=master_class)
+        .select_related('finance_transaction')
+        .order_by('payment_date', 'created_at', 'id')
+    )
+    if not payments and master_class.finance_transaction_id and FinanceTransaction.objects.filter(pk=master_class.finance_transaction_id).exists():
+        return
+    paid_total = _money(sum((payment.amount for payment in payments), Decimal('0.00')))
+    latest = payments[-1] if payments else None
+    latest_transaction = latest.finance_transaction if latest else None
+    MasterClass.objects.filter(pk=master_class.pk).update(
+        payment_amount=paid_total,
+        payment_date=latest.payment_date if latest else None,
+        finance_transaction=latest_transaction,
+    )
+    master_class.payment_amount = paid_total
+    master_class.payment_date = latest.payment_date if latest else None
+    master_class.finance_transaction = latest_transaction
+
+
+def _master_class_paid_total_excluding(master_class, exclude_payment_id=None):
+    queryset = MasterClassPayment.objects.filter(master_class=master_class)
+    if exclude_payment_id:
+        queryset = queryset.exclude(pk=exclude_payment_id)
+    return _money(queryset.aggregate(total=Sum('amount'))['total'])
+
+
+def _master_class_remaining_excluding(master_class, exclude_payment_id=None):
+    return _money(max(master_class.amount_due - _master_class_paid_total_excluding(master_class, exclude_payment_id), Decimal('0.00')))
 
 
 def subscription_finance_source(subscription_or_service):
@@ -2146,7 +2197,13 @@ def _parse_master_class_starts_at(value):
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
-    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related('participants', 'staff_assignments__employee').all()
+    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related(
+        'participants',
+        'staff_assignments__employee',
+        'payments__accepted_by',
+        'payments__finance_transaction__payment_method',
+        'payments__finance_transaction__payment_parts__payment_method',
+    ).all()
     serializer_class = MasterClassSerializer
     audit_entity_type = 'MasterClass'
     audit_update_description = 'Изменён МК'
@@ -2327,6 +2384,13 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 title=serializer.validated_data.get('title'),
             )
             master_class = serializer.save()
+            initial_payment = getattr(master_class, 'selected_initial_payment', None)
+            if initial_payment:
+                self._create_payment(
+                    master_class,
+                    initial_payment,
+                    payment_type=initial_payment.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
+                )
             if master_class.payment_amount > 0 and not master_class.payment_date:
                 master_class.payment_date = timezone.localdate()
                 master_class.save(update_fields=('payment_date', 'updated_at'))
@@ -2356,6 +2420,147 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
+
+    def _assert_payment_amount_allowed(self, master_class, amount, *, exclude_payment_id=None):
+        remaining_amount = _master_class_remaining_excluding(master_class, exclude_payment_id)
+        if amount > remaining_amount:
+            raise drf_serializers.ValidationError({
+                'detail': 'Сумма оплаты превышает остаток по мастер-классу.',
+                'remaining_amount': str(remaining_amount),
+            })
+
+    def _create_payment(self, master_class, payment_data, *, payment_type=None):
+        amount = _money(payment_data.get('amount'))
+        self._assert_payment_amount_allowed(master_class, amount)
+        method = payment_data.get('payment_method')
+        payment_parts = payment_data.get('_payment_parts', payment_data.get('payment_parts'))
+        if not method and payment_parts is None:
+            raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
+        payment_date = payment_data.get('payment_date') or timezone.localdate()
+        if isinstance(payment_date, str):
+            payment_date = parse_date(payment_date) or timezone.localdate()
+        resolved_type = payment_type or payment_data.get('payment_type') or MasterClassPayment.PaymentType.ADDITIONAL
+        client = master_class.participants.first()
+        comment = payment_data.get('comment') or ''
+        finance_transaction = _create_income_transaction(
+            client=client,
+            amount=amount,
+            source='master_class',
+            payment_date=payment_date,
+            comment=_master_class_payment_comment(master_class, resolved_type, comment),
+            created_by=self.request.user,
+            manager=master_class.manager,
+            payment_method=method,
+            payment_parts=payment_parts,
+            branch=master_class.branch,
+            subtotal_amount=amount,
+        )
+        payment = MasterClassPayment.objects.create(
+            master_class=master_class,
+            payment_type=resolved_type,
+            amount=amount,
+            payment_date=payment_date,
+            accepted_by=self.request.user,
+            finance_transaction=finance_transaction,
+            comment=comment,
+        )
+        _sync_master_class_payment_summary(master_class)
+        self._log_instance(
+            AuditLog.Action.PAYMENT,
+            master_class,
+            'Добавлена оплата МК',
+            {'payment_id': payment.id, 'amount': str(payment.amount), 'payment_type': payment.payment_type},
+        )
+        return payment
+
+    def _update_payment_transaction(self, payment, payment_data):
+        transaction_item = payment.finance_transaction
+        method = payment_data.get('payment_method', transaction_item.payment_method)
+        payment_parts = payment_data.get('_payment_parts', None)
+        transaction_item.amount = payment.amount
+        transaction_item.subtotal_amount = payment.amount
+        transaction_item.client = payment.master_class.participants.first()
+        transaction_item.branch = payment.master_class.branch
+        transaction_item.manager = payment.master_class.manager
+        transaction_item.payment_method = method
+        transaction_item.payment_method_name = method.name if method else ''
+        transaction_item.paid_at = _paid_at_from_date(payment.payment_date)
+        transaction_item.source = 'master_class'
+        transaction_item.comment = _master_class_payment_comment(payment.master_class, payment.payment_type, payment.comment)
+        transaction_item.save(update_fields=(
+            'amount',
+            'subtotal_amount',
+            'client',
+            'branch',
+            'manager',
+            'payment_method',
+            'payment_method_name',
+            'paid_at',
+            'source',
+            'comment',
+            'updated_at',
+        ))
+        if payment_parts is None and ('payment_method' in payment_data or 'amount' in payment_data):
+            existing_parts = list(transaction_item.payment_parts.all())
+            if len(existing_parts) == 1:
+                payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': payment.amount}]
+        sync_finance_payment_parts(transaction_item, payment_parts, legacy_payment_method=method)
+
+    @action(detail=True, methods=['get', 'post'], url_path='payments')
+    def payments(self, request, pk=None):
+        if request.method == 'GET':
+            master_class = self.get_object()
+            payments = master_class.payments.select_related('accepted_by', 'finance_transaction__payment_method').prefetch_related('finance_transaction__payment_parts__payment_method')
+            return Response(MasterClassPaymentSerializer(payments, many=True, context=self.get_serializer_context()).data)
+
+        with transaction.atomic():
+            master_class = MasterClass.objects.select_for_update().prefetch_related('participants').get(pk=pk)
+            self.check_object_permissions(request, master_class)
+            serializer = MasterClassPaymentSerializer(data=request.data, context=self.get_serializer_context())
+            serializer.is_valid(raise_exception=True)
+            payment_data = dict(serializer.validated_data)
+            payment_data['payment_type'] = payment_data.get('payment_type') or MasterClassPayment.PaymentType.ADDITIONAL
+            payment = self._create_payment(master_class, payment_data)
+        return Response(MasterClassPaymentSerializer(payment, context=self.get_serializer_context()).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['patch', 'delete'], url_path=r'payments/(?P<payment_id>[^/.]+)')
+    def payment_detail(self, request, pk=None, payment_id=None):
+        with transaction.atomic():
+            master_class = MasterClass.objects.select_for_update().prefetch_related('participants').get(pk=pk)
+            self.check_object_permissions(request, master_class)
+            payment = get_object_or_404(MasterClassPayment.objects.select_for_update().select_related(
+                'master_class',
+                'finance_transaction__payment_method',
+            ).prefetch_related('finance_transaction__payment_parts__payment_method'), pk=payment_id, master_class=master_class)
+            if request.method == 'DELETE':
+                if not is_admin(request.user):
+                    self.permission_denied(request, message='Удалять оплаты МК может только администратор.')
+                finance_transaction = payment.finance_transaction
+                snapshot = {'payment_id': payment.id, 'amount': str(payment.amount), 'payment_type': payment.payment_type}
+                payment.delete()
+                finance_transaction.delete()
+                _sync_master_class_payment_summary(master_class)
+                self._log_instance(AuditLog.Action.PAYMENT, master_class, 'Удалена оплата МК', snapshot)
+                return Response(status=status.HTTP_204_NO_CONTENT)
+
+            serializer = MasterClassPaymentSerializer(payment, data=request.data, partial=True, context=self.get_serializer_context())
+            serializer.is_valid(raise_exception=True)
+            payment_data = dict(serializer.validated_data)
+            if 'amount' in payment_data and _money(payment_data['amount']) != payment.amount:
+                self._assert_payment_amount_allowed(master_class, _money(payment_data['amount']), exclude_payment_id=payment.id)
+            for field in ('payment_type', 'amount', 'payment_date', 'comment'):
+                if field in payment_data:
+                    setattr(payment, field, payment_data[field])
+            payment.save(update_fields=('payment_type', 'amount', 'payment_date', 'comment', 'updated_at'))
+            self._update_payment_transaction(payment, payment_data)
+            _sync_master_class_payment_summary(master_class)
+            self._log_instance(
+                AuditLog.Action.PAYMENT,
+                master_class,
+                'Изменена оплата МК',
+                {'payment_id': payment.id, 'amount': str(payment.amount), 'payment_type': payment.payment_type},
+            )
+        return Response(MasterClassPaymentSerializer(payment, context=self.get_serializer_context()).data)
 
     def _master_class_payment_comment(self, master_class):
         return f'Оплата МК: {master_class.title}' if master_class.title else 'Оплата МК'
@@ -2462,7 +2667,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 exclude_id=instance.id,
             )
             master_class = serializer.save()
-            self._sync_finance_transaction(master_class)
+            _sync_master_class_payment_summary(master_class)
         changes = self._audit_changes()
         if previous_stage != master_class.stage:
             changes['stage'] = {'from': previous_stage, 'to': master_class.stage}
@@ -3924,7 +4129,25 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
 
 class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, FinancePermission)
-    queryset = FinanceTransaction.objects.select_related('client', 'subscription', 'created_by', 'manager', 'payment_method', 'discount', 'addon_sale', 'master_class_payment', 'master_class_payment__teacher').prefetch_related('payment_parts__payment_method', 'addon_sale__items__catalog_item', 'master_class_payment__staff_assignments__employee').all()
+    queryset = FinanceTransaction.objects.select_related(
+        'client',
+        'subscription',
+        'created_by',
+        'manager',
+        'payment_method',
+        'discount',
+        'addon_sale',
+        'master_class_payment',
+        'master_class_payment__teacher',
+        'master_class_payment_entry',
+        'master_class_payment_entry__master_class',
+        'master_class_payment_entry__master_class__teacher',
+    ).prefetch_related(
+        'payment_parts__payment_method',
+        'addon_sale__items__catalog_item',
+        'master_class_payment__staff_assignments__employee',
+        'master_class_payment_entry__master_class__staff_assignments__employee',
+    ).all()
     serializer_class = FinanceTransactionSerializer
     audit_entity_type = 'FinanceTransaction'
     audit_update_description = 'Изменена финансовая операция'
@@ -3972,18 +4195,29 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if manager and manager != 'all':
             queryset = queryset.filter(manager__isnull=True) if manager == 'unassigned' else queryset.filter(manager_id=manager)
         if teacher and teacher != 'all':
-            queryset = queryset.filter(Q(master_class_payment__teacher_id=teacher) | Q(master_class_payment__staff_assignments__employee_id=teacher))
+            queryset = queryset.filter(
+                Q(master_class_payment__teacher_id=teacher)
+                | Q(master_class_payment__staff_assignments__employee_id=teacher)
+                | Q(master_class_payment_entry__master_class__teacher_id=teacher)
+                | Q(master_class_payment_entry__master_class__staff_assignments__employee_id=teacher)
+            )
         if outside_master_class in ('true', 'false', '1', '0'):
             is_outside = outside_master_class in ('true', '1')
             ids = [
-                item.id for item in queryset.filter(source='master_class', master_class_payment__isnull=False)
-                if is_master_class_outside_regular_hours(item.master_class_payment.starts_at) == is_outside
+                item.id for item in queryset.filter(source='master_class').filter(Q(master_class_payment__isnull=False) | Q(master_class_payment_entry__isnull=False))
+                if is_master_class_outside_regular_hours(
+                    item.master_class_payment_entry.master_class.starts_at
+                    if getattr(item, 'master_class_payment_entry', None)
+                    else item.master_class_payment.starts_at
+                ) == is_outside
             ]
             queryset = queryset.filter(id__in=ids)
         if extra_master_class in ('true', 'false', '1', '0'):
+            is_extra = extra_master_class in ('true', '1')
             queryset = queryset.filter(
-                source='master_class',
-                master_class_payment__is_extra_work=extra_master_class in ('true', '1'),
+                Q(source='master_class'),
+                Q(master_class_payment__is_extra_work=is_extra)
+                | Q(master_class_payment_entry__master_class__is_extra_work=is_extra),
             )
         if client:
             queryset = queryset.filter(client_id=client)
@@ -4012,10 +4246,17 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         )
 
     def perform_update(self, serializer):
+        if getattr(serializer.instance, 'master_class_payment_entry', None):
+            raise drf_serializers.ValidationError({'detail': 'Оплаты мастер-класса редактируются в карточке МК.'})
         old_manager = serializer.instance.manager_id
         instance = serializer.save()
         action_value = AuditLog.Action.FINANCE_MANAGER_UPDATE if old_manager != instance.manager_id else AuditLog.Action.UPDATE
         self._log_instance(action_value, instance, self.audit_update_description, self._finance_audit_changes(instance))
+
+    def perform_destroy(self, instance):
+        if getattr(instance, 'master_class_payment_entry', None):
+            raise drf_serializers.ValidationError({'detail': 'Оплаты мастер-класса удаляются в карточке МК.'})
+        super().perform_destroy(instance)
 
     def _cash_scope(self, queryset, branch):
         if branch and branch != 'all':

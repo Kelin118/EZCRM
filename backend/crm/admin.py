@@ -23,6 +23,7 @@ from .models import (
     Lead,
     LeadMessage,
     MasterClass,
+    MasterClassPayment,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -148,6 +149,13 @@ class MasterClassAdmin(admin.ModelAdmin):
     list_display = ('title', 'teacher', 'starts_at', 'capacity', 'price')
     list_filter = ('starts_at',)
     search_fields = ('title',)
+
+
+@admin.register(MasterClassPayment)
+class MasterClassPaymentAdmin(admin.ModelAdmin):
+    list_display = ('master_class', 'payment_type', 'amount', 'payment_date', 'accepted_by', 'finance_transaction')
+    list_filter = ('payment_type', 'payment_date')
+    search_fields = ('master_class__title', 'comment', 'finance_transaction__comment')
 
 
 @admin.register(Task)

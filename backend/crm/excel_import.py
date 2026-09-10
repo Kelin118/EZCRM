@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from openpyxl import load_workbook
 
-from .models import Client, FinanceTransaction, MasterClass, PaymentMethod, Subscription, Trial, Visit
+from .models import Client, FinanceTransaction, MasterClass, MasterClassPayment, PaymentMethod, Subscription, Trial, Visit
 
 
 SHEET_CLIENTS = 'Клиенты'
@@ -190,6 +190,15 @@ def _import_master_classes(sheet, result, user):
                     created_by=user if getattr(user, 'is_authenticated', False) else None,
                     paid_at=_datetime_from_date(payment_date),
                     comment='Оплата МК',
+                )
+                MasterClassPayment.objects.create(
+                    master_class=master_class,
+                    payment_type=MasterClassPayment.PaymentType.LEGACY,
+                    amount=payment_amount,
+                    payment_date=payment_date or timezone.localdate(),
+                    accepted_by=user if getattr(user, 'is_authenticated', False) else None,
+                    finance_transaction=finance_transaction,
+                    comment=master_class.description,
                 )
                 master_class.finance_transaction = finance_transaction
                 master_class.save(update_fields=('finance_transaction', 'updated_at'))

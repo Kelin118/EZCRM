@@ -209,6 +209,7 @@ export default function FinancePage() {
         { key: 'source', header: 'Назначение', render: (row) => (
           <div>
             <p>{row.source === 'master_class' && row.master_class_title ? `МК · ${row.master_class_title}` : sourceLabel(row.source)}</p>
+            {row.master_class_payment_type && <p className="mt-1 text-xs font-bold text-brand">{row.master_class_payment_type_display || row.master_class_payment_type}</p>}
             {row.master_class_is_extra_work && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}
             {row.master_class_staff?.length ? <p className="text-xs text-slate-500">Мастера: {masterClassStaffNames(row).join(', ')}</p> : (row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>)}
             {masterClassExtraStaffNames(row).length ? <p className="text-xs font-semibold text-amber-700">Доп. выход: {masterClassExtraStaffNames(row).join(', ')}</p> : null}
@@ -220,7 +221,7 @@ export default function FinancePage() {
         { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
-        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit && !row.master_class_payment_id} canDelete={canDelete && !row.master_class_payment_id} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
       <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveTransaction} />

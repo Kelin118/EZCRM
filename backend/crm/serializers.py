@@ -37,6 +37,7 @@ from .models import (
     Lead,
     LeadMessage,
     MasterClass,
+    MasterClassPayment,
     MasterClassStaffAssignment,
     MessagingChannel,
     MessagingContact,
@@ -897,6 +898,58 @@ class MasterClassStaffAssignmentSerializer(serializers.ModelSerializer):
         return value
 
 
+class MasterClassPaymentSerializer(serializers.ModelSerializer):
+    payment_type_display = serializers.CharField(source='get_payment_type_display', read_only=True)
+    accepted_by_name = serializers.SerializerMethodField()
+    payment_method = serializers.PrimaryKeyRelatedField(queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True)
+    payment_method_name = serializers.SerializerMethodField()
+    payment_parts = serializers.SerializerMethodField()
+    finance_transaction = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = MasterClassPayment
+        fields = (
+            'id',
+            'master_class',
+            'payment_type',
+            'payment_type_display',
+            'amount',
+            'payment_date',
+            'accepted_by',
+            'accepted_by_name',
+            'finance_transaction',
+            'payment_method',
+            'payment_method_name',
+            'payment_parts',
+            'comment',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = ('id', 'master_class', 'accepted_by', 'finance_transaction', 'created_at', 'updated_at')
+
+    def get_accepted_by_name(self, obj):
+        return user_display_name(obj.accepted_by)
+
+    def get_payment_method_name(self, obj):
+        transaction = obj.finance_transaction
+        if not transaction:
+            return ''
+        return transaction.payment_method_name or (transaction.payment_method.name if transaction.payment_method else '')
+
+    def get_payment_parts(self, obj):
+        return payment_parts_representation(obj.finance_transaction) if obj.finance_transaction else []
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount = attrs.get('amount', self.instance.amount if self.instance else Decimal('0'))
+        if amount <= 0:
+            raise serializers.ValidationError({'amount': 'Сумма оплаты должна быть больше нуля.'})
+        payment_parts = getattr(self, 'initial_data', {}).get('payment_parts')
+        if payment_parts is not None:
+            attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=amount)
+        return attrs
+
+
 class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     client_display_name = serializers.SerializerMethodField()
@@ -916,6 +969,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     )
     payment_method = serializers.PrimaryKeyRelatedField(queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True)
     payment_parts = serializers.JSONField(required=False, write_only=True)
+    initial_payment = serializers.JSONField(required=False, write_only=True)
 
     class Meta:
         model = MasterClass
@@ -1000,6 +1054,17 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     def _primary_client(self, obj):
         return obj.participants.first()
 
+    def _payments_for_representation(self, obj):
+        payments = list(obj.payments.all())
+        payments.sort(key=lambda item: (item.payment_date, item.created_at, item.id))
+        return payments
+
+    def _latest_payment_transaction(self, obj):
+        payments = self._payments_for_representation(obj)
+        if payments:
+            return payments[-1].finance_transaction
+        return obj.finance_transaction
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         client = self._primary_client(instance)
@@ -1010,7 +1075,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             instance.duration_minutes,
             schedule_cache=self.context.setdefault('employee_schedule_cache', {}),
         )
-        finance_transaction = instance.finance_transaction
+        finance_transaction = self._latest_payment_transaction(instance)
         payment_method = finance_transaction.payment_method if finance_transaction else None
         data['payment_method'] = payment_method.id if payment_method else None
         data['payment_method_name'] = (
@@ -1019,6 +1084,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             else (payment_method.name if payment_method else '')
         )
         data['payment_parts'] = payment_parts_representation(finance_transaction) if finance_transaction else []
+        data['amount_due'] = str(instance.amount_due)
+        data['paid_total'] = str(instance.paid_total)
+        data['remaining_amount'] = str(instance.remaining_amount)
+        data['overpaid_amount'] = str(instance.overpaid_amount)
+        data['payment_status'] = instance.payment_status
+        data['payments'] = MasterClassPaymentSerializer(self._payments_for_representation(instance), many=True, context=self.context).data
         assignments = list(instance.staff_assignments.all())
         if assignments:
             data['staff_assignments'] = MasterClassStaffAssignmentSerializer(lead_first(assignments), many=True).data
@@ -1088,7 +1159,11 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         self._validate_staff_assignments(attrs, staff_assignments or [], staff_assignments_explicit)
         if duration is not None and (duration <= 0 or duration > 720):
             raise serializers.ValidationError({'duration_minutes': 'Длительность должна быть от 1 до 720 минут.'})
+        initial_data = getattr(self, 'initial_data', {})
         price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
+        if self.instance is None and 'price' not in initial_data and attrs.get('payment_amount', Decimal('0')) > 0:
+            price = attrs['payment_amount']
+            attrs['price'] = price
         branch = attrs.get('branch', self.instance.branch if self.instance else None)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
         calculation = calculate_discount(price, discount, branch=branch, calculation_date=attrs.get('payment_date'))
@@ -1096,14 +1171,43 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         attrs['discount_type'] = calculation['discount_type']
         attrs['discount_value'] = calculation['discount_value']
         attrs['discount_amount'] = calculation['discount_amount']
-        initial_data = getattr(self, 'initial_data', {})
-        if self.instance is None and 'payment_amount' not in initial_data:
-            attrs['payment_amount'] = calculation['total_price']
         payment_amount = attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0'))
         if payment_amount < 0:
             raise serializers.ValidationError({'payment_amount': 'Сумма оплаты не может быть отрицательной.'})
         payment_method = attrs.get('payment_method')
         payment_parts = initial_data.get('payment_parts')
+        initial_payment = initial_data.get('initial_payment')
+        if self.instance is None and initial_payment not in (None, ''):
+            if not isinstance(initial_payment, dict):
+                raise serializers.ValidationError({'initial_payment': 'Передайте параметры предоплаты объектом.'})
+            amount = Decimal(str(initial_payment.get('amount') or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if amount <= 0:
+                raise serializers.ValidationError({'initial_payment': {'amount': 'Сумма оплаты должна быть больше нуля.'}})
+            if amount > calculation['total_price']:
+                raise serializers.ValidationError({
+                    'detail': 'Сумма оплаты превышает остаток по мастер-классу.',
+                    'remaining_amount': str(calculation['total_price']),
+                })
+            raw_parts = initial_payment.get('payment_parts')
+            raw_method = initial_payment.get('payment_method')
+            method = PaymentMethod.objects.filter(pk=raw_method, is_active=True).first() if raw_method not in (None, '') else None
+            if raw_parts is None and not method:
+                raise serializers.ValidationError({'initial_payment': {'payment_method': 'Выберите способ оплаты.'}})
+            attrs['_initial_payment'] = {
+                'payment_type': initial_payment.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
+                'amount': amount,
+                'payment_date': initial_payment.get('payment_date') or timezone.localdate(),
+                'payment_method': method,
+                'payment_parts': validate_payment_parts(raw_parts, total_amount=amount) if raw_parts is not None else None,
+                'comment': initial_payment.get('comment') or '',
+            }
+            attrs['payment_amount'] = Decimal('0.00')
+            payment_amount = Decimal('0.00')
+        elif self.instance is None and payment_amount > calculation['total_price']:
+            raise serializers.ValidationError({
+                'detail': 'Сумма оплаты превышает остаток по мастер-классу.',
+                'remaining_amount': str(calculation['total_price']),
+            })
         payment_method_was_sent = 'payment_method' in initial_data
         if (
             payment_amount > 0
@@ -1124,17 +1228,29 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         client = validated_data.pop('client', None)
         staff_assignments = validated_data.pop('staff_assignments', None)
         staff_assignments_explicit = 'staff_assignments' in getattr(self, 'initial_data', {})
+        initial_payment = validated_data.pop('_initial_payment', None)
+        validated_data.pop('initial_payment', None)
         payment_parts = validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
         payment_method = validated_data.pop('payment_method', None)
+        if initial_payment is None and validated_data.get('payment_amount', Decimal('0')) > 0:
+            initial_payment = {
+                'payment_type': MasterClassPayment.PaymentType.PREPAYMENT,
+                'amount': validated_data.get('payment_amount'),
+                'payment_date': validated_data.get('payment_date') or timezone.localdate(),
+                'payment_method': payment_method,
+                'payment_parts': payment_parts,
+                'comment': '',
+            }
+            validated_data['payment_amount'] = Decimal('0.00')
+            validated_data['payment_date'] = None
         if client and not validated_data.get('branch'):
             validated_data['branch'] = client.branch
         master_class = super().create(validated_data)
         if client:
             master_class.participants.add(client)
         self._sync_staff_assignments(master_class, staff_assignments or [], staff_assignments_explicit)
-        master_class.selected_payment_method = payment_method
-        master_class.selected_payment_parts = payment_parts
+        master_class.selected_initial_payment = initial_payment
         return master_class
 
     def update(self, instance, validated_data):
@@ -1142,9 +1258,11 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         client = validated_data.pop('client', missing)
         staff_assignments = validated_data.pop('staff_assignments', None)
         staff_assignments_explicit = 'staff_assignments' in getattr(self, 'initial_data', {})
-        payment_parts = validated_data.pop('_payment_parts', None)
+        validated_data.pop('_initial_payment', None)
+        validated_data.pop('initial_payment', None)
+        validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
-        payment_method = validated_data.pop('payment_method', missing)
+        validated_data.pop('payment_method', None)
         if client is not missing and client and not validated_data.get('branch') and not instance.branch_id:
             validated_data['branch'] = client.branch
         master_class = super().update(instance, validated_data)
@@ -1154,12 +1272,6 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             else:
                 master_class.participants.clear()
         self._sync_staff_assignments(master_class, staff_assignments or [], staff_assignments_explicit)
-        if payment_method is not missing:
-            master_class.selected_payment_method = payment_method
-        elif instance.finance_transaction_id:
-            master_class.selected_payment_method = instance.finance_transaction.payment_method
-        if payment_parts is not None:
-            master_class.selected_payment_parts = payment_parts
         return master_class
 
 
@@ -1573,6 +1685,9 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     manager_name = serializers.SerializerMethodField()
     addon_sale_summary = serializers.SerializerMethodField()
     master_class_id = serializers.SerializerMethodField()
+    master_class_payment_id = serializers.SerializerMethodField()
+    master_class_payment_type = serializers.SerializerMethodField()
+    master_class_payment_type_display = serializers.SerializerMethodField()
     master_class_title = serializers.SerializerMethodField()
     master_class_teacher = serializers.SerializerMethodField()
     master_class_teacher_name = serializers.SerializerMethodField()
@@ -1608,8 +1723,26 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
             return ''
         return ', '.join(f'{item.name} ×{item.quantity}' for item in sale.items.all())
 
+    def _master_class_payment(self, obj):
+        return getattr(obj, 'master_class_payment_entry', None)
+
     def _master_class(self, obj):
+        payment = self._master_class_payment(obj)
+        if payment:
+            return payment.master_class
         return getattr(obj, 'master_class_payment', None)
+
+    def get_master_class_payment_id(self, obj):
+        payment = self._master_class_payment(obj)
+        return payment.id if payment else None
+
+    def get_master_class_payment_type(self, obj):
+        payment = self._master_class_payment(obj)
+        return payment.payment_type if payment else ''
+
+    def get_master_class_payment_type_display(self, obj):
+        payment = self._master_class_payment(obj)
+        return payment.get_payment_type_display() if payment else ''
 
     def get_master_class_id(self, obj):
         item = self._master_class(obj)

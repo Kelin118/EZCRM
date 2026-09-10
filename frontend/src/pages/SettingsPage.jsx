@@ -6,7 +6,8 @@ import { canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '.
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
-import { PageHeader } from './pageUtils.jsx';
+import Badge from '../components/ui/Badge.jsx';
+import { ActionButton, PageHeader } from './pageUtils.jsx';
 import { formatScheduleDays, weekdayOptions } from '../utils/subscriptionDates.js';
 import { formatDiscountValue, normalizeDecimalString, parseDecimal } from '../utils/discounts.js';
 import { loadMetaSdk, parseEmbeddedSignupMessage, startWhatsAppBusinessAppOnboarding } from '../utils/metaEmbeddedSignup.js';
@@ -45,6 +46,19 @@ const catalogSections = [
   { category: 'addon', title: 'Доплаты к абонементам', addLabel: 'Добавить доплату', modalCreate: 'Новая доплата', icon: Plus },
   { category: 'extra_service', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Wrench },
 ];
+
+const settingsNav = [
+  { id: 'studio-settings', label: 'Основные' },
+  { id: 'branches-settings', label: 'Филиалы' },
+  { id: 'payments-settings', label: 'Оплата' },
+  { id: 'integrations-settings', label: 'Интеграции' },
+  { id: 'discounts-settings', label: 'Скидки' },
+  ...catalogSections.map((section) => ({ id: `${section.category}-settings`, label: section.title })),
+  { id: 'import-settings', label: 'Импорт', importOnly: true },
+];
+
+const selectClassName = 'min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10';
+const checkboxClassName = 'h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand';
 
 function money(value) {
   return Number(value || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
@@ -108,6 +122,14 @@ export default function SettingsPage() {
     () => catalogSections.find((section) => section.category === catalogModal.category) || catalogSections[0],
     [catalogModal.category],
   );
+  const visibleNavItems = useMemo(
+    () => settingsNav.filter((item) => !item.importOnly || canImport),
+    [canImport],
+  );
+
+  const scrollToSection = (sectionId) => {
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   useEffect(() => {
     api.get('settings/').then(({ data }) => {
@@ -233,7 +255,7 @@ export default function SettingsPage() {
           setEmbeddedSignup((current) => ({ ...current, error: 'Meta не вернула authorization code.', message: '', success: false }));
           return;
         }
-        setEmbeddedSignup((current) => ({ ...current, code, error: '', message: current.waba_id ? 'Завершаем подключение...' : 'Meta авторизация получена. Ждём данные WhatsApp Business...' }));
+        setEmbeddedSignup((current) => ({ ...current, code, error: '', message: current.waba_id ? 'Завершаем подключение…' : 'Meta авторизация получена. Ждём данные WhatsApp Business…' }));
       });
     } catch {
       setEmbeddedConnecting(false);
@@ -244,7 +266,7 @@ export default function SettingsPage() {
   const selectEmbeddedPhoneNumber = (phoneNumberId) => {
     completeStartedRef.current = false;
     setEmbeddedConnecting(true);
-    setEmbeddedSignup((current) => ({ ...current, phone_number_id: phoneNumberId, phone_numbers: [], message: 'Завершаем подключение выбранного номера...', error: '' }));
+    setEmbeddedSignup((current) => ({ ...current, phone_number_id: phoneNumberId, phone_numbers: [], message: 'Завершаем подключение выбранного номера…', error: '' }));
   };
 
   const showSuccess = (message) => {
@@ -506,10 +528,19 @@ export default function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Настройки" />
+      <PageHeader title="Настройки">
+        <Badge value="active">{branches.filter((branch) => branch.is_active).length} филиалов</Badge>
+        <Badge value="planned">{paymentMethods.filter((item) => item.is_active).length} способов оплаты</Badge>
+        <Badge value={integrationStatus?.webhook_configured ? 'active' : 'today'}>
+          {integrationStatus?.webhook_configured ? 'Webhook настроен' : 'Webhook требует внимания'}
+        </Badge>
+      </PageHeader>
 
-      <form onSubmit={save} className="max-w-6xl">
-        <SettingsCard icon={Building2} title="Информация студии" subtitle="Контакты и базовые параметры CRM">
+      <div className="grid max-w-7xl min-w-0 gap-5 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
+        <SettingsNavigation items={visibleNavItems} onSelect={scrollToSection} />
+        <div className="min-w-0 space-y-5">
+      <form onSubmit={save}>
+        <SettingsCard id="studio-settings" icon={Building2} title="Информация студии" subtitle="Контакты и базовые параметры CRM">
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="Название студии" value={settings.studio_name} disabled={!canEditStudio} onChange={(e) => set('studio_name', e.target.value)} />
             <Input label="Телефон" value={settings.phone || ''} disabled={!canEditStudio} onChange={(e) => set('phone', e.target.value)} />
@@ -526,60 +557,72 @@ export default function SettingsPage() {
         </SettingsCard>
       </form>
 
-      <div className="mt-6 grid max-w-6xl gap-6">
-        <SettingsCard icon={Building2} title="Филиалы" subtitle="Подразделения учебного центра">
-          {canEditStudio && (
-            <Button className="mb-4" onClick={() => { setBranchForm(emptyBranchForm); setBranchModal({ open: true, item: null }); }}>
+        <SettingsCard
+          id="branches-settings"
+          icon={Building2}
+          title="Филиалы"
+          subtitle="Подразделения учебного центра"
+          action={canEditStudio && (
+            <Button onClick={() => { setBranchForm(emptyBranchForm); setBranchModal({ open: true, item: null }); }}>
               <Plus size={16} />Добавить филиал
             </Button>
           )}
+        >
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="min-w-[720px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
-                <th className="px-4 py-3">Название</th><th className="px-4 py-3">Адрес</th><th className="px-4 py-3">Телефон</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" />
+            <table className="w-full min-w-[720px] border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>
+                <th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Адрес</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Телефон</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th>
               </tr></thead>
-              <tbody>{branches.map((branch) => <tr key={branch.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-semibold">{branch.name}</td><td className="px-4 py-3">{branch.address || '—'}</td><td className="px-4 py-3">{branch.phone || '—'}</td>
-                <td className="px-4 py-3">{branch.is_active ? 'Активен' : 'Отключён'}</td>
-                <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditStudio && <Button variant="secondary" onClick={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }}>Изменить</Button>}
-                  {canEditStudio && <Button variant="secondary" onClick={() => toggleBranch(branch)}>{branch.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{branch.is_active ? 'Отключить' : 'Включить'}</Button>}
-                  {canEditStudio && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить филиал?', itemName: branch.name, endpoint: `branches/${branch.id}/`, onDeleted: loadBranches })}><Trash2 size={15} />Удалить</Button>}
-                </div></td>
-              </tr>)}</tbody>
+              <tbody>{branches.length ? branches.map((branch) => <tr key={branch.id} className="transition hover:bg-brand/[0.03]">
+                <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{branch.name}</td><td className="max-w-xs break-words border-b border-slate-100 px-4 py-3 text-slate-700">{branch.address || '—'}</td><td className="border-b border-slate-100 px-4 py-3 text-slate-700">{branch.phone || '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={branch.is_active} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditStudio} active={branch.is_active} onEdit={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }} onToggle={() => toggleBranch(branch)} onDelete={() => requestDelete({ title: 'Удалить филиал?', itemName: branch.name, endpoint: `branches/${branch.id}/`, onDeleted: loadBranches })} /></td>
+              </tr>) : <EmptyTableRow colSpan={5} message="Филиалы ещё не добавлены" />}</tbody>
             </table>
           </div>
         </SettingsCard>
-        <SettingsCard icon={CreditCard} title="Способы оплаты" subtitle="Доступные способы при оформлении оплат">
-          {canEditCatalog && <Button className="mb-4" onClick={() => { setPaymentMethodForm(emptyPaymentMethodForm); setPaymentMethodModal({ open: true, item: null }); }}><Plus size={16} />Добавить способ оплаты</Button>}
+        <SettingsCard
+          id="payments-settings"
+          icon={CreditCard}
+          title="Способы оплаты"
+          subtitle="Доступные способы при оформлении оплат"
+          action={canEditCatalog && <Button onClick={() => { setPaymentMethodForm(emptyPaymentMethodForm); setPaymentMethodModal({ open: true, item: null }); }}><Plus size={16} />Добавить способ оплаты</Button>}
+        >
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="min-w-[760px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Наличные</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
-              <tbody>{paymentMethods.map((item) => <tr key={item.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.description || '—'}</td><td className="px-4 py-3">{item.is_cash ? 'Да' : 'Нет'}</td><td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}</td>
-                <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
-                  {canEditCatalog && <Button variant="secondary" onClick={() => togglePaymentMethod(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
-                  {canEditCatalog && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })}><Trash2 size={15} />Удалить</Button>}
-                </div></td>
-              </tr>)}</tbody>
+            <table className="w-full min-w-[760px] border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Описание</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Наличные</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th></tr></thead>
+              <tbody>{paymentMethods.length ? paymentMethods.map((item) => <tr key={item.id} className="transition hover:bg-brand/[0.03]">
+                <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td><td className="max-w-sm break-words border-b border-slate-100 px-4 py-3 text-slate-700">{item.description || '—'}</td><td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.is_cash ? 'Да' : 'Нет'}</td><td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} active={item.is_active} onEdit={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }} onToggle={() => togglePaymentMethod(item)} onDelete={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })} /></td>
+              </tr>) : <EmptyTableRow colSpan={5} message="Способы оплаты ещё не добавлены" />}</tbody>
             </table>
           </div>
         </SettingsCard>
-        <SettingsCard icon={MessageSquare} title="Интеграции с мессенджерами" subtitle="Официальные Meta Webhooks для WhatsApp и Instagram">
+        <SettingsCard id="integrations-settings" icon={MessageSquare} title="Интеграции с мессенджерами" subtitle="Официальные Meta Webhooks для WhatsApp и Instagram">
           {integrationStatus && (
-            <div className="mb-4 grid gap-3 text-sm md:grid-cols-3">
-              <div className="rounded-2xl bg-slate-50 p-4">
-                <p className="font-bold text-slate-900">Webhook</p>
-                <p className={integrationStatus.webhook_configured ? 'text-emerald-700' : 'text-amber-700'}>{integrationStatus.webhook_configured ? 'Verify token настроен' : 'Verify token не задан'}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 p-4">
-                <p className="font-bold text-slate-900">App Secret</p>
-                <p className={integrationStatus.app_secret_configured ? 'text-emerald-700' : 'text-amber-700'}>{integrationStatus.app_secret_configured ? 'Подпись включена' : 'Secret не задан'}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 p-4">
-                <p className="font-bold text-slate-900">Каналы</p>
-                <p>WhatsApp: {integrationStatus.whatsapp?.channel_count || 0} · Instagram: {integrationStatus.instagram?.channel_count || 0}</p>
+            <div className="mb-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+              <IntegrationStatusCard
+                label="Meta"
+                ok={integrationStatus.app_id_configured && integrationStatus.embedded_signup_configured}
+                okText="App ID и signup настроены"
+                warnText="Нужно заполнить env"
+              />
+              <IntegrationStatusCard
+                label="Webhook"
+                ok={integrationStatus.webhook_configured}
+                okText="Verify token настроен"
+                warnText="Verify token не задан"
+              />
+              <IntegrationStatusCard
+                label="App Secret"
+                ok={integrationStatus.app_secret_configured}
+                okText="Подпись включена"
+                warnText="Secret не задан"
+              />
+              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Каналы</p>
+                <p className="mt-2 text-sm font-semibold text-slate-900">WhatsApp: {integrationStatus.whatsapp?.channel_count || 0}</p>
+                <p className="text-sm font-semibold text-slate-900">Instagram: {integrationStatus.instagram?.channel_count || 0}</p>
               </div>
             </div>
           )}
@@ -597,7 +640,7 @@ export default function SettingsPage() {
                       <select
                         value={embeddedBranch}
                         onChange={(event) => setEmbeddedBranch(event.target.value)}
-                        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                        className={selectClassName}
                       >
                         <option value="">Не распределено</option>
                         {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
@@ -608,7 +651,7 @@ export default function SettingsPage() {
                       <select
                         value={embeddedManager}
                         onChange={(event) => setEmbeddedManager(event.target.value)}
-                        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                        className={selectClassName}
                       >
                         <option value="">Не назначен</option>
                         {managerOptions.map((manager) => <option key={manager.value} value={manager.value}>{manager.label}</option>)}
@@ -617,11 +660,11 @@ export default function SettingsPage() {
                   </div>
                 </div>
                 <Button
-                  className="min-w-64"
+                  className="min-w-64 self-start"
                   onClick={startEmbeddedSignup}
                   disabled={embeddedConnecting || !integrationStatus?.app_id_configured || !integrationStatus?.embedded_signup_configured}
                 >
-                  {embeddedConnecting ? 'Подключение...' : 'Подключить WhatsApp Business'}
+                  {embeddedConnecting ? 'Подключение…' : 'Подключить WhatsApp Business'}
                 </Button>
               </div>
               {!integrationStatus?.app_id_configured || !integrationStatus?.embedded_signup_configured ? (
@@ -637,7 +680,7 @@ export default function SettingsPage() {
                       type="button"
                       key={phoneNumber.id}
                       onClick={() => selectEmbeddedPhoneNumber(phoneNumber.id)}
-                      className="rounded-2xl border border-slate-200 px-4 py-3 text-left font-semibold text-slate-700 transition hover:border-brand/40 hover:bg-brand/5"
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-left font-semibold text-slate-700 transition hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/10"
                     >
                       {phoneNumber.verified_name || phoneNumber.display_phone_number || phoneNumber.id}
                       {phoneNumber.display_phone_number && phoneNumber.verified_name ? <span className="ml-2 text-slate-400">{phoneNumber.display_phone_number}</span> : null}
@@ -647,54 +690,57 @@ export default function SettingsPage() {
               )}
             </div>
           )}
-          {canEditChannels && <Button className="mb-4" onClick={() => { setChannelForm(emptyChannelForm); setChannelModal({ open: true, item: null }); }}><Plus size={16} />Добавить канал</Button>}
+          {canEditChannels && <div className="mb-4 flex justify-end"><Button onClick={() => { setChannelForm(emptyChannelForm); setChannelModal({ open: true, item: null }); }}><Plus size={16} />Добавить канал</Button></div>}
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="min-w-[920px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Источник</th><th className="px-4 py-3">Название</th><th className="px-4 py-3">Account ID</th><th className="px-4 py-3">Номер</th><th className="px-4 py-3">Филиал</th><th className="px-4 py-3">Менеджер</th><th className="px-4 py-3">Последний webhook</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" /></tr></thead>
-              <tbody>{channels.map((item) => <tr key={item.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-semibold">{item.provider_display || item.provider}</td>
-                <td className="px-4 py-3">{item.name}</td>
-                <td className="px-4 py-3 font-mono text-xs">{item.external_account_id}</td>
-                <td className="px-4 py-3">{item.phone_number || '—'}</td>
-                <td className="px-4 py-3">{item.branch_name || '—'}</td>
-                <td className="px-4 py-3">{item.default_manager_name || '—'}</td>
-                <td className="px-4 py-3">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU') : '—'}</td>
-                <td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}{item.last_error ? ` · ${item.last_error}` : ''}</td>
-                <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditChannels && <Button variant="secondary" onClick={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
-                  {canEditChannels && <Button variant="secondary" onClick={async () => { await api.patch(`messaging-channels/${item.id}/`, { is_active: !item.is_active }); await loadChannels(); }}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
-                  {canEditChannels && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить канал?', itemName: item.name, endpoint: `messaging-channels/${item.id}/`, onDeleted: loadChannels })}><Trash2 size={15} />Удалить</Button>}
-                </div></td>
-              </tr>)}</tbody>
+            <table className="w-full min-w-[920px] border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="border-b border-slate-100 px-4 py-3 font-bold">Источник</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Account ID</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Номер</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Филиал</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Менеджер</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Последний webhook</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th></tr></thead>
+              <tbody>{channels.length ? channels.map((item) => <tr key={item.id} className="transition hover:bg-brand/[0.03]">
+                <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.provider_display || item.provider}</td>
+                <td className="max-w-48 break-words border-b border-slate-100 px-4 py-3 text-slate-700">{item.name}</td>
+                <td className="max-w-52 break-all border-b border-slate-100 px-4 py-3 font-mono text-xs text-slate-600">{item.external_account_id}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.phone_number || '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.branch_name || '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.default_manager_name || '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU') : '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3">
+                  <div className="grid gap-1">
+                    <StatusBadge active={item.is_active} />
+                    {item.last_error ? <span className="max-w-64 break-words text-xs font-semibold text-red-700">{item.last_error}</span> : null}
+                  </div>
+                </td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditChannels} active={item.is_active} onEdit={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }} onToggle={async () => { await api.patch(`messaging-channels/${item.id}/`, { is_active: !item.is_active }); await loadChannels(); }} onDelete={() => requestDelete({ title: 'Удалить канал?', itemName: item.name, endpoint: `messaging-channels/${item.id}/`, onDeleted: loadChannels })} /></td>
+              </tr>) : <EmptyTableRow colSpan={9} message="Каналы мессенджеров ещё не добавлены" />}</tbody>
             </table>
           </div>
         </SettingsCard>
-        <SettingsCard icon={BadgePercent} title="Скидки" subtitle="Процентные и фиксированные скидки для продаж">
-          {canEditCatalog && <Button className="mb-4" onClick={() => { setDiscountForm(emptyDiscountForm); setDiscountModal({ open: true, item: null }); }}><Plus size={16} />Добавить скидку</Button>}
+        <SettingsCard
+          id="discounts-settings"
+          icon={BadgePercent}
+          title="Скидки"
+          subtitle="Процентные и фиксированные скидки для продаж"
+          action={canEditCatalog && <Button onClick={() => { setDiscountForm(emptyDiscountForm); setDiscountModal({ open: true, item: null }); }}><Plus size={16} />Добавить скидку</Button>}
+        >
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
-            <table className="min-w-[900px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
-                <th className="px-4 py-3">Название</th><th className="px-4 py-3">Тип</th><th className="px-4 py-3">Значение</th><th className="px-4 py-3">Филиал</th><th className="px-4 py-3">Действует</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3" />
+            <table className="w-full min-w-[900px] border-separate border-spacing-0 text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>
+                <th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Тип</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Значение</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Филиал</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Действует</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th>
               </tr></thead>
-              <tbody>{discounts.map((item) => <tr key={item.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-semibold">{item.name}</td>
-                <td className="px-4 py-3">{item.discount_type === 'percentage' ? 'Процент' : 'Фикс.'}</td>
-                <td className="px-4 py-3">{item.discount_type === 'percentage' ? `${formatDiscountValue(item.value)}%` : `${money(item.value)} ₸`}</td>
-                <td className="px-4 py-3">{item.branch_name || 'Все филиалы'}</td>
-                <td className="px-4 py-3">{[item.valid_from || '—', item.valid_until || '—'].join(' — ')}</td>
-                <td className="px-4 py-3">{item.is_active ? 'Активна' : 'Отключена'}</td>
-                <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                  {canEditCatalog && <Button variant="secondary" onClick={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
-                  {canEditCatalog && <Button variant="secondary" onClick={() => toggleDiscount(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
-                  {canEditCatalog && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить скидку?', itemName: item.name, endpoint: `discounts/${item.id}/`, onDeleted: loadDiscounts })}><Trash2 size={15} />Удалить</Button>}
-                </div></td>
-              </tr>)}</tbody>
+              <tbody>{discounts.length ? discounts.map((item) => <tr key={item.id} className="transition hover:bg-brand/[0.03]">
+                <td className="max-w-64 break-words border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.discount_type === 'percentage' ? 'Процент' : 'Фикс.'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.discount_type === 'percentage' ? `${formatDiscountValue(item.value)}%` : `${money(item.value)} ₸`}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.branch_name || 'Все филиалы'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{[item.valid_from || '—', item.valid_until || '—'].join(' — ')}</td>
+                <td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} activeLabel="Активна" inactiveLabel="Отключена" /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} active={item.is_active} onEdit={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }} onToggle={() => toggleDiscount(item)} onDelete={() => requestDelete({ title: 'Удалить скидку?', itemName: item.name, endpoint: `discounts/${item.id}/`, onDeleted: loadDiscounts })} /></td>
+              </tr>) : <EmptyTableRow colSpan={7} message="Скидки ещё не добавлены" />}</tbody>
             </table>
           </div>
         </SettingsCard>
         {catalogSections.map((section) => (
           <CatalogSection
             key={section.category}
+            id={`${section.category}-settings`}
             section={section}
             items={catalogItems.filter((item) => item.category === section.category)}
             loading={catalogLoading}
@@ -705,9 +751,8 @@ export default function SettingsPage() {
             onDelete={(item) => requestDelete({ title: 'Удалить позицию?', itemName: item.name, endpoint: `catalog-items/${item.id}/`, onDeleted: loadCatalogItems })}
           />
         ))}
-      </div>
 
-      {canImport && <section className="mt-6 max-w-6xl rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
+      {canImport && <section id="import-settings" className="scroll-mt-24 rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex gap-3">
             <div className="grid h-12 w-12 place-items-center rounded-2xl bg-brand/10 text-brand">
@@ -733,7 +778,7 @@ export default function SettingsPage() {
           />
           <Button type="submit" disabled={importing}>
             <Upload size={16} />
-            {importing ? 'Импорт...' : 'Импортировать'}
+            {importing ? 'Импорт…' : 'Импортировать'}
           </Button>
         </form>
 
@@ -758,7 +803,7 @@ export default function SettingsPage() {
             <div className="rounded-2xl bg-brand/5 px-4 py-3 text-sm font-semibold text-brand">Пропущено строк: {importResult.skipped || 0}</div>
             {importResult.warnings?.length > 0 && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                <p className="text-sm font-bold text-amber-900">Warnings</p>
+                <p className="text-sm font-bold text-amber-900">Предупреждения</p>
                 <ul className="mt-2 grid max-h-64 gap-1 overflow-auto text-sm text-amber-900 scrollbar-thin">
                   {importResult.warnings.map((warning, index) => (
                     <li key={`${warning}-${index}`}>{warning}</li>
@@ -769,6 +814,8 @@ export default function SettingsPage() {
           </div>
         )}
       </section>}
+        </div>
+      </div>
 
       <Modal
         title={branchModal.item ? 'Редактировать филиал' : 'Новый филиал'}
@@ -795,8 +842,8 @@ export default function SettingsPage() {
           <Input label="Код" value={paymentMethodForm.code || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, code: event.target.value })} />
           <Input label="Порядок" type="number" value={paymentMethodForm.sort_order ?? 0} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
-          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_cash} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_cash: event.target.checked })} />Наличные</label>
-          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={paymentMethodForm.is_cash} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_cash: event.target.checked })} />Наличные</label>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>
 
@@ -809,7 +856,7 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Источник
-            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.provider} onChange={(event) => setChannelForm({ ...channelForm, provider: event.target.value })}>
+            <select className={selectClassName} value={channelForm.provider} onChange={(event) => setChannelForm({ ...channelForm, provider: event.target.value })}>
               <option value="whatsapp">WhatsApp</option>
               <option value="instagram">Instagram</option>
             </select>
@@ -819,19 +866,19 @@ export default function SettingsPage() {
           <Input label="Номер WhatsApp" value={channelForm.phone_number || ''} onChange={(event) => setChannelForm({ ...channelForm, phone_number: event.target.value })} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Филиал
-            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.branch || ''} onChange={(event) => setChannelForm({ ...channelForm, branch: event.target.value })}>
+            <select className={selectClassName} value={channelForm.branch || ''} onChange={(event) => setChannelForm({ ...channelForm, branch: event.target.value })}>
               <option value="">Без филиала</option>
               {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
             </select>
           </label>
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Менеджер по умолчанию
-            <select className="min-h-11 rounded-2xl border border-slate-200 px-4 py-2.5" value={channelForm.default_manager || ''} onChange={(event) => setChannelForm({ ...channelForm, default_manager: event.target.value })}>
+            <select className={selectClassName} value={channelForm.default_manager || ''} onChange={(event) => setChannelForm({ ...channelForm, default_manager: event.target.value })}>
               <option value="">Не назначен</option>
               {managerOptions.map((manager) => <option key={manager.value} value={manager.value}>{manager.label}</option>)}
             </select>
           </label>
-          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={channelForm.is_active} onChange={(event) => setChannelForm({ ...channelForm, is_active: event.target.checked })} />Активен</label>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={channelForm.is_active} onChange={(event) => setChannelForm({ ...channelForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>
 
@@ -845,7 +892,7 @@ export default function SettingsPage() {
           <Input label="Название" value={discountForm.name} onChange={(event) => setDiscountForm({ ...discountForm, name: event.target.value })} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Тип скидки
-            <select value={discountForm.discount_type} onChange={(event) => setDiscountForm({ ...discountForm, discount_type: event.target.value })} className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none">
+            <select value={discountForm.discount_type} onChange={(event) => setDiscountForm({ ...discountForm, discount_type: event.target.value })} className={selectClassName}>
               <option value="percentage">Процентная</option>
               <option value="fixed">Фиксированная</option>
             </select>
@@ -853,7 +900,7 @@ export default function SettingsPage() {
           <Input label={discountForm.discount_type === 'percentage' ? 'Значение, %' : 'Значение, ₸'} type="text" inputMode="decimal" value={discountForm.value} onChange={(event) => setDiscountForm({ ...discountForm, value: event.target.value })} />
           <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
             Филиал
-            <select value={discountForm.branch || ''} onChange={(event) => setDiscountForm({ ...discountForm, branch: event.target.value })} className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none">
+            <select value={discountForm.branch || ''} onChange={(event) => setDiscountForm({ ...discountForm, branch: event.target.value })} className={selectClassName}>
               <option value="">Все филиалы</option>
               {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
             </select>
@@ -861,7 +908,7 @@ export default function SettingsPage() {
           <Input label="Действует с" type="date" value={discountForm.valid_from || ''} onChange={(event) => setDiscountForm({ ...discountForm, valid_from: event.target.value })} />
           <Input label="Действует до" type="date" value={discountForm.valid_until || ''} onChange={(event) => setDiscountForm({ ...discountForm, valid_until: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={discountForm.description || ''} onChange={(event) => setDiscountForm({ ...discountForm, description: event.target.value })} />
-          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={discountForm.is_active} onChange={(event) => setDiscountForm({ ...discountForm, is_active: event.target.checked })} />Активна</label>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={discountForm.is_active} onChange={(event) => setDiscountForm({ ...discountForm, is_active: event.target.checked })} />Активна</label>
         </div>
       </Modal>
 
@@ -872,7 +919,7 @@ export default function SettingsPage() {
         footer={
           <>
             <Button variant="secondary" onClick={() => closeCatalogModal()} disabled={catalogSaving}>Отмена</Button>
-            <Button onClick={saveCatalogItem} disabled={catalogSaving}>{catalogSaving ? 'Сохранение...' : 'Сохранить'}</Button>
+            <Button onClick={saveCatalogItem} disabled={catalogSaving}>{catalogSaving ? 'Сохранение…' : 'Сохранить'}</Button>
           </>
         }
       >
@@ -886,7 +933,7 @@ export default function SettingsPage() {
               <label className="block text-sm font-semibold text-slate-700">
                 Тип услуги
                 <select
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-brand"
+                  className={selectClassName}
                   value={catalogForm.service_type}
                   onChange={(event) => setCatalogForm({ ...catalogForm, service_type: event.target.value })}
                 >
@@ -915,7 +962,7 @@ export default function SettingsPage() {
                 type="checkbox"
                 checked={catalogForm.is_active}
                 onChange={(event) => setCatalogForm({ ...catalogForm, is_active: event.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                className={checkboxClassName}
               />
               Активен
             </label>
@@ -932,50 +979,111 @@ export default function SettingsPage() {
             <Button variant="secondary" onClick={closeDeleteConfirm} disabled={deleteSaving}>Отмена</Button>
             <Button variant="danger" onClick={confirmDelete} disabled={deleteSaving}>
               <Trash2 size={16} />
-              {deleteSaving ? 'Удаление...' : 'Удалить'}
+              {deleteSaving ? 'Удаление…' : 'Удалить'}
             </Button>
           </>
         }
       >
         <div className="grid gap-3 text-sm text-slate-700">
-          <p className="font-semibold text-slate-900">{deleteConfirm.itemName}</p>
-          <p>Это действие нельзя отменить.</p>
+          <p>Будет удалена запись:</p>
+          <p className="break-words rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">{deleteConfirm.itemName}</p>
+          <p>Действие необратимо. Если запись уже используется, сервер вернёт причину и окно останется открытым.</p>
         </div>
       </Modal>
     </>
   );
 }
 
-function SettingsCard({ icon: Icon, title, subtitle, children }) {
+function SettingsNavigation({ items, onSelect }) {
   return (
-    <section className="rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
-      <div className="mb-5 flex items-start gap-3">
-        <div className="grid h-12 w-12 place-items-center rounded-2xl bg-accent/45 text-slate-900">
-          <Icon size={22} />
+    <nav className="min-w-0 overflow-hidden lg:sticky lg:top-4" aria-label="Разделы настроек">
+      <div className="-mx-1 flex w-full gap-2 overflow-x-auto px-1 pb-2 scrollbar-thin lg:mx-0 lg:grid lg:gap-1 lg:overflow-visible lg:rounded-2xl lg:border lg:border-slate-100 lg:bg-white lg:p-2 lg:shadow-card">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSelect(item.id)}
+            className="min-h-10 shrink-0 rounded-xl px-3 py-2 text-left text-sm font-semibold text-slate-600 transition hover:bg-brand/5 hover:text-brand focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/10 lg:w-full"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function IntegrationStatusCard({ label, ok, okText, warnText }) {
+  return (
+    <div className={`rounded-2xl border p-4 ${ok ? 'border-emerald-100 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/70'}`}>
+      <div className="flex items-start gap-2">
+        <CheckCircle2 className={ok ? 'text-emerald-700' : 'text-amber-700'} size={18} aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{label}</p>
+          <p className={`mt-1 text-sm font-semibold ${ok ? 'text-emerald-800' : 'text-amber-800'}`}>{ok ? okText : warnText}</p>
         </div>
-        <div>
-          <h3 className="text-lg font-bold text-slate-900">{title}</h3>
-          <p className="text-sm text-slate-500">{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ active, activeLabel = 'Активен', inactiveLabel = 'Отключён' }) {
+  return <Badge value={active ? 'active' : 'cancelled'}>{active ? activeLabel : inactiveLabel}</Badge>;
+}
+
+function EmptyTableRow({ colSpan, message }) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="px-4 py-8 text-center font-semibold text-slate-500">{message}</td>
+    </tr>
+  );
+}
+
+function RowActions({ canEdit, active, onEdit, onToggle, onDelete }) {
+  if (!canEdit) return null;
+
+  return (
+    <div className="flex justify-end gap-2">
+      <ActionButton icon={Edit} label="Изменить" onClick={onEdit} />
+      <ActionButton icon={active ? Ban : RotateCcw} label={active ? 'Отключить' : 'Включить'} onClick={onToggle} variant="ghost" />
+      <ActionButton icon={Trash2} label="Удалить" onClick={onDelete} variant="danger" />
+    </div>
+  );
+}
+
+function SettingsCard({ id, icon: Icon, title, subtitle, action, children }) {
+  return (
+    <section id={id} className="scroll-mt-24 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card sm:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent/45 text-slate-900">
+            <Icon size={21} aria-hidden="true" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold text-slate-900">{title}</h3>
+            <p className="mt-1 text-sm leading-5 text-slate-500">{subtitle}</p>
+          </div>
         </div>
+        {action && <div className="shrink-0">{action}</div>}
       </div>
       {children}
     </section>
   );
 }
 
-function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onToggle, onDelete }) {
+function CatalogSection({ id, section, items, loading, canEdit, onAdd, onEdit, onToggle, onDelete }) {
   const Icon = section.icon;
 
   return (
-    <section className="rounded-[24px] border border-slate-100 bg-white p-6 shadow-card">
+    <section id={id} className="scroll-mt-24 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card sm:p-6">
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="grid h-12 w-12 place-items-center rounded-2xl bg-brand/10 text-brand">
-            <Icon size={22} />
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-brand/10 text-brand">
+            <Icon size={21} aria-hidden="true" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h3 className="text-lg font-bold text-slate-900">{section.title}</h3>
-            <p className="text-sm text-slate-500">Позиции справочника цен для продаж и оплат</p>
+            <p className="mt-1 text-sm leading-5 text-slate-500">Позиции справочника цен для продаж и оплат</p>
           </div>
         </div>
         {canEdit && (
@@ -1006,9 +1114,9 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onTog
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={section.category === 'service' ? 8 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Загрузка...</td></tr>
+              <EmptyTableRow colSpan={section.category === 'service' ? 8 : 4} message="Загрузка…" />
             ) : items.length === 0 ? (
-              <tr><td colSpan={section.category === 'service' ? 8 : 4} className="px-4 py-8 text-center font-semibold text-slate-500">Пока нет позиций</td></tr>
+              <EmptyTableRow colSpan={section.category === 'service' ? 8 : 4} message="Пока нет позиций" />
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
@@ -1023,27 +1131,10 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onTog
                     </>
                   )}
                   <td className="border-b border-slate-100 px-4 py-3">
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${item.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                      {item.is_active ? 'Активен' : 'Отключен'}
-                    </span>
+                    <StatusBadge active={item.is_active} />
                   </td>
                   <td className="border-b border-slate-100 px-4 py-3">
-                    {canEdit && (
-                      <div className="flex justify-end gap-2">
-                        <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onEdit(item)}>
-                          <Edit size={15} />
-                          Изменить
-                        </Button>
-                        <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onToggle(item)}>
-                          {item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}
-                          {item.is_active ? 'Отключить' : 'Включить'}
-                        </Button>
-                        <Button variant="danger" className="ml-2 min-h-9 px-3 py-1.5" onClick={() => onDelete(item)}>
-                          <Trash2 size={15} />
-                          Удалить
-                        </Button>
-                      </div>
-                    )}
+                    <RowActions canEdit={canEdit} active={item.is_active} onEdit={() => onEdit(item)} onToggle={() => onToggle(item)} onDelete={() => onDelete(item)} />
                   </td>
                 </tr>
               ))

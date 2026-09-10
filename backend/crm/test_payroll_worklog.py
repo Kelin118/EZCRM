@@ -17,6 +17,7 @@ from .models import (
     FinanceTransaction,
     Lesson,
     MasterClass,
+    MasterClassPayment,
     MasterClassStaffAssignment,
     PaymentMethod,
     PayrollStatement,
@@ -120,11 +121,16 @@ class PayrollWorklogApiTests(APITestCase):
             'duration_minutes': 60,
             'manager': self.manager.id,
             'teacher': self.teacher.id,
-            'payment_amount': '1000.00',
-            'payment_method': self.cash.id,
+            'price': '1000.00',
+            'initial_payment': {
+                'amount': '1000.00',
+                'payment_date': '2026-08-17',
+                'payment_parts': [{'payment_method': self.cash.id, 'amount': '1000.00'}],
+            },
             'is_extra_work': True,
         }, format='json')
-        transaction = FinanceTransaction.objects.get(master_class_payment=response.data['id'])
+        payment = MasterClassPayment.objects.get(master_class_id=response.data['id'])
+        transaction = payment.finance_transaction
         self.client.force_authenticate(self.accountant)
 
         filtered = self.client.get('/api/finance/', {'extra_master_class': 'true', 'teacher': self.teacher.id})

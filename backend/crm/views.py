@@ -2458,34 +2458,6 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                     initial_payment,
                     payment_type=initial_payment.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
                 )
-            if master_class.payment_amount > 0 and not master_class.payment_date:
-                master_class.payment_date = timezone.localdate()
-                master_class.save(update_fields=('payment_date', 'updated_at'))
-            if master_class.payment_amount > 0 and master_class.payment_date and not master_class.finance_transaction_id:
-                selected_payment_method = getattr(master_class, 'selected_payment_method', None)
-                payment_method = selected_payment_method
-                payment_parts = getattr(master_class, 'selected_payment_parts', None)
-                if not payment_method and payment_parts is None:
-                    raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
-                client = master_class.participants.first()
-                finance_transaction = _create_income_transaction(
-                    client=client,
-                    amount=master_class.payment_amount,
-                    source='master_class',
-                    payment_date=master_class.payment_date,
-                    comment='Оплата МК',
-                    created_by=self.request.user,
-                    manager=master_class.manager,
-                    payment_method=payment_method,
-                    payment_parts=payment_parts,
-                    branch=master_class.branch,
-                    discount=master_class.discount,
-                    discount_name=master_class.discount_name,
-                    discount_amount=master_class.discount_amount,
-                    subtotal_amount=master_class.price,
-                )
-                master_class.finance_transaction = finance_transaction
-                master_class.save(update_fields=('finance_transaction', 'updated_at'))
             self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
 
     def _assert_payment_amount_allowed(self, master_class, amount, *, exclude_payment_id=None):
@@ -2628,94 +2600,6 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 {'payment_id': payment.id, 'amount': str(payment.amount), 'payment_type': payment.payment_type},
             )
         return Response(MasterClassPaymentSerializer(payment, context=self.get_serializer_context()).data)
-
-    def _master_class_payment_comment(self, master_class):
-        return f'Оплата МК: {master_class.title}' if master_class.title else 'Оплата МК'
-
-    def _sync_finance_transaction(self, master_class):
-        finance_transaction = master_class.finance_transaction
-        if master_class.payment_amount <= 0:
-            if finance_transaction:
-                master_class.finance_transaction = None
-                master_class.save(update_fields=('finance_transaction', 'updated_at'))
-                finance_transaction.delete()
-            return
-
-        if not master_class.payment_date:
-            master_class.payment_date = timezone.localdate()
-            master_class.save(update_fields=('payment_date', 'updated_at'))
-
-        selected_payment_method = getattr(master_class, 'selected_payment_method', None)
-        payment_method = selected_payment_method
-        payment_parts = getattr(master_class, 'selected_payment_parts', None)
-        if not payment_method and finance_transaction:
-            payment_method = finance_transaction.payment_method
-        if not payment_method and payment_parts is None:
-            raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
-
-        client = master_class.participants.first()
-        comment = self._master_class_payment_comment(master_class)
-
-        if finance_transaction:
-            finance_transaction.amount = master_class.payment_amount
-            finance_transaction.subtotal_amount = master_class.price
-            finance_transaction.discount = master_class.discount
-            finance_transaction.discount_name = master_class.discount_name
-            finance_transaction.discount_amount = master_class.discount_amount
-            finance_transaction.client = client
-            finance_transaction.branch = master_class.branch
-            finance_transaction.manager = master_class.manager
-            finance_transaction.payment_method = payment_method
-            finance_transaction.payment_method_name = payment_method.name if payment_method else ''
-            finance_transaction.paid_at = _paid_at_from_date(master_class.payment_date)
-            finance_transaction.source = 'master_class'
-            finance_transaction.comment = comment
-            finance_transaction.save(update_fields=(
-                'amount',
-                'subtotal_amount',
-                'discount',
-                'discount_name',
-                'discount_amount',
-                'client',
-                'branch',
-                'manager',
-                'payment_method',
-                'payment_method_name',
-                'paid_at',
-                'source',
-                'comment',
-                'updated_at',
-            ))
-            if payment_parts is None and not selected_payment_method and finance_transaction.payment_parts.exists():
-                existing_parts = list(finance_transaction.payment_parts.all())
-                if len(existing_parts) == 1:
-                    payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': master_class.payment_amount}]
-                else:
-                    payment_parts = [
-                        {'payment_method': part.payment_method_id, 'amount': part.amount}
-                        for part in existing_parts
-                    ]
-            sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
-            return
-
-        finance_transaction = _create_income_transaction(
-            client=client,
-            amount=master_class.payment_amount,
-            source='master_class',
-            payment_date=master_class.payment_date,
-            comment=comment,
-            created_by=self.request.user,
-            manager=master_class.manager,
-            payment_method=payment_method,
-            payment_parts=payment_parts,
-            branch=master_class.branch,
-            discount=master_class.discount,
-            discount_name=master_class.discount_name,
-            discount_amount=master_class.discount_amount,
-            subtotal_amount=master_class.price,
-        )
-        master_class.finance_transaction = finance_transaction
-        master_class.save(update_fields=('finance_transaction', 'updated_at'))
 
     def perform_update(self, serializer):
         previous_stage = serializer.instance.stage

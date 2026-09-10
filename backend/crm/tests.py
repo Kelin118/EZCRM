@@ -4014,10 +4014,7 @@ class MasterClassFinanceSyncTests(APITestCase):
             'branch': self.branch.id,
             'starts_at': timezone.now().isoformat(),
             'stage': MasterClass.Stage.BOOKED,
-            'price': '10000.00',
-            'payment_amount': '10000.00',
-            'payment_date': '2026-07-20',
-            'payment_method': self.cash.id,
+            'price': '12000.00',
         }
         data.update(overrides)
         return data
@@ -4027,31 +4024,42 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         return MasterClass.objects.get(pk=response.data['id'])
 
-    def test_create_with_payment_creates_one_finance_transaction_and_get_returns_method(self):
+    def create_master_class_with_initial_payment(self, amount='5000.00', **overrides):
+        return self.create_master_class(
+            initial_payment={
+                'amount': amount,
+                'payment_date': '2026-07-20',
+                'payment_parts': [{'payment_method': self.cash.id, 'amount': amount}],
+                'comment': 'booking',
+            },
+            **overrides,
+        )
+
+    def test_create_without_initial_payment_does_not_create_finance_transaction(self):
         master_class = self.create_master_class()
 
-        self.assertEqual(FinanceTransaction.objects.count(), 1)
-        transaction = FinanceTransaction.objects.get()
-        self.assertEqual(master_class.finance_transaction_id, transaction.id)
-        self.assertEqual(transaction.amount, Decimal('10000.00'))
-        self.assertEqual(transaction.source, 'master_class')
-        self.assertEqual(transaction.payment_method, self.cash)
+        self.assertEqual(master_class.payments.count(), 0)
+        self.assertEqual(master_class.payment_amount, Decimal('0.00'))
+        self.assertIsNone(master_class.payment_date)
+        self.assertIsNone(master_class.finance_transaction)
+        self.assertFalse(FinanceTransaction.objects.filter(source='master_class').exists())
 
         response = self.client.get(f'/api/master-classes/{master_class.id}/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['payment_method'], self.cash.id)
-        self.assertEqual(response.data['payment_method_name'], self.cash.name)
+        self.assertEqual(response.data['amount_due'], '12000.00')
+        self.assertEqual(response.data['paid_total'], '0.00')
+        self.assertEqual(response.data['remaining_amount'], '12000.00')
+        self.assertEqual(response.data['payment_status'], 'unpaid')
+        self.assertEqual(response.data['payments'], [])
 
     def test_create_with_initial_payment_payload_creates_prepayment(self):
         response = self.client.post(
             '/api/master-classes/',
             self.payload(
-                payment_amount='0.00',
-                payment_method=None,
                 initial_payment={
-                    'amount': '4000.00',
+                    'amount': '5000.00',
                     'payment_date': '2026-07-20',
-                    'payment_parts': [{'payment_method': self.cash.id, 'amount': '4000.00'}],
+                    'payment_parts': [{'payment_method': self.cash.id, 'amount': '5000.00'}],
                     'comment': 'booking',
                 },
             ),
@@ -4062,22 +4070,31 @@ class MasterClassFinanceSyncTests(APITestCase):
         master_class = MasterClass.objects.get(pk=response.data['id'])
         payment = MasterClassPayment.objects.get(master_class=master_class)
         self.assertEqual(payment.payment_type, MasterClassPayment.PaymentType.PREPAYMENT)
-        self.assertEqual(payment.amount, Decimal('4000.00'))
+        self.assertEqual(payment.amount, Decimal('5000.00'))
         self.assertEqual(payment.comment, 'booking')
-        self.assertEqual(master_class.paid_total, Decimal('4000.00'))
-        self.assertEqual(master_class.remaining_amount, Decimal('6000.00'))
+        self.assertEqual(payment.accepted_by, self.admin)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        transaction = FinanceTransaction.objects.get()
+        self.assertEqual(payment.finance_transaction_id, transaction.id)
+        self.assertEqual(transaction.amount, Decimal('5000.00'))
+        self.assertEqual(transaction.source, 'master_class')
+        master_class.refresh_from_db()
+        self.assertEqual(master_class.paid_total, Decimal('5000.00'))
+        self.assertEqual(master_class.remaining_amount, Decimal('7000.00'))
+        self.assertEqual(master_class.payment_amount, Decimal('5000.00'))
+        self.assertEqual(master_class.finance_transaction_id, transaction.id)
 
     def test_update_master_class_does_not_mutate_existing_payment_transaction(self):
-        master_class = self.create_master_class(discount=self.discount.id, payment_amount='9000.00')
+        master_class = self.create_master_class_with_initial_payment()
         transaction_id = master_class.finance_transaction_id
 
         response = self.client.patch(
             f'/api/master-classes/{master_class.id}/',
             {
                 'client': self.other_student.id,
-                'payment_amount': '8000.00',
-                'payment_date': '2026-07-21',
-                'payment_method': self.card.id,
+                'title': 'МК Python updated',
+                'starts_at': (timezone.now() + timedelta(days=1)).isoformat(),
+                'price': '10000.00',
                 'discount': self.fixed_discount.id,
             },
             format='json',
@@ -4091,8 +4108,8 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(master_class.participants.first(), self.other_student)
         self.assertEqual(transaction.client, self.student)
         self.assertEqual(transaction.branch, self.branch)
-        self.assertEqual(transaction.amount, Decimal('9000.00'))
-        self.assertEqual(transaction.subtotal_amount, Decimal('9000.00'))
+        self.assertEqual(transaction.amount, Decimal('5000.00'))
+        self.assertEqual(transaction.subtotal_amount, Decimal('5000.00'))
         self.assertIsNone(transaction.discount)
         self.assertEqual(transaction.discount_name, '')
         self.assertEqual(transaction.discount_amount, Decimal('0.00'))
@@ -4101,11 +4118,11 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(timezone.localtime(transaction.paid_at).date(), date(2026, 7, 20))
         self.assertEqual(transaction.source, 'master_class')
         self.assertEqual(response.data['amount_due'], '8000.00')
-        self.assertEqual(response.data['paid_total'], '9000.00')
-        self.assertEqual(response.data['payment_status'], 'overpaid')
+        self.assertEqual(response.data['paid_total'], '5000.00')
+        self.assertEqual(response.data['payment_status'], 'partial')
 
     def test_repeated_master_class_edit_does_not_create_or_mutate_payment_transaction(self):
-        master_class = self.create_master_class()
+        master_class = self.create_master_class_with_initial_payment()
         transaction_id = master_class.finance_transaction_id
 
         for amount in ('9500.00', '9000.00'):
@@ -4119,10 +4136,10 @@ class MasterClassFinanceSyncTests(APITestCase):
         master_class.refresh_from_db()
         self.assertEqual(master_class.finance_transaction_id, transaction_id)
         self.assertEqual(FinanceTransaction.objects.count(), 1)
-        self.assertEqual(FinanceTransaction.objects.get(pk=transaction_id).amount, Decimal('10000.00'))
+        self.assertEqual(FinanceTransaction.objects.get(pk=transaction_id).amount, Decimal('5000.00'))
 
     def test_setting_master_class_payment_amount_to_zero_keeps_payment_history(self):
-        master_class = self.create_master_class()
+        master_class = self.create_master_class_with_initial_payment()
         transaction_id = master_class.finance_transaction_id
 
         response = self.client.patch(
@@ -4144,20 +4161,23 @@ class MasterClassFinanceSyncTests(APITestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('payment_method', response.data)
+        self.assertEqual(response.status_code, 201, response.data)
+        master_class = MasterClass.objects.get(pk=response.data['id'])
+        self.assertEqual(master_class.payment_amount, Decimal('0.00'))
+        self.assertIsNone(master_class.finance_transaction)
+        self.assertEqual(FinanceTransaction.objects.count(), 0)
 
     def test_additional_payment_creates_second_finance_transaction(self):
-        master_class = self.create_master_class(payment_amount='4000.00')
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
         first_transaction_id = master_class.finance_transaction_id
 
         response = self.client.post(
             f'/api/master-classes/{master_class.id}/payments/',
             {
                 'payment_type': 'additional',
-                'amount': '6000.00',
+                'amount': '7000.00',
                 'payment_date': '2026-07-21',
-                'payment_parts': [{'payment_method': self.card.id, 'amount': '6000.00'}],
+                'payment_parts': [{'payment_method': self.card.id, 'amount': '7000.00'}],
             },
             format='json',
         )
@@ -4166,12 +4186,15 @@ class MasterClassFinanceSyncTests(APITestCase):
         master_class.refresh_from_db()
         self.assertEqual(MasterClassPayment.objects.count(), 2)
         self.assertEqual(FinanceTransaction.objects.count(), 2)
-        self.assertTrue(FinanceTransaction.objects.filter(pk=first_transaction_id, amount=Decimal('4000.00')).exists())
-        self.assertEqual(master_class.payment_amount, Decimal('10000.00'))
+        self.assertTrue(FinanceTransaction.objects.filter(pk=first_transaction_id, amount=Decimal('5000.00')).exists())
+        self.assertTrue(FinanceTransaction.objects.filter(amount=Decimal('7000.00')).exists())
+        self.assertFalse(FinanceTransaction.objects.filter(amount=Decimal('12000.00')).exists())
+        self.assertEqual(master_class.payment_amount, Decimal('12000.00'))
+        self.assertEqual(master_class.remaining_amount, Decimal('0.00'))
         self.assertEqual(master_class.payment_status, 'paid')
 
     def test_new_payment_over_remaining_is_rejected(self):
-        master_class = self.create_master_class(payment_amount='9000.00')
+        master_class = self.create_master_class_with_initial_payment(amount='11000.00')
 
         response = self.client.post(
             f'/api/master-classes/{master_class.id}/payments/',
@@ -4183,7 +4206,7 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(response.data['remaining_amount'], '1000.00')
 
     def test_payment_accepted_by_request_user_not_master_class_manager(self):
-        master_class = self.create_master_class(payment_amount='0.00')
+        master_class = self.create_master_class()
         master_class.manager = self.admin
         master_class.save(update_fields=('manager', 'updated_at'))
         self.client.force_authenticate(self.manager)
@@ -4198,6 +4221,48 @@ class MasterClassFinanceSyncTests(APITestCase):
         payment = MasterClassPayment.objects.get()
         self.assertEqual(payment.accepted_by, self.manager)
         self.assertEqual(payment.master_class.manager, self.admin)
+
+    def test_edit_after_two_payments_keeps_payment_history_transactions_unchanged(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        first_payment = MasterClassPayment.objects.get(master_class=master_class)
+        first_transaction = first_payment.finance_transaction
+
+        response = self.client.post(
+            f'/api/master-classes/{master_class.id}/payments/',
+            {
+                'amount': '7000.00',
+                'payment_date': '2026-07-21',
+                'payment_parts': [{'payment_method': self.card.id, 'amount': '7000.00'}],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        second_payment = MasterClassPayment.objects.exclude(pk=first_payment.pk).get()
+        second_transaction = second_payment.finance_transaction
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/',
+            {
+                'title': 'МК Python edited',
+                'manager': self.manager.id,
+                'starts_at': (timezone.now() + timedelta(days=2)).isoformat(),
+                'price': '15000.00',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        self.assertEqual(MasterClassPayment.objects.filter(master_class=master_class).count(), 2)
+        first_transaction.refresh_from_db()
+        second_transaction.refresh_from_db()
+        first_payment.refresh_from_db()
+        second_payment.refresh_from_db()
+        self.assertEqual(first_transaction.amount, Decimal('5000.00'))
+        self.assertEqual(second_transaction.amount, Decimal('7000.00'))
+        self.assertEqual(timezone.localtime(first_transaction.paid_at).date(), date(2026, 7, 20))
+        self.assertEqual(timezone.localtime(second_transaction.paid_at).date(), date(2026, 7, 21))
+        self.assertEqual(first_payment.accepted_by, self.admin)
+        self.assertEqual(second_payment.accepted_by, self.admin)
 
 
 class FinanceJournalAndPaymentMethodTests(APITestCase):

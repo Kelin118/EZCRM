@@ -613,11 +613,53 @@ class EducationBaseViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, EducationPermission)
 
 
-class BranchViewSet(BaseAuthenticatedViewSet):
+class SettingsSafeDeleteMixin:
+    delete_audit_description = 'Удалена запись справочника'
+    delete_blocked_detail = 'Запись используется в истории. Отключите её вместо удаления.'
+
+    def get_delete_usage(self, instance):
+        return {}
+
+    def _non_empty_usage(self, instance):
+        return {
+            label: count
+            for label, count in self.get_delete_usage(instance).items()
+            if count
+        }
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        usage = self._non_empty_usage(instance)
+        if usage:
+            return Response(
+                {
+                    'detail': self.delete_blocked_detail,
+                    'usage': usage,
+                    'can_disable': hasattr(instance, 'is_active'),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        entity_id = instance.pk
+        entity_name = str(instance)
+        log_action(
+            request,
+            AuditLog.Action.DELETE,
+            self._audit_entity_type(),
+            entity_id=entity_id,
+            entity_name=entity_name,
+            description=self.delete_audit_description,
+        )
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BranchViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, BranchPermission)
     queryset = Branch.objects.all()
     serializer_class = BranchSerializer
     audit_entity_type = 'Branch'
+    delete_audit_description = 'Удалён филиал'
+    delete_blocked_detail = 'Филиал используется в истории. Отключите его вместо удаления.'
 
     def get_queryset(self):
         queryset = super().get_queryset().exclude(name__iregex=r'^\s*(все филиалы|все|all branches|без филиала|не распределено)\s*$')
@@ -636,13 +678,38 @@ class BranchViewSet(BaseAuthenticatedViewSet):
         self._log_instance(AuditLog.Action.BRANCH_CREATE, branch, 'Создан филиал', self._audit_changes())
 
     def perform_update(self, serializer):
+        was_active = serializer.instance.is_active
         branch = serializer.save()
-        self._log_instance(AuditLog.Action.BRANCH_UPDATE, branch, 'Изменён филиал', self._audit_changes())
+        action_value, description = AuditLog.Action.BRANCH_UPDATE, 'Изменён филиал'
+        if was_active and not branch.is_active:
+            action_value, description = AuditLog.Action.BRANCH_DISABLE, 'Филиал отключён'
+        self._log_instance(action_value, branch, description, self._audit_changes())
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=('is_active', 'updated_at'))
-        self._log_instance(AuditLog.Action.BRANCH_DISABLE, instance, 'Филиал отключён', {'is_active': False})
+        super().perform_destroy(instance)
+
+    def get_delete_usage(self, instance):
+        return {
+            'clients': instance.clients.count(),
+            'employees': instance.employees.count(),
+            'discounts': instance.discounts.count(),
+            'subscriptions': instance.subscriptions.count(),
+            'addon_sales': instance.addon_sales.count(),
+            'rooms': instance.rooms.count(),
+            'groups': instance.study_groups.count(),
+            'schedule_slots': instance.schedule_slots.count(),
+            'lessons': instance.lessons.count(),
+            'visits': instance.visits.count(),
+            'trials': instance.trials.count(),
+            'master_classes': instance.master_classes.count(),
+            'tasks': instance.tasks.count(),
+            'finance_transactions': instance.finance_transactions.count(),
+            'employee_work_schedules': instance.employee_work_schedules.count(),
+            'payroll_statements': instance.payroll_statements.count(),
+            'cash_register_snapshots': instance.cash_register_snapshots.count(),
+            'messaging_channels': instance.messaging_channels.count(),
+            'leads': instance.leads.count(),
+        }
 
 
 class SubjectViewSet(EducationBaseViewSet):
@@ -3362,11 +3429,13 @@ class PublicCertificateAssetView(APIView):
         return response
 
 
-class MessagingChannelViewSet(BaseAuthenticatedViewSet):
+class MessagingChannelViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MessagingChannelPermission)
     serializer_class = MessagingChannelSerializer
     queryset = MessagingChannel.objects.select_related('branch', 'default_manager').all()
     audit_entity_type = 'MessagingChannel'
+    delete_audit_description = 'Удалён канал мессенджера'
+    delete_blocked_detail = 'Канал мессенджера используется в обращениях или сообщениях. Отключите его вместо удаления.'
 
     def perform_create(self, serializer):
         instance = serializer.save()
@@ -3375,6 +3444,13 @@ class MessagingChannelViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         instance = serializer.save()
         self._log_instance(AuditLog.Action.MESSAGING_CHANNEL_UPDATE, instance, 'Изменён канал мессенджера', self._audit_changes())
+
+    def get_delete_usage(self, instance):
+        return {
+            'contacts': instance.contacts.count(),
+            'leads': instance.leads.count(),
+            'messages': LeadMessage.objects.filter(contact__channel=instance).count(),
+        }
 
 
 class LeadViewSet(BaseAuthenticatedViewSet):
@@ -4410,11 +4486,13 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         })
 
 
-class DiscountViewSet(BaseAuthenticatedViewSet):
+class DiscountViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, DiscountPermission)
     queryset = Discount.objects.select_related('branch').all()
     serializer_class = DiscountSerializer
     audit_entity_type = 'Discount'
+    delete_audit_description = 'Удалена скидка'
+    delete_blocked_detail = 'Скидка используется в продажах или финансовой истории. Отключите её вместо удаления.'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -4456,16 +4534,24 @@ class DiscountViewSet(BaseAuthenticatedViewSet):
         self._log_instance(action_value, instance, description, self._audit_changes())
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=('is_active', 'updated_at'))
-        self._log_instance(AuditLog.Action.DISCOUNT_DISABLE, instance, 'Отключена скидка', {'is_active': False})
+        super().perform_destroy(instance)
+
+    def get_delete_usage(self, instance):
+        return {
+            'subscriptions': instance.subscriptions.count(),
+            'master_classes': instance.master_classes.count(),
+            'addon_sales': instance.addon_sales.count(),
+            'finance_transactions': instance.finance_transactions.count(),
+        }
 
 
-class PaymentMethodViewSet(BaseAuthenticatedViewSet):
+class PaymentMethodViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, PaymentMethodPermission)
     queryset = PaymentMethod.objects.all()
     serializer_class = PaymentMethodSerializer
     audit_entity_type = 'PaymentMethod'
+    delete_audit_description = 'Удалён способ оплаты'
+    delete_blocked_detail = 'Способ оплаты используется в финансовой истории. Отключите его вместо удаления.'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -4494,9 +4580,14 @@ class PaymentMethodViewSet(BaseAuthenticatedViewSet):
         self._log_instance(action_value, instance, description, self._audit_changes())
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=('is_active', 'updated_at'))
-        self._log_instance(AuditLog.Action.PAYMENT_METHOD_DISABLE, instance, 'Отключён способ оплаты', {'is_active': False})
+        super().perform_destroy(instance)
+
+    def get_delete_usage(self, instance):
+        return {
+            'finance_transactions': instance.finance_transactions.count(),
+            'finance_payment_parts': instance.finance_payment_parts.count(),
+            'addon_sales': instance.addon_sales.count(),
+        }
 
 
 class ChatMessageViewSet(BaseAuthenticatedViewSet):
@@ -4536,11 +4627,13 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
         return super().update(request, *args, **kwargs)
 
 
-class CatalogItemViewSet(BaseAuthenticatedViewSet):
+class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, CatalogItemPermission)
     queryset = CatalogItem.objects.all()
     serializer_class = CatalogItemSerializer
     audit_entity_type = 'CatalogItem'
+    delete_audit_description = 'Удалена позиция справочника цен'
+    delete_blocked_detail = 'Позиция справочника используется в продажах или абонементах. Отключите её вместо удаления.'
 
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
@@ -4579,23 +4672,29 @@ class CatalogItemViewSet(BaseAuthenticatedViewSet):
         )
 
     def perform_update(self, serializer):
+        was_active = serializer.instance.is_active
         instance = serializer.save()
+        action_value = AuditLog.Action.CATALOG_ITEM_UPDATE
+        description = 'Изменена позиция справочника цен'
+        if was_active and not instance.is_active:
+            action_value = AuditLog.Action.CATALOG_ITEM_DISABLE
+            description = 'Отключена позиция справочника цен'
         self._log_instance(
-            AuditLog.Action.CATALOG_ITEM_UPDATE,
+            action_value,
             instance,
-            'Изменена позиция справочника цен',
+            description,
             self._catalog_changes(instance),
         )
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=('is_active', 'updated_at'))
-        self._log_instance(
-            AuditLog.Action.CATALOG_ITEM_DISABLE,
-            instance,
-            'Отключена позиция справочника цен',
-            self._catalog_changes(instance),
-        )
+        super().perform_destroy(instance)
+
+    def get_delete_usage(self, instance):
+        return {
+            'subscriptions': instance.subscriptions.count(),
+            'subscription_addons': instance.subscription_addons.count(),
+            'addon_sale_items': instance.addon_sale_items.count(),
+        }
 
 
 class ExcelImportView(APIView):

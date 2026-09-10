@@ -1,4 +1,4 @@
-import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSquare, Package, Plus, RotateCcw, ToggleLeft, Upload, Wrench } from 'lucide-react';
+import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSquare, Package, Plus, RotateCcw, Trash2, Upload, Wrench } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -42,7 +42,8 @@ const emptyChannelForm = { provider: 'whatsapp', name: '', external_account_id: 
 const catalogSections = [
   { category: 'service', title: 'Услуги', addLabel: 'Добавить услугу', modalCreate: 'Новая услуга', icon: Wrench },
   { category: 'product', title: 'Товары', addLabel: 'Добавить товар', modalCreate: 'Новый товар', icon: Package },
-  { category: 'addon', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Plus },
+  { category: 'addon', title: 'Доплаты к абонементам', addLabel: 'Добавить доплату', modalCreate: 'Новая доплата', icon: Plus },
+  { category: 'extra_service', title: 'Доп. услуги', addLabel: 'Добавить доп. услугу', modalCreate: 'Новая доп. услуга', icon: Wrench },
 ];
 
 function money(value) {
@@ -99,6 +100,8 @@ export default function SettingsPage() {
   const [embeddedBranch, setEmbeddedBranch] = useState('');
   const [embeddedManager, setEmbeddedManager] = useState('');
   const [embeddedConnecting, setEmbeddedConnecting] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, title: '', itemName: '', endpoint: '', onDeleted: null });
+  const [deleteSaving, setDeleteSaving] = useState(false);
   const completeStartedRef = useRef(false);
 
   const activeSection = useMemo(
@@ -244,6 +247,38 @@ export default function SettingsPage() {
     setEmbeddedSignup((current) => ({ ...current, phone_number_id: phoneNumberId, phone_numbers: [], message: 'Завершаем подключение выбранного номера...', error: '' }));
   };
 
+  const showSuccess = (message) => {
+    window.dispatchEvent(new CustomEvent('api-success', { detail: message }));
+  };
+
+  const showError = (message) => {
+    window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
+  };
+
+  const requestDelete = ({ title, itemName, endpoint, onDeleted }) => {
+    setDeleteConfirm({ open: true, title, itemName, endpoint, onDeleted });
+  };
+
+  const closeDeleteConfirm = () => {
+    if (deleteSaving) return;
+    setDeleteConfirm({ open: false, title: '', itemName: '', endpoint: '', onDeleted: null });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirm.endpoint || deleteSaving) return;
+    setDeleteSaving(true);
+    try {
+      await api.delete(deleteConfirm.endpoint);
+      await deleteConfirm.onDeleted?.();
+      setDeleteConfirm({ open: false, title: '', itemName: '', endpoint: '', onDeleted: null });
+      showSuccess('Запись удалена.');
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setDeleteSaving(false);
+    }
+  };
+
   const loadChannels = async () => {
     try {
       const [channelsResponse, statusResponse] = await Promise.all([
@@ -326,8 +361,8 @@ export default function SettingsPage() {
     await loadBranches();
   };
 
-  const disableBranch = async (branch) => {
-    await api.delete(`branches/${branch.id}/`);
+  const toggleBranch = async (branch) => {
+    await api.patch(`branches/${branch.id}/`, { is_active: !branch.is_active });
     await loadBranches();
   };
 
@@ -438,9 +473,8 @@ export default function SettingsPage() {
     }
   };
 
-  const disableCatalogItem = async (item) => {
-    if (!window.confirm(`Отключить позицию "${item.name}"?`)) return;
-    await api.delete(`catalog-items/${item.id}/`);
+  const toggleCatalogItem = async (item) => {
+    await api.patch(`catalog-items/${item.id}/`, { is_active: !item.is_active });
     await loadCatalogItems();
   };
 
@@ -509,7 +543,8 @@ export default function SettingsPage() {
                 <td className="px-4 py-3">{branch.is_active ? 'Активен' : 'Отключён'}</td>
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
                   {canEditStudio && <Button variant="secondary" onClick={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }}>Изменить</Button>}
-                  {canEditStudio && branch.is_active && <Button variant="secondary" onClick={() => disableBranch(branch)}>Отключить</Button>}
+                  {canEditStudio && <Button variant="secondary" onClick={() => toggleBranch(branch)}>{branch.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{branch.is_active ? 'Отключить' : 'Включить'}</Button>}
+                  {canEditStudio && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить филиал?', itemName: branch.name, endpoint: `branches/${branch.id}/`, onDeleted: loadBranches })}><Trash2 size={15} />Удалить</Button>}
                 </div></td>
               </tr>)}</tbody>
             </table>
@@ -525,6 +560,7 @@ export default function SettingsPage() {
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
                   {canEditCatalog && <Button variant="secondary" onClick={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
                   {canEditCatalog && <Button variant="secondary" onClick={() => togglePaymentMethod(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
+                  {canEditCatalog && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })}><Trash2 size={15} />Удалить</Button>}
                 </div></td>
               </tr>)}</tbody>
             </table>
@@ -624,7 +660,11 @@ export default function SettingsPage() {
                 <td className="px-4 py-3">{item.default_manager_name || '—'}</td>
                 <td className="px-4 py-3">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU') : '—'}</td>
                 <td className="px-4 py-3">{item.is_active ? 'Активен' : 'Отключён'}{item.last_error ? ` · ${item.last_error}` : ''}</td>
-                <td className="px-4 py-3">{canEditChannels && <Button variant="secondary" onClick={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}</td>
+                <td className="px-4 py-3"><div className="flex justify-end gap-2">
+                  {canEditChannels && <Button variant="secondary" onClick={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
+                  {canEditChannels && <Button variant="secondary" onClick={async () => { await api.patch(`messaging-channels/${item.id}/`, { is_active: !item.is_active }); await loadChannels(); }}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
+                  {canEditChannels && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить канал?', itemName: item.name, endpoint: `messaging-channels/${item.id}/`, onDeleted: loadChannels })}><Trash2 size={15} />Удалить</Button>}
+                </div></td>
               </tr>)}</tbody>
             </table>
           </div>
@@ -646,6 +686,7 @@ export default function SettingsPage() {
                 <td className="px-4 py-3"><div className="flex justify-end gap-2">
                   {canEditCatalog && <Button variant="secondary" onClick={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }}><Edit size={15} />Изменить</Button>}
                   {canEditCatalog && <Button variant="secondary" onClick={() => toggleDiscount(item)}>{item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}{item.is_active ? 'Отключить' : 'Включить'}</Button>}
+                  {canEditCatalog && <Button variant="danger" className="ml-2" onClick={() => requestDelete({ title: 'Удалить скидку?', itemName: item.name, endpoint: `discounts/${item.id}/`, onDeleted: loadDiscounts })}><Trash2 size={15} />Удалить</Button>}
                 </div></td>
               </tr>)}</tbody>
             </table>
@@ -660,7 +701,8 @@ export default function SettingsPage() {
             canEdit={canEditCatalog}
             onAdd={() => openCatalogModal(section.category)}
             onEdit={(item) => openCatalogModal(section.category, item)}
-            onDisable={disableCatalogItem}
+            onToggle={toggleCatalogItem}
+            onDelete={(item) => requestDelete({ title: 'Удалить позицию?', itemName: item.name, endpoint: `catalog-items/${item.id}/`, onDeleted: loadCatalogItems })}
           />
         ))}
       </div>
@@ -880,6 +922,26 @@ export default function SettingsPage() {
           )}
         </div>
       </Modal>
+
+      <Modal
+        title={deleteConfirm.title}
+        open={deleteConfirm.open}
+        onClose={closeDeleteConfirm}
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeDeleteConfirm} disabled={deleteSaving}>Отмена</Button>
+            <Button variant="danger" onClick={confirmDelete} disabled={deleteSaving}>
+              <Trash2 size={16} />
+              {deleteSaving ? 'Удаление...' : 'Удалить'}
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3 text-sm text-slate-700">
+          <p className="font-semibold text-slate-900">{deleteConfirm.itemName}</p>
+          <p>Это действие нельзя отменить.</p>
+        </div>
+      </Modal>
     </>
   );
 }
@@ -901,7 +963,7 @@ function SettingsCard({ icon: Icon, title, subtitle, children }) {
   );
 }
 
-function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDisable }) {
+function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onToggle, onDelete }) {
   const Icon = section.icon;
 
   return (
@@ -972,12 +1034,14 @@ function CatalogSection({ section, items, loading, canEdit, onAdd, onEdit, onDis
                           <Edit size={15} />
                           Изменить
                         </Button>
-                        {item.is_active && (
-                          <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onDisable(item)}>
-                            <ToggleLeft size={15} />
-                            Отключить
-                          </Button>
-                        )}
+                        <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => onToggle(item)}>
+                          {item.is_active ? <Ban size={15} /> : <RotateCcw size={15} />}
+                          {item.is_active ? 'Отключить' : 'Включить'}
+                        </Button>
+                        <Button variant="danger" className="ml-2 min-h-9 px-3 py-1.5" onClick={() => onDelete(item)}>
+                          <Trash2 size={15} />
+                          Удалить
+                        </Button>
                       </div>
                     )}
                   </td>

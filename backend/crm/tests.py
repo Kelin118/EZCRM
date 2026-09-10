@@ -1570,10 +1570,10 @@ class CatalogItemApiTests(APITestCase):
         item_id = create_response.data['id']
 
         update_response = self.client.patch(f'/api/catalog-items/{item_id}/', {'price': '46000.00'}, format='json')
-        disable_response = self.client.delete(f'/api/catalog-items/{item_id}/')
+        disable_response = self.client.patch(f'/api/catalog-items/{item_id}/', {'is_active': False}, format='json')
 
         self.assertEqual(update_response.status_code, 200)
-        self.assertEqual(disable_response.status_code, 204)
+        self.assertEqual(disable_response.status_code, 200)
         self.assertTrue(AuditLog.objects.filter(action='catalog_item_create', entity_type='CatalogItem').exists())
         self.assertTrue(AuditLog.objects.filter(action='catalog_item_update', entity_type='CatalogItem').exists())
         self.assertTrue(AuditLog.objects.filter(action='catalog_item_disable', entity_type='CatalogItem').exists())
@@ -3382,7 +3382,7 @@ class BranchIntegrationTests(APITestCase):
         self.other_branch = Branch.objects.create(name='Левый берег')
         self.payment_method = PaymentMethod.objects.create(name='Branch test cash', code='branch_test_cash')
 
-    def test_admin_crud_soft_delete_and_audit(self):
+    def test_admin_crud_disable_and_audit(self):
         self.client.force_authenticate(self.admin)
         created = self.client.post('/api/branches/', {'name': 'Новый филиал'}, format='json')
         self.assertEqual(created.status_code, 201)
@@ -3390,10 +3390,10 @@ class BranchIntegrationTests(APITestCase):
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_CREATE, entity_id=str(branch_id)).exists())
 
         updated = self.client.patch(f'/api/branches/{branch_id}/', {'address': 'Новый адрес'}, format='json')
-        disabled = self.client.delete(f'/api/branches/{branch_id}/')
+        disabled = self.client.patch(f'/api/branches/{branch_id}/', {'is_active': False}, format='json')
 
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(disabled.status_code, 204)
+        self.assertEqual(disabled.status_code, 200)
         self.assertFalse(Branch.objects.get(pk=branch_id).is_active)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_UPDATE, entity_id=str(branch_id)).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.BRANCH_DISABLE, entity_id=str(branch_id)).exists())
@@ -3462,6 +3462,221 @@ class BranchIntegrationTests(APITestCase):
         dashboard = self.client.get('/api/dashboard/stats/', {'branch': self.branch.id})
         self.assertEqual(dashboard.status_code, 200)
         self.assertEqual(float(dashboard.data['finance']['income']), 40000.0)
+
+
+class SettingsReferenceSafeDeleteTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='settings-delete-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='settings-delete-manager', password='pass', role='manager', roles=['manager'])
+
+    def test_admin_deletes_unused_branch(self):
+        branch = Branch.objects.create(name='Unused branch')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/branches/{branch.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Branch.objects.filter(pk=branch.pk).exists())
+
+    def test_used_branch_delete_blocked(self):
+        branch = Branch.objects.create(name='Used branch')
+        client = Client.objects.create(first_name='Branch', branch=branch)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/branches/{branch.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(response.data['can_disable'])
+        self.assertIn('clients', response.data['usage'])
+        client.refresh_from_db()
+        self.assertEqual(client.branch, branch)
+
+    def test_manager_cannot_delete_branch(self):
+        branch = Branch.objects.create(name='Manager forbidden branch')
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.delete(f'/api/branches/{branch.id}/')
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Branch.objects.filter(pk=branch.pk).exists())
+
+    def test_admin_deletes_unused_payment_method(self):
+        method = PaymentMethod.objects.create(name='Unused payment method')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/payment-methods/{method.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(PaymentMethod.objects.filter(pk=method.pk).exists())
+
+    def test_payment_method_with_finance_transaction_blocked(self):
+        method = PaymentMethod.objects.create(name='Used by finance')
+        transaction = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('1000.00'),
+            payment_method=method,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/payment-methods/{method.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('finance_transactions', response.data['usage'])
+        transaction.refresh_from_db()
+        self.assertEqual(transaction.payment_method, method)
+
+    def test_payment_method_with_finance_payment_part_blocked(self):
+        method = PaymentMethod.objects.create(name='Used by part')
+        transaction = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('1000.00'),
+        )
+        part = FinancePaymentPart.objects.create(transaction=transaction, payment_method=method, amount=Decimal('1000.00'))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/payment-methods/{method.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('finance_payment_parts', response.data['usage'])
+        part.refresh_from_db()
+        self.assertEqual(part.payment_method, method)
+
+    def test_unused_discount_deleted(self):
+        discount = Discount.objects.create(name='Unused discount', discount_type=Discount.Type.PERCENTAGE, value=10)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/discounts/{discount.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Discount.objects.filter(pk=discount.pk).exists())
+
+    def test_used_discount_blocked(self):
+        discount = Discount.objects.create(name='Used discount', discount_type=Discount.Type.PERCENTAGE, value=10)
+        client = Client.objects.create(first_name='Discount client')
+        subscription = Subscription.objects.create(
+            client=client,
+            title='AB',
+            start_date=date.today(),
+            discount=discount,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/discounts/{discount.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('subscriptions', response.data['usage'])
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.discount, discount)
+
+    def test_unused_catalog_item_deleted(self):
+        item = CatalogItem.objects.create(name='Unused item', price='1000.00', category=CatalogItem.Category.PRODUCT)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/catalog-items/{item.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(CatalogItem.objects.filter(pk=item.pk).exists())
+
+    def test_used_catalog_item_blocked(self):
+        item = CatalogItem.objects.create(name='Used service', price='1000.00', category=CatalogItem.Category.SERVICE)
+        client = Client.objects.create(first_name='Catalog client')
+        subscription = Subscription.objects.create(client=client, service=item, title=item.name, start_date=date.today())
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/catalog-items/{item.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('subscriptions', response.data['usage'])
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.service, item)
+
+    def test_empty_messaging_channel_deleted(self):
+        channel = MessagingChannel.objects.create(provider=MessagingChannel.Provider.WHATSAPP, name='Unused channel', external_account_id='unused-channel')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/messaging-channels/{channel.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MessagingChannel.objects.filter(pk=channel.pk).exists())
+
+    def test_messaging_channel_with_contacts_and_messages_blocked(self):
+        channel = MessagingChannel.objects.create(provider=MessagingChannel.Provider.WHATSAPP, name='Used channel', external_account_id='used-channel')
+        contact = MessagingContact.objects.create(channel=channel, external_contact_id='contact-1')
+        lead = Lead.objects.create(
+            source=Lead.Source.WHATSAPP,
+            channel=channel,
+            contact=contact,
+            title='Lead from channel',
+            first_message_at=timezone.now(),
+            last_message_at=timezone.now(),
+        )
+        message = LeadMessage.objects.create(
+            lead=lead,
+            contact=contact,
+            direction=LeadMessage.Direction.INBOUND,
+            external_message_id='message-1',
+            text='Hello',
+            sent_at=timezone.now(),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/messaging-channels/{channel.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('contacts', response.data['usage'])
+        self.assertIn('messages', response.data['usage'])
+        message.refresh_from_db()
+        self.assertEqual(message.contact, contact)
+
+    def test_disable_still_works(self):
+        item = CatalogItem.objects.create(name='Disable item', price='1000.00', category=CatalogItem.Category.SERVICE)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(f'/api/catalog-items/{item.id}/', {'is_active': False}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        item.refresh_from_db()
+        self.assertFalse(item.is_active)
+
+    def test_re_enable_still_works(self):
+        item = CatalogItem.objects.create(name='Enable item', price='1000.00', category=CatalogItem.Category.SERVICE, is_active=False)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(f'/api/catalog-items/{item.id}/', {'is_active': True}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        item.refresh_from_db()
+        self.assertTrue(item.is_active)
+
+    def test_delete_creates_audit_log(self):
+        branch = Branch.objects.create(name='Audit delete branch')
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/branches/{branch.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.DELETE, entity_type='Branch', entity_id=str(branch.id)).exists())
+
+    def test_blocked_delete_does_not_damage_related_data(self):
+        branch = Branch.objects.create(name='Preserve branch')
+        client = Client.objects.create(first_name='Preserve client', branch=branch)
+        transaction = FinanceTransaction.objects.create(
+            branch=branch,
+            client=client,
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('1000.00'),
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(f'/api/branches/{branch.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(Branch.objects.filter(pk=branch.pk).exists())
+        client.refresh_from_db()
+        transaction.refresh_from_db()
+        self.assertEqual(client.branch, branch)
+        self.assertEqual(transaction.branch, branch)
 
 
 class CriticalBusinessFlowTests(APITestCase):
@@ -4066,12 +4281,12 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
         self.assertEqual(allowed.status_code, 201)
         self.assertEqual(allowed.data['created_by'], teacher_manager.id)
 
-    def test_payment_method_admin_crud_soft_delete_and_permissions(self):
+    def test_payment_method_admin_crud_disable_and_permissions(self):
         self.client.force_authenticate(self.admin)
         created = self.client.post('/api/payment-methods/', {'name': 'Новый метод'}, format='json')
         self.assertEqual(created.status_code, 201)
         method_id = created.data['id']
-        self.assertEqual(self.client.delete(f'/api/payment-methods/{method_id}/').status_code, 204)
+        self.assertEqual(self.client.patch(f'/api/payment-methods/{method_id}/', {'is_active': False}, format='json').status_code, 200)
         self.assertFalse(PaymentMethod.objects.get(pk=method_id).is_active)
 
         self.client.force_authenticate(self.manager_a)

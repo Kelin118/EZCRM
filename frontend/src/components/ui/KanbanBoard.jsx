@@ -42,6 +42,7 @@ export default function KanbanBoard({ columns, getColumnId, getItemId = (item) =
                 },
                 onDragStart: (event) => {
                   event.dataTransfer.effectAllowed = 'move';
+                  event.dataTransfer.setData('text/plain', String(getItemId(item)));
                   setDragged(item);
                 },
               }))}

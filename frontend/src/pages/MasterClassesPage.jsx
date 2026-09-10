@@ -146,7 +146,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
   const { leadName, assistantNames, extraCount } = staffNames(item);
 
   return (
-    <KanbanCard draggable={canEdit} {...dragProps}>
+    <KanbanCard draggable={canEdit} dragHandleLabel="Перетащить МК" {...dragProps}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="font-semibold text-slate-900">{clientName}</p>

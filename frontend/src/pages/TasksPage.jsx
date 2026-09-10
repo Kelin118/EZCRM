@@ -1,6 +1,6 @@
-import { DndContext, useDraggable, useDroppable } from '@dnd-kit/core';
+import { DndContext, KeyboardSensor, PointerSensor, useDraggable, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -120,7 +120,7 @@ function TaskColumn({ children, column, count }) {
 }
 
 function TaskCard({ canEdit, markDone, onDelete, onEdit, task, user }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, isDragging } = useDraggable({
     id: String(task.id),
     data: { task },
     disabled: !canEdit,
@@ -130,35 +130,54 @@ function TaskCard({ canEdit, markDone, onDelete, onEdit, task, user }) {
     <article
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform) }}
-      className={`rounded-[20px] border border-slate-100 bg-white p-4 shadow-sm transition ${canEdit ? 'cursor-grab active:cursor-grabbing' : ''} ${isDragging ? 'z-20 opacity-60 ring-2 ring-brand/30' : 'hover:-translate-y-0.5 hover:shadow-md'}`}
-      {...attributes}
-      {...listeners}
+      className={`rounded-[20px] border border-slate-100 bg-white p-4 shadow-sm transition ${isDragging ? 'z-20 opacity-60 ring-2 ring-brand/30' : 'hover:-translate-y-0.5 hover:shadow-md'}`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-slate-900">{task.title}</p>
-          <p className="mt-1 text-xs font-medium text-slate-500">Клиент: {dash(task.client_name)}</p>
+      <div className="flex items-start gap-2">
+        {canEdit && (
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label="Перетащить карточку"
+            data-no-drag
+            {...attributes}
+            {...listeners}
+            className="-ml-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 active:cursor-grabbing cursor-grab [touch-action:none]"
+          >
+            <GripVertical size={16} aria-hidden="true" />
+          </button>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-semibold text-slate-900">{task.title}</p>
+              <p className="mt-1 text-xs font-medium text-slate-500">Клиент: {dash(task.client_name)}</p>
+            </div>
+            <Actions canEdit={canEdit} canDelete={canDeleteTask(task, user)} onEdit={onEdit} onDelete={onDelete} />
+          </div>
+          <dl className="mt-3 grid gap-2 text-sm text-slate-600">
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Ответственный</dt><dd className="text-right font-medium">{dash(task.assigned_to_name)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Срок</dt><dd className="text-right font-medium">{dateTime(task.due_at)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Приоритет</dt><dd className="text-right font-medium">{dash(task.priority)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Статус</dt><dd><Badge value={isDone(task) ? 'done' : task.status}>{statusLabel(task.status)}</Badge></dd></div>
+          </dl>
+          {task.description && <p className="mt-3 line-clamp-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{task.description}</p>}
+          {!isDone(task) && (
+            <Button variant="accent" className="mt-3 w-full" onClick={() => markDone(task)}>
+              <CheckCircle2 size={16} />
+              Выполнено
+            </Button>
+          )}
         </div>
-        <Actions canEdit={canEdit} canDelete={canDeleteTask(task, user)} onEdit={onEdit} onDelete={onDelete} />
       </div>
-      <dl className="mt-3 grid gap-2 text-sm text-slate-600">
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Ответственный</dt><dd className="text-right font-medium">{dash(task.assigned_to_name)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Срок</dt><dd className="text-right font-medium">{dateTime(task.due_at)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Приоритет</dt><dd className="text-right font-medium">{dash(task.priority)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Статус</dt><dd><Badge value={isDone(task) ? 'done' : task.status}>{statusLabel(task.status)}</Badge></dd></div>
-      </dl>
-      {task.description && <p className="mt-3 line-clamp-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{task.description}</p>}
-      {!isDone(task) && (
-        <Button variant="accent" className="mt-3 w-full" onClick={() => markDone(task)}>
-          <CheckCircle2 size={16} />
-          Выполнено
-        </Button>
-      )}
     </article>
   );
 }
 
 function TaskKanban({ canEdit, items, markDone, moveTask, onDelete, onEdit, user }) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  );
   const grouped = useMemo(() => {
     const result = Object.fromEntries(kanbanColumns.map((column) => [column.id, []]));
     items.forEach((task) => {
@@ -169,6 +188,7 @@ function TaskKanban({ canEdit, items, markDone, moveTask, onDelete, onEdit, user
 
   return (
     <DndContext
+      sensors={sensors}
       onDragEnd={({ active, over }) => {
         if (!over) return;
         const task = active.data.current?.task;

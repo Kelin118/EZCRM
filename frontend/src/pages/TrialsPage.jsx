@@ -1,5 +1,6 @@
-import { DndContext, useDraggable, useDroppable } from '@dnd-kit/core';
+import { DndContext, KeyboardSensor, PointerSensor, useDraggable, useDroppable, useSensor, useSensors } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
+import { GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
@@ -126,7 +127,7 @@ function TrialColumn({ children, column, count }) {
 }
 
 function TrialCard({ canEdit, item, onEdit }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, isDragging } = useDraggable({
     id: String(item.id),
     data: { item },
     disabled: !canEdit,
@@ -137,34 +138,53 @@ function TrialCard({ canEdit, item, onEdit }) {
     <article
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform) }}
-      className={`rounded-[20px] border border-slate-100 bg-white p-4 shadow-sm transition ${canEdit ? 'cursor-grab active:cursor-grabbing' : ''} ${isDragging ? 'z-20 opacity-60 ring-2 ring-brand/30' : 'hover:-translate-y-0.5 hover:shadow-md'}`}
-      {...attributes}
-      {...listeners}
+      className={`rounded-[20px] border border-slate-100 bg-white p-4 shadow-sm transition ${isDragging ? 'z-20 opacity-60 ring-2 ring-brand/30' : 'hover:-translate-y-0.5 hover:shadow-md'}`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-slate-900">{getStudentName(item)}</p>
-          {getParentName(item) && <p className="mt-1 text-xs font-medium text-slate-500">Родитель: {getParentName(item)}</p>}
+      <div className="flex items-start gap-2">
+        {canEdit && (
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label="Перетащить карточку"
+            data-no-drag
+            {...attributes}
+            {...listeners}
+            className="-ml-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 active:cursor-grabbing cursor-grab [touch-action:none]"
+          >
+            <GripVertical size={16} aria-hidden="true" />
+          </button>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-semibold text-slate-900">{getStudentName(item)}</p>
+              {getParentName(item) && <p className="mt-1 text-xs font-medium text-slate-500">Родитель: {getParentName(item)}</p>}
+            </div>
+            <Badge value={item.stage ?? item.status}>{stageLabel(item.stage ?? item.status)}</Badge>
+          </div>
+          <dl className="mt-3 grid gap-2 text-sm text-slate-600">
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Телефон</dt><dd className="text-right font-medium">{dash(getPhone(item))}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Клиент</dt><dd className="text-right font-medium">{dash(item.client_name)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата пробного</dt><dd className="text-right font-medium">{dateTime(getTrialDate(item))}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма</dt><dd className="text-right font-semibold text-brand">{money(item.price)}</dd></div>
+            {getPaymentMethod(item) && <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплата</dt><dd className="text-right font-medium">{getPaymentMethod(item)}</dd></div>}
+          </dl>
+          {item.subscription && <div className="mt-3"><Badge value="active">Абонемент создан</Badge></div>}
+          {comment && <p className="mt-3 line-clamp-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{comment}</p>}
+          {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
         </div>
-        <Badge value={item.stage ?? item.status}>{stageLabel(item.stage ?? item.status)}</Badge>
       </div>
-      <dl className="mt-3 grid gap-2 text-sm text-slate-600">
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Телефон</dt><dd className="text-right font-medium">{dash(getPhone(item))}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Клиент</dt><dd className="text-right font-medium">{dash(item.client_name)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата пробного</dt><dd className="text-right font-medium">{dateTime(getTrialDate(item))}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма</dt><dd className="text-right font-semibold text-brand">{money(item.price)}</dd></div>
-        {getPaymentMethod(item) && <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплата</dt><dd className="text-right font-medium">{getPaymentMethod(item)}</dd></div>}
-      </dl>
-      {item.subscription && <div className="mt-3"><Badge value="active">Абонемент создан</Badge></div>}
-      {comment && <p className="mt-3 line-clamp-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{comment}</p>}
-      {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
     </article>
   );
 }
 
 function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  );
   const grouped = useMemo(() => {
     const result = Object.fromEntries(trialStages.map((stage) => [stage.value, []]));
     items.forEach((item) => {
@@ -175,6 +195,7 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 
   return (
     <DndContext
+      sensors={sensors}
       onDragEnd={({ active, over }) => {
         if (!over) return;
         const item = active.data.current?.item;

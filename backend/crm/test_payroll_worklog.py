@@ -1,12 +1,14 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .employee_worklog import build_employee_worklog
+from .employee_worklog import build_employee_worklog, get_employee_schedule_context
 from .models import (
     Branch,
     Client,
@@ -20,6 +22,7 @@ from .models import (
     PayrollStatement,
     StudyGroup,
 )
+from .serializers import MasterClassSerializer
 
 
 def aware_dt(year, month, day, hour=0, minute=0):
@@ -316,3 +319,252 @@ class PayrollWorklogApiTests(APITestCase):
         response = self.client.get('/api/payroll/')
 
         self.assertEqual(response.status_code, 403)
+
+
+class MasterClassManagerScheduleContextTests(APITestCase):
+    def setUp(self):
+        timezone.activate('Asia/Qyzylorda')
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='mc-schedule-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='mc-schedule-manager', password='pass', role='manager', roles=['manager'])
+        self.other_manager = User.objects.create_user(username='mc-schedule-manager-2', password='pass', role='manager', roles=['manager'])
+        self.branch = Branch.objects.create(name='Manager schedule branch')
+        self.client_obj = Client.objects.create(first_name='Schedule', last_name='Client', branch=self.branch)
+        self.client.force_authenticate(self.manager)
+
+    def tearDown(self):
+        timezone.deactivate()
+        super().tearDown()
+
+    def dt(self, year, month, day, hour=0, minute=0):
+        return timezone.make_aware(datetime(year, month, day, hour, minute))
+
+    def schedule(self, *, employee=None, weekday=0, start=time(10), end=time(20), valid_from=date(2026, 8, 1), valid_until=None, is_working_day=True):
+        return EmployeeWorkSchedule.objects.create(
+            employee=employee or self.manager,
+            branch=self.branch,
+            weekday=weekday,
+            start_time=start,
+            end_time=end,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            is_working_day=is_working_day,
+        )
+
+    def context(self, *, employee=None, starts_at=None, duration=60, cache=None):
+        return get_employee_schedule_context(employee if employee is not None else self.manager, starts_at or self.dt(2026, 8, 17, 14), duration, schedule_cache=cache)
+
+    def create_master_class(self, *, manager=None, starts_at=None, duration=60):
+        item = MasterClass.objects.create(
+            title='МК график куратора',
+            manager=self.manager if manager is None else manager,
+            starts_at=starts_at or self.dt(2026, 8, 17, 14),
+            duration_minutes=duration,
+            branch=self.branch,
+        )
+        item.participants.add(self.client_obj)
+        return item
+
+    def test_no_manager_status(self):
+        data = get_employee_schedule_context(None, self.dt(2026, 8, 17, 14), 60)
+
+        self.assertEqual(data['status'], 'no_manager')
+        self.assertFalse(data['schedule_found'])
+
+    def test_no_schedule_status(self):
+        data = self.context()
+
+        self.assertEqual(data['status'], 'no_schedule')
+        self.assertFalse(data['schedule_found'])
+
+    def test_day_off_status(self):
+        self.schedule(weekday=0, is_working_day=False)
+
+        data = self.context()
+
+        self.assertEqual(data['status'], 'day_off')
+        self.assertTrue(data['schedule_found'])
+        self.assertFalse(data['is_working_day'])
+
+    def test_within_schedule_status(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 14), duration=90)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['regular_minutes'], 90)
+        self.assertEqual(data['outside_minutes'], 0)
+
+    def test_outside_schedule_before_shift(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 8), duration=60)
+
+        self.assertEqual(data['status'], 'outside_schedule')
+        self.assertEqual(data['regular_minutes'], 0)
+        self.assertEqual(data['outside_minutes'], 60)
+
+    def test_outside_schedule_after_shift(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 21), duration=60)
+
+        self.assertEqual(data['status'], 'outside_schedule')
+        self.assertEqual(data['regular_minutes'], 0)
+        self.assertEqual(data['outside_minutes'], 60)
+
+    def test_partial_after_shift_end(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 19, 30), duration=90)
+
+        self.assertEqual(data['status'], 'partial')
+        self.assertEqual(data['regular_minutes'], 30)
+        self.assertEqual(data['outside_minutes'], 60)
+
+    def test_partial_before_shift_start(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 9, 30), duration=90)
+
+        self.assertEqual(data['status'], 'partial')
+        self.assertEqual(data['regular_minutes'], 60)
+        self.assertEqual(data['outside_minutes'], 30)
+
+    def test_starts_exactly_at_schedule_start_is_within(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 10), duration=60)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['regular_minutes'], 60)
+
+    def test_ends_exactly_at_schedule_end_is_within(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 19), duration=60)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['regular_minutes'], 60)
+
+    def test_starts_exactly_at_schedule_end_is_outside(self):
+        self.schedule(weekday=0)
+
+        data = self.context(starts_at=self.dt(2026, 8, 17, 20), duration=60)
+
+        self.assertEqual(data['status'], 'outside_schedule')
+        self.assertEqual(data['outside_minutes'], 60)
+
+    def test_historical_master_class_uses_old_schedule(self):
+        self.schedule(weekday=3, start=time(10), end=time(18), valid_from=date(2026, 8, 1), valid_until=date(2026, 8, 31))
+        self.schedule(weekday=3, start=time(12), end=time(20), valid_from=date(2026, 9, 1))
+
+        data = self.context(starts_at=self.dt(2026, 8, 20, 17, 30), duration=30)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['schedule_start'], '10:00')
+        self.assertEqual(data['schedule_end'], '18:00')
+
+    def test_new_master_class_uses_new_schedule(self):
+        self.schedule(weekday=3, start=time(10), end=time(18), valid_from=date(2026, 8, 1), valid_until=date(2026, 8, 31))
+        self.schedule(weekday=3, start=time(12), end=time(20), valid_from=date(2026, 9, 1))
+
+        data = self.context(starts_at=self.dt(2026, 9, 10, 19, 30), duration=30)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['schedule_start'], '12:00')
+        self.assertEqual(data['schedule_end'], '20:00')
+
+    def test_weekday_is_selected_from_local_master_class_date(self):
+        self.schedule(weekday=1, start=time(10), end=time(20), valid_from=date(2026, 8, 1))
+
+        data = self.context(starts_at=self.dt(2026, 8, 18, 12), duration=60)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['schedule_start'], '10:00')
+
+    def test_local_timezone_is_used_for_schedule_date(self):
+        self.schedule(weekday=3, start=time(1), end=time(3), valid_from=date(2026, 9, 1))
+        starts_at = datetime(2026, 9, 9, 20, 30, tzinfo=datetime_timezone.utc)
+
+        data = self.context(starts_at=starts_at, duration=60)
+
+        self.assertEqual(data['status'], 'within_schedule')
+        self.assertEqual(data['schedule_start'], '01:00')
+
+    def test_missing_duration_status(self):
+        self.schedule(weekday=0)
+
+        data = self.context(duration=None)
+
+        self.assertEqual(data['status'], 'unknown_duration')
+        self.assertEqual(data['regular_minutes'], 0)
+        self.assertIsNone(data['ends_at'])
+
+    def test_preview_endpoint_matches_serializer_calculation(self):
+        self.schedule(weekday=0)
+        item = self.create_master_class(starts_at=self.dt(2026, 8, 17, 19, 30), duration=90)
+
+        detail = self.client.get(f'/api/master-classes/{item.id}/')
+        preview = self.client.post('/api/master-classes/manager-schedule-preview/', {
+            'manager': self.manager.id,
+            'starts_at': '2026-08-17T19:30',
+            'duration_minutes': 90,
+        }, format='json')
+
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual(preview.data['status'], detail.data['manager_work_schedule']['status'])
+        self.assertEqual(preview.data['regular_minutes'], detail.data['manager_work_schedule']['regular_minutes'])
+        self.assertEqual(preview.data['outside_minutes'], detail.data['manager_work_schedule']['outside_minutes'])
+
+    def test_preview_changes_when_manager_changes(self):
+        self.schedule(employee=self.manager, weekday=0, start=time(10), end=time(20))
+        self.schedule(employee=self.other_manager, weekday=0, start=time(8), end=time(9))
+
+        first = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-08-17T10:30', 'duration_minutes': 60}, format='json')
+        second = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.other_manager.id, 'starts_at': '2026-08-17T10:30', 'duration_minutes': 60}, format='json')
+
+        self.assertEqual(first.data['status'], 'within_schedule')
+        self.assertEqual(second.data['status'], 'outside_schedule')
+
+    def test_preview_changes_when_starts_at_changes(self):
+        self.schedule(weekday=0, start=time(10), end=time(20))
+
+        first = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-08-17T14:00', 'duration_minutes': 60}, format='json')
+        second = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-08-17T21:00', 'duration_minutes': 60}, format='json')
+
+        self.assertEqual(first.data['status'], 'within_schedule')
+        self.assertEqual(second.data['status'], 'outside_schedule')
+
+    def test_preview_changes_when_duration_changes(self):
+        self.schedule(weekday=0, start=time(10), end=time(20))
+
+        first = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-08-17T19:30', 'duration_minutes': 30}, format='json')
+        second = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-08-17T19:30', 'duration_minutes': 90}, format='json')
+
+        self.assertEqual(first.data['status'], 'within_schedule')
+        self.assertEqual(second.data['status'], 'partial')
+
+    def test_existing_master_classes_need_no_data_migration(self):
+        self.schedule(weekday=0)
+        item = self.create_master_class(starts_at=self.dt(2026, 8, 17, 14), duration=60)
+
+        response = self.client.get(f'/api/master-classes/{item.id}/')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['manager_work_schedule']['status'], 'within_schedule')
+        self.assertFalse(hasattr(item, 'manager_work_schedule'))
+
+    def test_serializer_reuses_schedule_cache_for_same_manager_and_date(self):
+        self.schedule(weekday=0)
+        items = [self.create_master_class(starts_at=self.dt(2026, 8, 17, 14), duration=60) for _ in range(3)]
+
+        with CaptureQueriesContext(connection) as captured:
+            MasterClassSerializer(items, many=True, context={}).data
+
+        schedule_queries = [
+            query for query in captured.captured_queries
+            if 'crm_employeeworkschedule' in query['sql'].lower()
+        ]
+        self.assertEqual(len(schedule_queries), 1)

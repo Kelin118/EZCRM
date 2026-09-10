@@ -58,6 +58,7 @@ from .models import (
 )
 from .payment_parts import payment_parts_representation, sync_finance_payment_parts, validate_payment_parts
 from .discounts import calculate_discount, validate_discount_for_sale
+from .employee_worklog import get_employee_schedule_context
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
 from .subscription_dates import calculate_subscription_end_date
 
@@ -1003,6 +1004,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         data = super().to_representation(instance)
         client = self._primary_client(instance)
         data['client'] = client.id if client else None
+        data['manager_work_schedule'] = get_employee_schedule_context(
+            instance.manager,
+            instance.starts_at,
+            instance.duration_minutes,
+            schedule_cache=self.context.setdefault('employee_schedule_cache', {}),
+        )
         finance_transaction = instance.finance_transaction
         payment_method = finance_transaction.payment_method if finance_transaction else None
         data['payment_method'] = payment_method.id if payment_method else None

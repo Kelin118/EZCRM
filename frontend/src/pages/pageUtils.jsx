@@ -75,6 +75,7 @@ const readOnlyFields = new Set([
   'progress_percent',
   'finance_transaction',
   'lesson_deducted',
+  'manager_work_schedule',
 ]);
 
 const timeFields = new Set(['start_time', 'end_time']);

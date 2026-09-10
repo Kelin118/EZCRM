@@ -101,7 +101,7 @@ class TrialPermission(RolePermission):
 
 class MasterClassPermission(TrialPermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'convert_to_subscription', 'pay_preview'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'convert_to_subscription', 'pay_preview', 'manager_schedule_preview'},
         TEACHER: {'read', 'list', 'retrieve', 'pay_preview'},
         ACCOUNTANT: {'read', 'list', 'retrieve', 'pay_preview'},
     }

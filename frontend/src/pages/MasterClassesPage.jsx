@@ -63,6 +63,42 @@ const eventDateTime = (value) => {
   };
 };
 const dash = (value) => value || '—';
+const managerScheduleFallback = {
+  status: 'no_manager',
+  label: 'Куратор не выбран',
+  schedule_found: false,
+  is_working_day: false,
+  schedule_start: '',
+  schedule_end: '',
+  regular_minutes: 0,
+  outside_minutes: 0,
+};
+const managerScheduleShortLabels = {
+  within_schedule: 'Рабочее время',
+  partial: 'Частично вне',
+  outside_schedule: 'Вне графика',
+  day_off: 'Выходной',
+  no_schedule: 'Нет графика',
+  no_manager: 'Куратор не выбран',
+  unknown_duration: 'Нет длительности',
+  unknown_start: 'Нет даты',
+};
+const managerScheduleProblemLabels = {
+  partial: 'Частично вне графика куратора',
+  outside_schedule: 'Вне графика куратора',
+  day_off: 'Выходной куратора',
+  no_schedule: 'Нет графика куратора',
+};
+const managerScheduleTones = {
+  within_schedule: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  partial: 'border-amber-200 bg-amber-50 text-amber-700',
+  outside_schedule: 'border-red-200 bg-red-50 text-red-700',
+  day_off: 'border-red-200 bg-red-50 text-red-700',
+  no_schedule: 'border-slate-200 bg-slate-50 text-slate-700',
+  no_manager: 'border-slate-200 bg-slate-50 text-slate-600',
+  unknown_duration: 'border-amber-200 bg-amber-50 text-amber-700',
+  unknown_start: 'border-slate-200 bg-slate-50 text-slate-600',
+};
 const clientDisplay = (item) => item.client_display_name || item.client_name || item.client?.display_name || item.client?.full_name || 'Не указан';
 const clientSecondary = (item) => {
   const display = clientDisplay(item);
@@ -115,6 +151,56 @@ const staffNames = (item = {}) => {
   return { staff, leadName, assistantNames, extraCount: staff.filter((assignment) => assignment.is_extra_work).length };
 };
 
+function managerScheduleTitle(schedule = managerScheduleFallback) {
+  const lines = [];
+  if (schedule.schedule_start && schedule.schedule_end) lines.push(`График: ${schedule.schedule_start}–${schedule.schedule_end}`);
+  if (Number.isFinite(Number(schedule.regular_minutes))) lines.push(`В графике: ${schedule.regular_minutes || 0} мин`);
+  if (Number.isFinite(Number(schedule.outside_minutes))) lines.push(`Вне графика: ${schedule.outside_minutes || 0} мин`);
+  return lines.join('\n') || schedule.label || '';
+}
+
+function ManagerScheduleBadge({ schedule }) {
+  const value = schedule || managerScheduleFallback;
+  return (
+    <span title={managerScheduleTitle(value)} className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold ${managerScheduleTones[value.status] || managerScheduleTones.no_schedule}`}>
+      {managerScheduleShortLabels[value.status] || value.label || '—'}
+    </span>
+  );
+}
+
+function ManagerSchedulePreview({ loading, schedule }) {
+  const value = schedule || managerScheduleFallback;
+  const tone = managerScheduleTones[value.status] || managerScheduleTones.no_schedule;
+  const heading = loading ? 'Проверяем график куратора...' : value.label;
+  const isWithin = value.status === 'within_schedule';
+  const isPartial = value.status === 'partial';
+  const isOutside = value.status === 'outside_schedule';
+  const isDayOff = value.status === 'day_off';
+  const isNoSchedule = value.status === 'no_schedule';
+  const isNoManager = value.status === 'no_manager';
+  const isUnknownDuration = value.status === 'unknown_duration';
+
+  return (
+    <div className={`rounded-2xl border p-4 text-sm ${tone}`}>
+      <p className="font-black">Рабочее время куратора</p>
+      <p className="mt-1 font-bold">{isWithin ? '✓ ' : ''}{heading}</p>
+      {value.schedule_start && value.schedule_end && <p className="mt-2 font-semibold">График: {value.schedule_start}–{value.schedule_end}</p>}
+      {isWithin && <p className="mt-1">МК полностью проходит в рабочее время.</p>}
+      {isPartial && (
+        <div className="mt-1 grid gap-1">
+          <p>В графике: {value.regular_minutes || 0} мин</p>
+          <p>Вне графика: {value.outside_minutes || 0} мин</p>
+        </div>
+      )}
+      {isOutside && <p className="mt-1">Весь МК проходит вне графика.</p>}
+      {isDayOff && <p className="mt-1">На эту дату у сотрудника указан выходной.</p>}
+      {isNoSchedule && <p className="mt-1">График куратора на эту дату не настроен.</p>}
+      {isNoManager && <p className="mt-1">Выберите куратора, чтобы определить рабочее время.</p>}
+      {isUnknownDuration && <p className="mt-1">Укажите длительность МК, чтобы проверить весь интервал.</p>}
+    </div>
+  );
+}
+
 function dispatchError(message) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
 }
@@ -143,6 +229,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
   const clientName = clientDisplay(item);
   const clientInfo = clientSecondary(item);
   const timeOutside = item.time_outside_regular_hours ?? item.outside_regular_hours ?? item.is_outside_regular_hours;
+  const managerSchedule = item.manager_work_schedule;
   const { leadName, assistantNames, extraCount } = staffNames(item);
 
   return (
@@ -156,6 +243,11 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
           <Badge value={item.stage}>{stageLabel(item.stage)}</Badge>
           {extraCount > 0 && <Badge value="outside">Вне времени МК · {extraCount}</Badge>}
           {!item.is_extra_work && timeOutside && <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">Вне 16:00–21:00</span>}
+          {managerScheduleProblemLabels[managerSchedule?.status] && (
+            <span title={managerScheduleTitle(managerSchedule)} className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${managerScheduleTones[managerSchedule.status]}`}>
+              {managerScheduleProblemLabels[managerSchedule.status]}
+            </span>
+          )}
         </div>
       </div>
       <dl className="mt-3 grid gap-2 text-sm text-slate-600">
@@ -183,6 +275,8 @@ export default function MasterClassesPage() {
   const [saving, setSaving] = useState(false);
   const [duplicateError, setDuplicateError] = useState(null);
   const [payPreview, setPayPreview] = useState([]);
+  const [managerSchedulePreview, setManagerSchedulePreview] = useState(null);
+  const [managerScheduleLoading, setManagerScheduleLoading] = useState(false);
   const [unmarkedOutsideCount, setUnmarkedOutsideCount] = useState(0);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
@@ -195,6 +289,7 @@ export default function MasterClassesPage() {
   const staffAssignments = normalizeStaffAssignments(form);
   const discountAmount = calculateDiscountAmount(form.price, selectedDiscount);
   const totalAfterDiscount = calculateDiscountedTotal(form.price, selectedDiscount);
+  const currentManagerSchedule = managerSchedulePreview || form.manager_work_schedule || managerScheduleFallback;
   const changeDiscount = (value) => {
     const discount = getDiscountById(value);
     setForm({ ...form, discount: value, payment_amount: calculateDiscountedTotal(form.price, discount) });
@@ -237,6 +332,42 @@ export default function MasterClassesPage() {
       });
     return () => { mounted = false; };
   }, [form.staff_assignments, form.teacher, form.is_extra_work, form.starts_at, form.duration_minutes]);
+
+  useEffect(() => {
+    if (!crud.modalOpen) {
+      setManagerSchedulePreview(null);
+      setManagerScheduleLoading(false);
+      return;
+    }
+    if (!form.manager) {
+      setManagerSchedulePreview(managerScheduleFallback);
+      setManagerScheduleLoading(false);
+      return;
+    }
+    if (!form.starts_at) {
+      setManagerSchedulePreview({ ...managerScheduleFallback, status: 'unknown_start', label: 'Не указана дата МК' });
+      setManagerScheduleLoading(false);
+      return;
+    }
+
+    let mounted = true;
+    setManagerScheduleLoading(true);
+    api.post('master-classes/manager-schedule-preview/', {
+      manager: form.manager,
+      starts_at: form.starts_at,
+      duration_minutes: form.duration_minutes || null,
+    })
+      .then(({ data }) => {
+        if (mounted) setManagerSchedulePreview(data);
+      })
+      .catch(() => {
+        if (mounted) setManagerSchedulePreview(form.manager_work_schedule || null);
+      })
+      .finally(() => {
+        if (mounted) setManagerScheduleLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [crud.modalOpen, form.manager, form.starts_at, form.duration_minutes]);
 
   const applyStaffAssignments = (assignments) => {
     const normalized = assignments.map((assignment, index) => ({
@@ -283,6 +414,12 @@ export default function MasterClassesPage() {
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     baseFields[1],
     baseFields[2],
+    {
+      name: 'manager_work_schedule_preview',
+      type: 'custom',
+      className: 'md:col-span-2',
+      render: () => <ManagerSchedulePreview loading={managerScheduleLoading} schedule={currentManagerSchedule} />,
+    },
     {
       name: 'staff_assignments',
       type: 'custom',
@@ -543,6 +680,7 @@ export default function MasterClassesPage() {
             if (timeOutside) return <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700">Вне 16:00–21:00 · не отмечен</span>;
             return 'Обычный';
           } },
+          { key: 'manager_work_schedule', header: 'График куратора', render: (row) => <ManagerScheduleBadge schedule={row.manager_work_schedule} /> },
           { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },

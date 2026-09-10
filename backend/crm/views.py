@@ -160,7 +160,7 @@ from .meta_api import (
 )
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
-from .employee_worklog import build_employee_worklog, split_work_interval_by_schedule
+from .employee_worklog import build_employee_worklog, get_employee_schedule_context, split_work_interval_by_schedule
 from .payroll import apply_payroll_calculation, generate_payroll_statements
 from .subscription_dates import calculate_subscription_end_date
 from users.role_hierarchy import manageable_by_manager
@@ -2259,6 +2259,19 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 'rate_configured': rate_configured,
             })
         return Response({'items': items})
+
+    @action(detail=False, methods=['post'], url_path='manager-schedule-preview')
+    def manager_schedule_preview(self, request):
+        starts_at = _parse_master_class_starts_at(request.data.get('starts_at'))
+        manager_id = request.data.get('manager')
+        duration = request.data.get('duration_minutes')
+        duration = int(duration) if duration not in (None, '') else None
+        manager = None
+        if manager_id not in (None, ''):
+            manager = User.objects.filter(pk=manager_id, is_active=True).first()
+            if not manager:
+                raise drf_serializers.ValidationError({'manager': 'Выберите активного куратора.'})
+        return Response(get_employee_schedule_context(manager, starts_at, duration, schedule_cache={}))
 
     def _duplicate_payload(self, duplicate):
         client = duplicate.participants.first()

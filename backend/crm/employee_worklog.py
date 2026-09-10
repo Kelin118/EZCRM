@@ -9,6 +9,16 @@ from .models import EmployeeWorkSchedule, Lesson, MasterClass, MasterClassStaffA
 EXCLUDED_MASTER_CLASS_STAGES = {'cancelled', 'lost', 'lead'}
 REGULAR_MASTER_CLASS_START = time(16, 0)
 REGULAR_MASTER_CLASS_END = time(21, 0)
+MANAGER_WORK_SCHEDULE_LABELS = {
+    'within_schedule': 'В рабочее время куратора',
+    'partial': 'Частично вне графика куратора',
+    'outside_schedule': 'Вне рабочего времени куратора',
+    'day_off': 'Выходной куратора',
+    'no_schedule': 'График куратора не настроен',
+    'no_manager': 'Куратор не выбран',
+    'unknown_duration': 'Не указана длительность МК',
+    'unknown_start': 'Не указана дата МК',
+}
 
 
 def _aware_datetime(day, value):
@@ -33,13 +43,14 @@ def schedule_for(employee, day):
     ).filter(Q(valid_until__isnull=True) | Q(valid_until__gte=day)).order_by('-valid_from').first()
 
 
-def split_work_interval_by_schedule(employee, start_at, end_at):
+def split_work_interval_by_schedule(employee, start_at, end_at, schedule=None):
     if not employee or not start_at or not end_at or end_at <= start_at:
         return {'regular_minutes': 0, 'outside_minutes': 0}
     local_start = _local(start_at)
     local_end = _local(end_at)
     total = int((local_end - local_start).total_seconds() // 60)
-    schedule = schedule_for(employee, local_start.date())
+    if schedule is None:
+        schedule = schedule_for(employee, local_start.date())
     if not schedule or not schedule.is_working_day:
         return {'regular_minutes': 0, 'outside_minutes': max(total, 0)}
     schedule_start = _aware_datetime(local_start.date(), schedule.start_time)
@@ -48,6 +59,68 @@ def split_work_interval_by_schedule(employee, start_at, end_at):
     overlap_end = min(end_at, schedule_end)
     regular = max(0, int((overlap_end - overlap_start).total_seconds() // 60))
     return {'regular_minutes': regular, 'outside_minutes': max(total - regular, 0)}
+
+
+def _schedule_from_cache(employee, day, schedule_cache=None):
+    if not employee or not day:
+        return None
+    if schedule_cache is None:
+        return schedule_for(employee, day)
+    key = (employee.id, day)
+    if key not in schedule_cache:
+        schedule_cache[key] = schedule_for(employee, day)
+    return schedule_cache[key]
+
+
+def _manager_schedule_payload(status, *, start_at=None, end_at=None, schedule=None, regular_minutes=0, outside_minutes=0):
+    return {
+        'status': status,
+        'label': MANAGER_WORK_SCHEDULE_LABELS[status],
+        'schedule_found': bool(schedule),
+        'is_working_day': bool(schedule and schedule.is_working_day),
+        'schedule_start': schedule.start_time.strftime('%H:%M') if schedule else '',
+        'schedule_end': schedule.end_time.strftime('%H:%M') if schedule else '',
+        'regular_minutes': regular_minutes,
+        'outside_minutes': outside_minutes,
+        'starts_at': start_at.isoformat() if start_at else None,
+        'ends_at': end_at.isoformat() if end_at else None,
+    }
+
+
+def get_employee_schedule_context(employee, start_at, duration_minutes, schedule_cache=None):
+    if not employee:
+        return _manager_schedule_payload('no_manager', start_at=start_at)
+    if not start_at:
+        return _manager_schedule_payload('unknown_start', start_at=start_at)
+
+    local_start = _local(start_at)
+    schedule = _schedule_from_cache(employee, local_start.date(), schedule_cache=schedule_cache)
+    if not schedule:
+        return _manager_schedule_payload('no_schedule', start_at=start_at)
+    if not schedule.is_working_day:
+        return _manager_schedule_payload('day_off', start_at=start_at, schedule=schedule)
+    if duration_minutes in (None, '') or int(duration_minutes) <= 0:
+        return _manager_schedule_payload('unknown_duration', start_at=start_at, schedule=schedule)
+
+    duration = int(duration_minutes)
+    end_at = start_at + timedelta(minutes=duration)
+    split = split_work_interval_by_schedule(employee, start_at, end_at, schedule=schedule)
+    regular_minutes = split['regular_minutes']
+    outside_minutes = split['outside_minutes']
+    if regular_minutes == duration and outside_minutes == 0:
+        status = 'within_schedule'
+    elif regular_minutes > 0 and outside_minutes > 0:
+        status = 'partial'
+    else:
+        status = 'outside_schedule'
+    return _manager_schedule_payload(
+        status,
+        start_at=start_at,
+        end_at=end_at,
+        schedule=schedule,
+        regular_minutes=regular_minutes,
+        outside_minutes=outside_minutes,
+    )
 
 
 def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, source='all', include_future=False):

@@ -302,6 +302,7 @@ export default function MasterClassesPage() {
   const [paymentModal, setPaymentModal] = useState({ open: false, payment: null });
   const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [extraMasterClasses, setExtraMasterClasses] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -509,6 +510,35 @@ export default function MasterClassesPage() {
     { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     baseFields[1],
     baseFields[2],
+    !form.id && {
+      name: 'bulk_master_classes',
+      type: 'custom',
+      className: 'md:col-span-2',
+      render: () => (
+        <section className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-black text-slate-900">Несколько МК в один день</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">Клиент, филиал и куратор берутся из основной формы.</p>
+            </div>
+            <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => [...items, { title: '', starts_at: form.starts_at, duration_minutes: form.duration_minutes, price: form.price }])}>
+              Добавить ещё МК
+            </Button>
+          </div>
+          {extraMasterClasses.map((item, index) => (
+            <div key={index} className="grid gap-3 rounded-2xl bg-white p-3 shadow-sm md:grid-cols-4">
+              <Input label="Предмет" value={item.title} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, title: event.target.value } : row))} />
+              <Input label="Дата и время" type="datetime-local" value={item.starts_at} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, starts_at: event.target.value } : row))} />
+              <Input label="Минут" type="number" value={item.duration_minutes} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, duration_minutes: event.target.value } : row))} />
+              <div className="grid gap-2">
+                <Input label="Цена" type="number" value={item.price} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} />
+                <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => items.filter((_, rowIndex) => rowIndex !== index))}>Удалить строку</Button>
+              </div>
+            </div>
+          ))}
+        </section>
+      ),
+    },
     {
       name: 'manager_work_schedule_preview',
       type: 'custom',
@@ -792,7 +822,26 @@ export default function MasterClassesPage() {
         };
       }
       if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
-      else await api.post('master-classes/', payload);
+      else if (extraMasterClasses.length) {
+        const items = [
+          payload,
+          ...extraMasterClasses.map((item) => normalizePayload({
+            ...payload,
+            title: item.title,
+            starts_at: item.starts_at || form.starts_at,
+            duration_minutes: item.duration_minutes || form.duration_minutes,
+            price: item.price || form.price,
+            initial_payment: undefined,
+          })),
+        ];
+        await api.post('master-classes/bulk-create/', {
+          client: payload.client,
+          branch: payload.branch,
+          manager: payload.manager,
+          items,
+        });
+      } else await api.post('master-classes/', payload);
+      setExtraMasterClasses([]);
       crud.setModalOpen(false);
       crud.setEditing(null);
       await crud.reload();
@@ -824,7 +873,7 @@ export default function MasterClassesPage() {
 
   return (
     <>
-      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { setDuplicateError(null); crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
+      <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
         <Button variant="secondary" onClick={() => crud.setFilters({ ...crud.filters, extra_work: 'true' })}>Только вне времени</Button>
         <ViewToggle value={viewMode} onChange={setViewMode} />
@@ -856,7 +905,7 @@ export default function MasterClassesPage() {
           items={crud.items}
           getColumnId={masterClassColumnId}
           onMove={moveMasterClass}
-          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { setDuplicateError(null); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
+          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
         />
       ) : (
         <Table data={crud.items} columns={[
@@ -894,10 +943,10 @@ export default function MasterClassesPage() {
           { key: 'paid_total', header: 'Оплачено', render: (row) => money(row.paid_total ?? row.payment_amount) },
           { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
           { key: 'payment_status', header: 'Статус оплаты', render: (row) => <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
-          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
         ]} />
       )}
-      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />
+      <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />
       <Modal
         title={paymentModal.payment ? 'Изменить оплату' : 'Добавить оплату'}
         open={paymentModal.open}

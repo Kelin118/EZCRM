@@ -34,6 +34,10 @@ def is_admin(user):
     return has_role(user, ADMIN) or getattr(user, 'is_superuser', False)
 
 
+def can_delete_settings_records(user):
+    return is_admin(user) or bool(getattr(user, 'can_delete_settings', False))
+
+
 def is_authenticated(user):
     return bool(user and user.is_authenticated)
 
@@ -101,9 +105,9 @@ class TrialPermission(RolePermission):
 
 class MasterClassPermission(TrialPermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'convert_to_subscription', 'pay_preview', 'manager_schedule_preview'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'convert_to_subscription', 'pay_preview', 'manager_schedule_preview', 'payments', 'payment_detail', 'bulk_create'},
         TEACHER: {'read', 'list', 'retrieve', 'pay_preview'},
-        ACCOUNTANT: {'read', 'list', 'retrieve', 'pay_preview'},
+        ACCOUNTANT: {'read', 'list', 'retrieve', 'pay_preview', 'payments', 'payment_detail'},
     }
 
 
@@ -136,8 +140,8 @@ class TaskPermission(RolePermission):
 
 class FinancePermission(RolePermission):
     allowed_by_role = {
-        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'reconcile_cash_balance'},
-        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'reconcile_cash_balance'},
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'reconcile_cash_balance', 'attachments', 'attachment_detail'},
+        ACCOUNTANT: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update', 'destroy', 'reconcile_cash_balance', 'attachments', 'attachment_detail'},
     }
 
 
@@ -183,6 +187,8 @@ class MessagingChannelPermission(BasePermission):
             return True
         if request.method in SAFE_METHODS:
             return has_role(request.user, MANAGER)
+        if getattr(view, 'action', None) == 'destroy':
+            return can_delete_settings_records(request.user)
         return False
 
     def has_object_permission(self, request, view, obj):
@@ -195,6 +201,8 @@ class DiscountPermission(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        if getattr(view, 'action', None) == 'destroy':
+            return can_delete_settings_records(request.user)
         return is_admin(request.user)
 
     def has_object_permission(self, request, view, obj):
@@ -207,6 +215,8 @@ class PaymentMethodPermission(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        if getattr(view, 'action', None) == 'destroy':
+            return can_delete_settings_records(request.user)
         return is_admin(request.user)
 
     def has_object_permission(self, request, view, obj):
@@ -226,6 +236,8 @@ class CatalogItemPermission(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return is_admin(request.user) or has_any_role(request.user, {MANAGER, ACCOUNTANT})
+        if getattr(view, 'action', None) == 'destroy':
+            return can_delete_settings_records(request.user)
         return is_admin(request.user)
 
     def has_object_permission(self, request, view, obj):
@@ -284,6 +296,8 @@ class BranchPermission(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return True
+        if getattr(view, 'action', None) == 'destroy':
+            return can_delete_settings_records(request.user)
         return is_admin(request.user)
 
 

@@ -2,7 +2,7 @@ import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSq
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
-import { canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
+import { canDeleteSettings, canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
@@ -82,6 +82,7 @@ export default function SettingsPage() {
   const canEditStudio = canEditStudioSettings(user);
   const canEditCatalog = isAdmin(user);
   const canEditChannels = isAdmin(user);
+  const canDeleteSettingsRecords = canDeleteSettings(user);
   const canImport = canImportExcel(user);
   const [settings, setSettings] = useState(empty);
   const [settingsId, setSettingsId] = useState(null);
@@ -89,6 +90,7 @@ export default function SettingsPage() {
   const [catalogItems, setCatalogItems] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogSaving, setCatalogSaving] = useState(false);
+  const [catalogImageSaving, setCatalogImageSaving] = useState(false);
   const [catalogError, setCatalogError] = useState('');
   const [catalogModal, setCatalogModal] = useState({ open: false, category: 'service', item: null });
   const [catalogForm, setCatalogForm] = useState(emptyCatalogForm);
@@ -500,6 +502,56 @@ export default function SettingsPage() {
     await loadCatalogItems();
   };
 
+  const refreshCatalogItem = async (id) => {
+    const { data } = await api.get(`catalog-items/${id}/`);
+    setCatalogItems((items) => items.map((item) => (item.id === data.id ? data : item)));
+    setCatalogModal((current) => current.item?.id === data.id ? { ...current, item: data } : current);
+    return data;
+  };
+
+  const uploadCatalogImage = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !catalogModal.item?.id) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    setCatalogImageSaving(true);
+    try {
+      await api.post(`catalog-items/${catalogModal.item.id}/images/`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      await refreshCatalogItem(catalogModal.item.id);
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setCatalogImageSaving(false);
+    }
+  };
+
+  const deleteCatalogImage = async (imageId) => {
+    if (!catalogModal.item?.id) return;
+    setCatalogImageSaving(true);
+    try {
+      await api.delete(`catalog-items/${catalogModal.item.id}/images/${imageId}/`);
+      await refreshCatalogItem(catalogModal.item.id);
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setCatalogImageSaving(false);
+    }
+  };
+
+  const makePrimaryCatalogImage = async (imageId) => {
+    if (!catalogModal.item?.id) return;
+    setCatalogImageSaving(true);
+    try {
+      await api.patch(`catalog-items/${catalogModal.item.id}/images/${imageId}/`, { is_primary: true });
+      await refreshCatalogItem(catalogModal.item.id);
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setCatalogImageSaving(false);
+    }
+  };
+
   const importExcel = async (event) => {
     event.preventDefault();
     setImportError('');
@@ -576,7 +628,7 @@ export default function SettingsPage() {
               <tbody>{branches.length ? branches.map((branch) => <tr key={branch.id} className="transition hover:bg-brand/[0.03]">
                 <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{branch.name}</td><td className="max-w-xs break-words border-b border-slate-100 px-4 py-3 text-slate-700">{branch.address || '—'}</td><td className="border-b border-slate-100 px-4 py-3 text-slate-700">{branch.phone || '—'}</td>
                 <td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={branch.is_active} /></td>
-                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditStudio} active={branch.is_active} onEdit={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }} onToggle={() => toggleBranch(branch)} onDelete={() => requestDelete({ title: 'Удалить филиал?', itemName: branch.name, endpoint: `branches/${branch.id}/`, onDeleted: loadBranches })} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditStudio} canDelete={canDeleteSettingsRecords} active={branch.is_active} onEdit={() => { setBranchForm({ ...emptyBranchForm, ...branch, is_active: branch.is_active ?? true }); setBranchModal({ open: true, item: branch }); }} onToggle={() => toggleBranch(branch)} onDelete={() => requestDelete({ title: 'Удалить филиал?', itemName: branch.name, endpoint: `branches/${branch.id}/`, onDeleted: loadBranches })} /></td>
               </tr>) : <EmptyTableRow colSpan={5} message="Филиалы ещё не добавлены" />}</tbody>
             </table>
           </div>
@@ -593,7 +645,7 @@ export default function SettingsPage() {
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Описание</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Наличные</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th></tr></thead>
               <tbody>{paymentMethods.length ? paymentMethods.map((item) => <tr key={item.id} className="transition hover:bg-brand/[0.03]">
                 <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td><td className="max-w-sm break-words border-b border-slate-100 px-4 py-3 text-slate-700">{item.description || '—'}</td><td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.is_cash ? 'Да' : 'Нет'}</td><td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} /></td>
-                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} active={item.is_active} onEdit={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }} onToggle={() => togglePaymentMethod(item)} onDelete={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }} onToggle={() => togglePaymentMethod(item)} onDelete={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })} /></td>
               </tr>) : <EmptyTableRow colSpan={5} message="Способы оплаты ещё не добавлены" />}</tbody>
             </table>
           </div>
@@ -708,7 +760,7 @@ export default function SettingsPage() {
                     {item.last_error ? <span className="max-w-64 break-words text-xs font-semibold text-red-700">{item.last_error}</span> : null}
                   </div>
                 </td>
-                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditChannels} active={item.is_active} onEdit={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }} onToggle={async () => { await api.patch(`messaging-channels/${item.id}/`, { is_active: !item.is_active }); await loadChannels(); }} onDelete={() => requestDelete({ title: 'Удалить канал?', itemName: item.name, endpoint: `messaging-channels/${item.id}/`, onDeleted: loadChannels })} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditChannels} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setChannelForm({ ...emptyChannelForm, ...item, branch: item.branch ? String(item.branch) : '', default_manager: item.default_manager ? String(item.default_manager) : '' }); setChannelModal({ open: true, item }); }} onToggle={async () => { await api.patch(`messaging-channels/${item.id}/`, { is_active: !item.is_active }); await loadChannels(); }} onDelete={() => requestDelete({ title: 'Удалить канал?', itemName: item.name, endpoint: `messaging-channels/${item.id}/`, onDeleted: loadChannels })} /></td>
               </tr>) : <EmptyTableRow colSpan={9} message="Каналы мессенджеров ещё не добавлены" />}</tbody>
             </table>
           </div>
@@ -732,7 +784,7 @@ export default function SettingsPage() {
                 <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.branch_name || 'Все филиалы'}</td>
                 <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{[item.valid_from || '—', item.valid_until || '—'].join(' — ')}</td>
                 <td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} activeLabel="Активна" inactiveLabel="Отключена" /></td>
-                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} active={item.is_active} onEdit={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }} onToggle={() => toggleDiscount(item)} onDelete={() => requestDelete({ title: 'Удалить скидку?', itemName: item.name, endpoint: `discounts/${item.id}/`, onDeleted: loadDiscounts })} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setDiscountForm({ ...emptyDiscountForm, ...item, branch: item.branch ? String(item.branch) : '', value: item.value ?? '' }); setDiscountModal({ open: true, item }); }} onToggle={() => toggleDiscount(item)} onDelete={() => requestDelete({ title: 'Удалить скидку?', itemName: item.name, endpoint: `discounts/${item.id}/`, onDeleted: loadDiscounts })} /></td>
               </tr>) : <EmptyTableRow colSpan={7} message="Скидки ещё не добавлены" />}</tbody>
             </table>
           </div>
@@ -745,6 +797,7 @@ export default function SettingsPage() {
             items={catalogItems.filter((item) => item.category === section.category)}
             loading={catalogLoading}
             canEdit={canEditCatalog}
+            canDelete={canDeleteSettingsRecords}
             onAdd={() => openCatalogModal(section.category)}
             onEdit={(item) => openCatalogModal(section.category, item)}
             onToggle={toggleCatalogItem}
@@ -928,6 +981,24 @@ export default function SettingsPage() {
           <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
           <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
           <Input label="Порядок" type="number" min="0" value={catalogForm.sort_order ?? 0} onChange={(event) => setCatalogForm({ ...catalogForm, sort_order: event.target.value })} />
+          {catalogModal.category === 'product' && catalogModal.item?.id && (
+            <div className="grid gap-3 md:col-span-2">
+              <Input label="Фото товара" type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadCatalogImage} />
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(catalogModal.item.images || []).map((image) => (
+                  <div key={image.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+                    <img src={image.thumbnail_url || image.url} alt={image.file_name} className="h-32 w-full rounded-xl object-cover" />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button variant={image.is_primary ? 'accent' : 'secondary'} disabled={catalogImageSaving || image.is_primary} onClick={() => makePrimaryCatalogImage(image.id)}>
+                        {image.is_primary ? 'Основное' : 'Сделать основным'}
+                      </Button>
+                      <Button variant="danger" disabled={catalogImageSaving} onClick={() => deleteCatalogImage(image.id)}>Удалить</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {catalogModal.category === 'service' && (
             <>
               <label className="block text-sm font-semibold text-slate-700">
@@ -1039,14 +1110,14 @@ function EmptyTableRow({ colSpan, message }) {
   );
 }
 
-function RowActions({ canEdit, active, onEdit, onToggle, onDelete }) {
-  if (!canEdit) return null;
+function RowActions({ canEdit, canDelete = canEdit, active, onEdit, onToggle, onDelete }) {
+  if (!canEdit && !canDelete) return null;
 
   return (
     <div className="flex justify-end gap-2">
-      <ActionButton icon={Edit} label="Изменить" onClick={onEdit} />
-      <ActionButton icon={active ? Ban : RotateCcw} label={active ? 'Отключить' : 'Включить'} onClick={onToggle} variant="ghost" />
-      <ActionButton icon={Trash2} label="Удалить" onClick={onDelete} variant="danger" />
+      {canEdit && <ActionButton icon={Edit} label="Изменить" onClick={onEdit} />}
+      {canEdit && <ActionButton icon={active ? Ban : RotateCcw} label={active ? 'Отключить' : 'Включить'} onClick={onToggle} variant="ghost" />}
+      {canDelete && <ActionButton icon={Trash2} label="Удалить" onClick={onDelete} variant="danger" />}
     </div>
   );
 }
@@ -1071,7 +1142,7 @@ function SettingsCard({ id, icon: Icon, title, subtitle, action, children }) {
   );
 }
 
-function CatalogSection({ id, section, items, loading, canEdit, onAdd, onEdit, onToggle, onDelete }) {
+function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd, onEdit, onToggle, onDelete }) {
   const Icon = section.icon;
 
   return (
@@ -1120,7 +1191,12 @@ function CatalogSection({ id, section, items, loading, canEdit, onAdd, onEdit, o
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
-                  <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
+                  <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">
+                    <div className="flex items-center gap-3">
+                      {section.category === 'product' && item.primary_image_url && <img src={item.primary_image_url} alt="" className="h-11 w-11 rounded-xl object-cover" />}
+                      <span>{item.name}</span>
+                    </div>
+                  </td>
                   <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
                   {section.category === 'service' && (
                     <>
@@ -1134,7 +1210,7 @@ function CatalogSection({ id, section, items, loading, canEdit, onAdd, onEdit, o
                     <StatusBadge active={item.is_active} />
                   </td>
                   <td className="border-b border-slate-100 px-4 py-3">
-                    <RowActions canEdit={canEdit} active={item.is_active} onEdit={() => onEdit(item)} onToggle={() => onToggle(item)} onDelete={() => onDelete(item)} />
+                    <RowActions canEdit={canEdit} canDelete={canDelete} active={item.is_active} onEdit={() => onEdit(item)} onToggle={() => onToggle(item)} onDelete={() => onDelete(item)} />
                   </td>
                 </tr>
               ))

@@ -2,9 +2,11 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import hmac
+import os
 import random
 import re
 import string
+import struct
 import uuid
 
 from django.contrib.auth import get_user_model
@@ -46,8 +48,10 @@ from .models import (
     AddonSale,
     AuditLog,
     Branch,
+    BusinessMediaAsset,
     CashRegisterSnapshot,
     CatalogItem,
+    CatalogItemImage,
     CertificateBatch,
     CertificateDesignAsset,
     CertificateRedemption,
@@ -58,6 +62,7 @@ from .models import (
     EmployeePayrollProfile,
     EmployeeWorkSchedule,
     FinanceTransaction,
+    FinanceTransactionAttachment,
     GiftCertificate,
     GroupMembership,
     Lesson,
@@ -119,6 +124,7 @@ from .serializers import (
     AuditLogSerializer,
     BranchSerializer,
     CatalogItemSerializer,
+    CatalogItemImageSerializer,
     CertificateRedemptionSerializer,
     CertificateDesignAssetSerializer,
     CertificateBatchSerializer,
@@ -128,6 +134,7 @@ from .serializers import (
     DiscountSerializer,
     EmployeePayrollProfileSerializer,
     EmployeeWorkScheduleSerializer,
+    FinanceTransactionAttachmentSerializer,
     FinanceTransactionSerializer,
     GiftCertificateSerializer,
     GroupMembershipSerializer,
@@ -312,6 +319,14 @@ def _create_income_transaction(
     discount_amount=0,
     subtotal_amount=None,
 ):
+    if not branch:
+        branch = (subscription.branch if subscription else None) or (client.branch if client else None)
+    if not manager:
+        manager = (client.manager if client else None) or (created_by if created_by and has_any_role(created_by, {MANAGER, 'admin'}) else None)
+    amount = _money(amount)
+    if amount > 0:
+        if not payment_method and payment_parts is None:
+            raise drf_serializers.ValidationError({'payment_parts': 'Укажите распределение оплаты или способ оплаты.'})
     paid_at = paid_at or _paid_at_from_date(payment_date or timezone.localdate())
     finance_transaction = FinanceTransaction.objects.create(
         branch=branch,
@@ -377,6 +392,94 @@ def _master_class_paid_total_excluding(master_class, exclude_payment_id=None):
     if exclude_payment_id:
         queryset = queryset.exclude(pk=exclude_payment_id)
     return _money(queryset.aggregate(total=Sum('amount'))['total'])
+
+
+MAX_BUSINESS_IMAGE_SIZE = 5 * 1024 * 1024
+ALLOWED_BUSINESS_IMAGE_MIME = {'image/jpeg', 'image/png', 'image/webp'}
+ALLOWED_BUSINESS_IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
+
+
+def _png_dimensions(data):
+    if len(data) >= 24 and data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return struct.unpack('>II', data[16:24])
+    return None
+
+
+def _jpeg_dimensions(data):
+    if not data.startswith(b'\xff\xd8'):
+        return None
+    index = 2
+    while index + 9 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        index += 2
+        if marker in (0xD8, 0xD9):
+            continue
+        if index + 2 > len(data):
+            return None
+        length = struct.unpack('>H', data[index:index + 2])[0]
+        if length < 2 or index + length > len(data):
+            return None
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            height, width = struct.unpack('>HH', data[index + 3:index + 7])
+            return width, height
+        index += length
+    return None
+
+
+def _webp_dimensions(data):
+    if len(data) < 30 or not data.startswith(b'RIFF') or data[8:12] != b'WEBP':
+        return None
+    chunk = data[12:16]
+    if chunk == b'VP8X' and len(data) >= 30:
+        width = int.from_bytes(data[24:27], 'little') + 1
+        height = int.from_bytes(data[27:30], 'little') + 1
+        return width, height
+    if chunk == b'VP8L' and len(data) >= 25:
+        bits = int.from_bytes(data[21:25], 'little')
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    if chunk == b'VP8 ' and len(data) >= 30:
+        start = data.find(b'\x9d\x01\x2a')
+        if start != -1 and start + 7 < len(data):
+            width, height = struct.unpack('<HH', data[start + 3:start + 7])
+            return width & 0x3FFF, height & 0x3FFF
+    return None
+
+
+def _validate_business_image(upload):
+    file_name = os.path.basename(upload.name or 'image')
+    ext = os.path.splitext(file_name)[1].lower()
+    content_type = (getattr(upload, 'content_type', '') or '').lower()
+    data = upload.read()
+    upload.seek(0)
+    if not data:
+        raise drf_serializers.ValidationError({'file': 'Файл пуст.'})
+    if len(data) > MAX_BUSINESS_IMAGE_SIZE:
+        raise drf_serializers.ValidationError({'file': 'Файл должен быть не больше 5 MB.'})
+    if ext not in ALLOWED_BUSINESS_IMAGE_EXT:
+        raise drf_serializers.ValidationError({'file': 'Разрешены только JPEG, PNG или WebP.'})
+    if content_type not in ALLOWED_BUSINESS_IMAGE_MIME:
+        raise drf_serializers.ValidationError({'file': 'Некорректный MIME-тип изображения.'})
+    dimensions = _png_dimensions(data) or _jpeg_dimensions(data) or _webp_dimensions(data)
+    if not dimensions:
+        raise drf_serializers.ValidationError({'file': 'Файл не распознан как JPEG, PNG или WebP.'})
+    sha256 = hashlib.sha256(data).hexdigest()
+    return {
+        'file_name': file_name,
+        'mime_type': content_type,
+        'file_size': len(data),
+        'width': dimensions[0],
+        'height': dimensions[1],
+        'sha256': sha256,
+        'file_data': data,
+    }
+
+
+def _create_business_asset(upload, user):
+    payload = _validate_business_image(upload)
+    return BusinessMediaAsset.objects.create(created_by=user, **payload)
 
 
 def _master_class_remaining_excluding(master_class, exclude_payment_id=None):
@@ -568,6 +671,7 @@ class CurrentUserView(APIView):
                 'role': 'admin' if user.is_superuser else role(user),
                 'roles': user.get_roles() if hasattr(user, 'get_roles') else [role(user)],
                 'is_superuser': user.is_superuser,
+                'can_delete_settings': bool(getattr(user, 'can_delete_settings', False)),
             }
         )
 
@@ -1735,11 +1839,34 @@ class ClientViewSet(BaseAuthenticatedViewSet):
                     'parent_name': client.parent_name,
                     'branch': client.branch_id,
                     'branch_name': client.branch.name if client.branch else '',
+                    'manager': client.manager_id,
+                    'manager_name': _person_name(client.manager),
                     'is_active': client.is_active,
                 }
                 for client in clients
             ]
         )
+
+    @action(detail=True, methods=['get'], url_path='master-class-payments')
+    def master_class_payments(self, request, pk=None):
+        client = self.get_object()
+        queryset = (
+            MasterClass.objects
+            .filter(participants=client)
+            .select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction')
+            .prefetch_related(
+                'participants',
+                'staff_assignments__employee',
+                'payments__accepted_by',
+                'payments__finance_transaction__payment_method',
+                'payments__finance_transaction__payment_parts__payment_method',
+            )
+            .order_by('-starts_at', '-created_at')
+        )
+        return Response({
+            'count': queryset.count(),
+            'results': MasterClassSerializer(queryset, many=True, context=self.get_serializer_context()).data,
+        })
 
     def get_queryset(self):
         queryset = _filter_branch(super().get_queryset(), self.request)
@@ -2113,6 +2240,36 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             changes['stage'] = {'from': previous_status, 'to': trial.status}
         self._log_instance(AuditLog.Action.UPDATE, trial, 'Изменён пробник', changes)
 
+    @action(detail=False, methods=['get'], url_path='unprocessed')
+    def unprocessed(self, request):
+        excluded = {Trial.Status.BOUGHT, Trial.Status.LOST, Trial.Status.CANCELLED}
+        queryset = (
+            self.get_queryset()
+            .filter(scheduled_at__lt=timezone.now())
+            .exclude(status__in=excluded)
+            .select_related('client', 'branch', 'manager', 'teacher')
+            .order_by('scheduled_at', 'id')
+        )
+        results = [
+            {
+                'id': item.id,
+                'client': item.client_id,
+                'client_name': str(item.client) if item.client else '',
+                'branch': item.branch_id,
+                'branch_name': item.branch.name if item.branch else '',
+                'manager': item.manager_id,
+                'manager_name': _person_name(item.manager),
+                'teacher': item.teacher_id,
+                'teacher_name': _person_name(item.teacher),
+                'scheduled_at': item.scheduled_at,
+                'stage': item.status,
+                'status': item.status,
+                'notes': item.notes,
+            }
+            for item in queryset[:50]
+        ]
+        return Response({'count': queryset.count(), 'results': results})
+
     @action(detail=True, methods=['post'], url_path='convert-to-subscription')
     def convert_to_subscription(self, request, pk=None):
         trial = self.get_object()
@@ -2438,6 +2595,57 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 'detail': 'Такая запись МК уже существует.',
                 'duplicate': self._duplicate_payload(duplicate),
             })
+
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        items = request.data.get('items')
+        if not isinstance(items, list) or not items:
+            raise drf_serializers.ValidationError({'items': 'Добавьте хотя бы один мастер-класс.'})
+        if len(items) > 20:
+            raise drf_serializers.ValidationError({'items': 'За раз можно добавить не больше 20 МК.'})
+
+        common = {key: request.data.get(key) for key in ('client', 'branch', 'manager') if key in request.data}
+        serializers = []
+        seen = set()
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise drf_serializers.ValidationError({'items': {index: 'Позиция должна быть объектом.'}})
+            payload = {**common, **item}
+            serializer = self.get_serializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            client = serializer.validated_data.get('client')
+            starts_at = serializer.validated_data.get('starts_at')
+            title = serializer.validated_data.get('title')
+            duplicate_key = (client.pk if client else None, _local_date(starts_at), normalize_master_class_title(title))
+            if duplicate_key in seen:
+                raise drf_serializers.ValidationError({'items': {index: 'Дубликат в текущей пачке: клиент, дата и название совпадают.'}})
+            seen.add(duplicate_key)
+            self._raise_duplicate_if_needed(client=client, starts_at=starts_at, title=title)
+            serializers.append(serializer)
+
+        created = []
+        with transaction.atomic():
+            locked_clients = {
+                serializer.validated_data['client'].pk: Client.objects.select_for_update().get(pk=serializer.validated_data['client'].pk)
+                for serializer in serializers
+                if serializer.validated_data.get('client')
+            }
+            for serializer in serializers:
+                client = serializer.validated_data.get('client')
+                if client:
+                    serializer.validated_data['client'] = locked_clients[client.pk]
+                master_class = serializer.save()
+                initial_payment = getattr(master_class, 'selected_initial_payment', None)
+                if initial_payment:
+                    self._create_payment(
+                        master_class,
+                        initial_payment,
+                        payment_type=initial_payment.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
+                    )
+                self._log_instance(AuditLog.Action.CREATE, master_class, 'Добавлен МК', self._audit_changes())
+                created.append(master_class)
+
+        return Response(self.get_serializer(created, many=True).data, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -2879,25 +3087,29 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             finance_transaction.discount_amount = certificate.face_value - certificate.sale_price
             finance_transaction.discount_name = f'?????? ??????????? {certificate.sale_discount_percent}%'
             finance_transaction.client = certificate.purchaser_client
+            finance_transaction.branch = certificate.purchaser_client.branch if certificate.purchaser_client else None
+            finance_transaction.manager = certificate.purchaser_client.manager if certificate.purchaser_client else None
             finance_transaction.source = 'certificate'
             finance_transaction.comment = f'Продажа сертификата {certificate.serial_code or certificate.code}'
             finance_transaction.paid_at = _paid_at_from_date(certificate.issued_at)
             finance_transaction.save(update_fields=(
                 'amount', 'subtotal_amount', 'discount_amount', 'discount_name',
-                'client', 'source', 'comment', 'paid_at', 'updated_at',
+                'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at',
             ))
         else:
-            finance_transaction = FinanceTransaction.objects.create(
-                transaction_type=FinanceTransaction.Type.INCOME,
-                source='certificate',
-                amount=certificate.sale_price,
-                subtotal_amount=certificate.face_value,
-                discount_amount=certificate.face_value - certificate.sale_price,
-                discount_name=f'?????? ??????????? {certificate.sale_discount_percent}%',
+            finance_transaction = _create_income_transaction(
                 client=certificate.purchaser_client,
-                created_by=self.request.user,
+                amount=certificate.sale_price,
+                source='certificate',
                 paid_at=_paid_at_from_date(certificate.issued_at),
                 comment=f'Продажа сертификата {certificate.serial_code or certificate.code}',
+                created_by=self.request.user,
+                manager=certificate.purchaser_client.manager if certificate.purchaser_client else None,
+                payment_parts=payment_parts,
+                branch=certificate.purchaser_client.branch if certificate.purchaser_client else None,
+                discount_amount=certificate.face_value - certificate.sale_price,
+                discount_name=f'?????? ??????????? {certificate.sale_discount_percent}%',
+                subtotal_amount=certificate.face_value,
             )
             certificate.finance_transaction = finance_transaction
             certificate.save(update_fields=('finance_transaction', 'updated_at'))
@@ -3086,19 +3298,20 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 ))
             finance_transaction = None
             if total_sale_price > 0:
-                finance_transaction = FinanceTransaction.objects.create(
-                    transaction_type=FinanceTransaction.Type.INCOME,
-                    source='certificate',
-                    amount=total_sale_price,
-                    subtotal_amount=total_face_value,
-                    discount_amount=total_face_value - total_sale_price,
-                    discount_name=f'Скидка сертификата {template.sale_discount_percent}%',
+                finance_transaction = _create_income_transaction(
                     client=purchaser_client,
-                    created_by=request.user,
+                    amount=total_sale_price,
+                    source='certificate',
                     paid_at=_paid_at_from_date(issued_at),
                     comment=_certificate_batch_comment(certificates, quantity),
+                    created_by=request.user,
+                    manager=purchaser_client.manager if purchaser_client else None,
+                    payment_parts=payment_parts,
+                    branch=purchaser_client.branch if purchaser_client else None,
+                    discount_amount=total_face_value - total_sale_price,
+                    discount_name=f'Скидка сертификата {template.sale_discount_percent}%',
+                    subtotal_amount=total_face_value,
                 )
-                sync_finance_payment_parts(finance_transaction, payment_parts)
                 batch.finance_transaction = finance_transaction
                 batch.save(update_fields=('finance_transaction', 'updated_at'))
                 GiftCertificate.objects.filter(pk__in=[certificate.pk for certificate in certificates]).update(finance_transaction=finance_transaction)
@@ -3465,6 +3678,15 @@ class LeadViewSet(BaseAuthenticatedViewSet):
 
         manager = self._resolve_manual_manager(request.data.get('manager'))
         branch = self._resolve_branch(request.data.get('branch'))
+        if not manager:
+            raise drf_serializers.ValidationError({'manager': 'Укажите менеджера.'})
+        if not branch:
+            raise drf_serializers.ValidationError({'branch': 'Укажите филиал.'})
+        first_message_at = parse_datetime(str(request.data.get('first_message_at') or '')) if request.data.get('first_message_at') else timezone.now()
+        if first_message_at and timezone.is_naive(first_message_at):
+            first_message_at = timezone.make_aware(first_message_at)
+        if not first_message_at:
+            raise drf_serializers.ValidationError({'first_message_at': 'Укажите корректную дату обращения.'})
         existing_client = None
         explicit_client_id = request.data.get('existing_client') or request.data.get('client_id')
         raw_client = request.data.get('client')
@@ -3483,7 +3705,6 @@ class LeadViewSet(BaseAuthenticatedViewSet):
 
         client_payload = raw_client if isinstance(raw_client, dict) else {}
         with transaction.atomic():
-            now = timezone.now()
             lead = Lead.objects.create(
                 source=Lead.Source.MANUAL,
                 channel=None,
@@ -3497,8 +3718,8 @@ class LeadViewSet(BaseAuthenticatedViewSet):
                 contact_phone=contact_phone,
                 first_message=first_message,
                 last_message=first_message,
-                first_message_at=now,
-                last_message_at=now,
+                first_message_at=first_message_at,
+                last_message_at=first_message_at,
                 unread_count=0,
                 notes=first_message,
             )
@@ -3510,6 +3731,10 @@ class LeadViewSet(BaseAuthenticatedViewSet):
                 if not client:
                     client_branch = self._resolve_branch(client_payload.get('branch')) or branch
                     client_manager = self._resolve_manual_manager(client_payload.get('manager')) or manager
+                    if not client_branch:
+                        raise drf_serializers.ValidationError({'client': {'branch': 'Укажите филиал клиента.'}})
+                    if not client_manager:
+                        raise drf_serializers.ValidationError({'client': {'manager': 'Укажите менеджера клиента.'}})
                     client = Client.objects.create(
                         first_name=str(client_payload.get('first_name') or contact_name or contact_phone or 'Клиент').strip(),
                         last_name=str(client_payload.get('last_name') or '').strip(),
@@ -3605,7 +3830,13 @@ class LeadViewSet(BaseAuthenticatedViewSet):
         lead.client = client
         if client and not lead.branch_id:
             lead.branch = client.branch
-        lead.save(update_fields=('client', 'branch', 'updated_at'))
+        if client and not lead.manager_id:
+            lead.manager = client.manager
+        if client and not lead.branch_id:
+            raise drf_serializers.ValidationError({'branch': 'Укажите филиал.'})
+        if client and not lead.manager_id:
+            raise drf_serializers.ValidationError({'manager': 'Укажите менеджера.'})
+        lead.save(update_fields=('client', 'branch', 'manager', 'updated_at'))
         if lead.contact_id:
             lead.contact.client = client
             lead.contact.save(update_fields=('client', 'updated_at'))
@@ -3623,19 +3854,27 @@ class LeadViewSet(BaseAuthenticatedViewSet):
             lead.client = existing_client
             if not lead.branch_id:
                 lead.branch = existing_client.branch
-            lead.save(update_fields=('client', 'branch', 'updated_at'))
+            if not lead.manager_id:
+                lead.manager = existing_client.manager
+            lead.save(update_fields=('client', 'branch', 'manager', 'updated_at'))
             if lead.contact_id:
                 lead.contact.client = existing_client
                 lead.contact.save(update_fields=('client', 'updated_at'))
             self._log_instance(AuditLog.Action.LEAD_LINK_CLIENT, lead, 'Обращение связано с найденным клиентом', {'client': existing_client.pk})
             return Response(self.get_serializer(lead).data)
+        branch_id = request.data.get('branch') or lead.branch_id
+        manager_id = request.data.get('manager') or lead.manager_id
+        if not branch_id:
+            raise drf_serializers.ValidationError({'branch': 'Укажите филиал.'})
+        if not manager_id:
+            raise drf_serializers.ValidationError({'manager': 'Укажите менеджера.'})
         client = Client.objects.create(
             first_name=request.data.get('first_name') or lead.contact_name or lead.contact_username or 'Клиент',
             last_name=request.data.get('last_name', ''),
             parent_name=request.data.get('parent_name', ''),
             phone=phone,
-            branch_id=request.data.get('branch') or lead.branch_id,
-            manager_id=request.data.get('manager') or lead.manager_id,
+            branch_id=branch_id,
+            manager_id=manager_id,
             notes=request.data.get('notes') or f'Создан из обращения {lead.get_source_display()}',
         )
         lead.client = client
@@ -3656,10 +3895,16 @@ class LeadViewSet(BaseAuthenticatedViewSet):
         scheduled_at = request.data.get('scheduled_at')
         if not scheduled_at:
             raise drf_serializers.ValidationError({'scheduled_at': 'Укажите дату и время пробника.'})
+        branch_id = request.data.get('branch') or lead.branch_id or lead.client.branch_id
+        manager_id = request.data.get('manager') or lead.manager_id or lead.client.manager_id
+        if not branch_id:
+            raise drf_serializers.ValidationError({'branch': 'Укажите филиал.'})
+        if not manager_id:
+            raise drf_serializers.ValidationError({'manager': 'Укажите менеджера.'})
         serializer = TrialSerializer(data={
             'client': lead.client_id,
-            'branch': request.data.get('branch') or lead.branch_id,
-            'manager': request.data.get('manager') or lead.manager_id,
+            'branch': branch_id,
+            'manager': manager_id,
             'teacher': request.data.get('teacher') or None,
             'scheduled_at': scheduled_at,
             'status': Trial.Status.BOOKED,
@@ -3932,6 +4177,54 @@ class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):
         instance = serializer.save()
         self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE, instance, 'Изменён график сотрудника', self._audit_changes())
 
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        weekdays = request.data.get('weekdays')
+        if not isinstance(weekdays, list) or not weekdays:
+            raise drf_serializers.ValidationError({'weekdays': 'Выберите хотя бы один день недели.'})
+        normalized_weekdays = []
+        for weekday in weekdays:
+            try:
+                value = int(weekday)
+            except (TypeError, ValueError):
+                raise drf_serializers.ValidationError({'weekdays': 'Дни недели должны быть числами от 0 до 6.'})
+            if value < 0 or value > 6:
+                raise drf_serializers.ValidationError({'weekdays': 'Дни недели должны быть от 0 до 6.'})
+            if value not in normalized_weekdays:
+                normalized_weekdays.append(value)
+
+        serializers = []
+        conflicts = []
+        for weekday in normalized_weekdays:
+            payload = {**request.data, 'weekday': weekday}
+            payload.pop('weekdays', None)
+            serializer = self.get_serializer(data=payload)
+            if serializer.is_valid():
+                serializers.append(serializer)
+            else:
+                conflicts.append(weekday)
+        if conflicts:
+            return Response(
+                {'detail': 'Есть конфликтующие дни графика.', 'conflicting_weekdays': conflicts},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created = []
+        try:
+            with transaction.atomic():
+                for serializer in serializers:
+                    instance = serializer.save()
+                    self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_CREATE, instance, 'Создан график сотрудника', self._audit_changes())
+                    created.append(instance)
+        except drf_serializers.ValidationError:
+            raise
+        except Exception:
+            raise drf_serializers.ValidationError({
+                'detail': 'Есть конфликтующие дни графика.',
+                'conflicting_weekdays': normalized_weekdays,
+            })
+        return Response(self.get_serializer(created, many=True).data, status=status.HTTP_201_CREATED)
+
 
 class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, PayrollPermission)
@@ -4104,6 +4397,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         'master_class_payment_entry__master_class__teacher',
     ).prefetch_related(
         'payment_parts__payment_method',
+        'attachments__asset',
         'addon_sale__items__catalog_item',
         'master_class_payment__staff_assignments__employee',
         'master_class_payment_entry__master_class__staff_assignments__employee',
@@ -4369,6 +4663,35 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             'average_income': income / income_count if income_count else Decimal('0'),
         })
 
+    @action(detail=True, methods=['get', 'post'], url_path='attachments', parser_classes=[MultiPartParser, FormParser])
+    def attachments(self, request, pk=None):
+        transaction_item = self.get_object()
+        if request.method == 'GET':
+            queryset = transaction_item.attachments.select_related('asset')
+            return Response(FinanceTransactionAttachmentSerializer(queryset, many=True, context=self.get_serializer_context()).data)
+        if transaction_item.attachments.count() >= 5:
+            raise drf_serializers.ValidationError({'file': 'К одной операции можно прикрепить не больше 5 чеков.'})
+        upload = request.FILES.get('file')
+        if not upload:
+            raise drf_serializers.ValidationError({'file': 'Прикрепите файл.'})
+        asset = _create_business_asset(upload, request.user)
+        attachment = FinanceTransactionAttachment.objects.create(transaction=transaction_item, asset=asset, created_by=request.user)
+        return Response(FinanceTransactionAttachmentSerializer(attachment, context=self.get_serializer_context()).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get', 'delete'], url_path=r'attachments/(?P<attachment_id>[^/.]+)')
+    def attachment_detail(self, request, pk=None, attachment_id=None):
+        transaction_item = self.get_object()
+        attachment = get_object_or_404(FinanceTransactionAttachment.objects.select_related('asset'), pk=attachment_id, transaction=transaction_item)
+        if request.method == 'DELETE':
+            asset = attachment.asset
+            attachment.delete()
+            if not asset.finance_attachments.exists() and not asset.catalog_images.exists():
+                asset.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        response = HttpResponse(bytes(attachment.asset.file_data), content_type=attachment.asset.mime_type)
+        response['Content-Disposition'] = f'inline; filename="{attachment.asset.file_name}"'
+        return response
+
 
 class DiscountViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, DiscountPermission)
@@ -4513,7 +4836,7 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
 
 class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, CatalogItemPermission)
-    queryset = CatalogItem.objects.all()
+    queryset = CatalogItem.objects.prefetch_related('images__asset').all()
     serializer_class = CatalogItemSerializer
     audit_entity_type = 'CatalogItem'
     delete_audit_description = 'Удалена позиция справочника цен'
@@ -4579,6 +4902,54 @@ class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
             'subscription_addons': instance.subscription_addons.count(),
             'addon_sale_items': instance.addon_sale_items.count(),
         }
+
+    @action(detail=True, methods=['get', 'post'], url_path='images', parser_classes=[MultiPartParser, FormParser])
+    def images(self, request, pk=None):
+        item = self.get_object()
+        if request.method == 'GET':
+            queryset = item.images.select_related('asset')
+            return Response(CatalogItemImageSerializer(queryset, many=True, context=self.get_serializer_context()).data)
+        if item.images.count() >= 5:
+            raise drf_serializers.ValidationError({'file': 'К товару можно добавить не больше 5 изображений.'})
+        upload = request.FILES.get('file')
+        if not upload:
+            raise drf_serializers.ValidationError({'file': 'Прикрепите файл.'})
+        asset = _create_business_asset(upload, request.user)
+        is_primary = str(request.data.get('is_primary', '')).lower() in {'1', 'true', 'yes', 'on'} or not item.images.exists()
+        sort_order = int(request.data.get('sort_order') or item.images.count())
+        image = CatalogItemImage.objects.create(catalog_item=item, asset=asset, is_primary=is_primary, sort_order=sort_order, created_by=request.user)
+        if is_primary:
+            item.images.exclude(pk=image.pk).update(is_primary=False)
+        return Response(CatalogItemImageSerializer(image, context=self.get_serializer_context()).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get', 'patch', 'delete'], url_path=r'images/(?P<image_id>[^/.]+)')
+    def image_detail(self, request, pk=None, image_id=None):
+        item = self.get_object()
+        image = get_object_or_404(CatalogItemImage.objects.select_related('asset'), pk=image_id, catalog_item=item)
+        if request.method == 'PATCH':
+            if 'is_primary' in request.data:
+                image.is_primary = str(request.data.get('is_primary')).lower() in {'1', 'true', 'yes', 'on'}
+                if image.is_primary:
+                    item.images.exclude(pk=image.pk).update(is_primary=False)
+            if 'sort_order' in request.data:
+                image.sort_order = int(request.data.get('sort_order') or 0)
+            image.save(update_fields=('is_primary', 'sort_order', 'updated_at'))
+            return Response(CatalogItemImageSerializer(image, context=self.get_serializer_context()).data)
+        if request.method == 'DELETE':
+            asset = image.asset
+            was_primary = image.is_primary
+            image.delete()
+            if was_primary:
+                next_image = item.images.order_by('sort_order', 'created_at', 'id').first()
+                if next_image:
+                    next_image.is_primary = True
+                    next_image.save(update_fields=('is_primary', 'updated_at'))
+            if not asset.finance_attachments.exists() and not asset.catalog_images.exists():
+                asset.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        response = HttpResponse(bytes(image.asset.file_data), content_type=image.asset.mime_type)
+        response['Content-Disposition'] = f'inline; filename="{image.asset.file_name}"'
+        return response
 
 
 class ExcelImportView(APIView):

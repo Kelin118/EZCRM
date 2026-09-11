@@ -87,6 +87,7 @@ class UserPublicSerializer(serializers.ModelSerializer):
             'is_active',
             'is_staff',
             'is_superuser',
+            'can_delete_settings',
             'date_joined',
         )
         read_only_fields = ('id', 'date_joined')
@@ -219,13 +220,14 @@ class EmployeeSerializer(UserPublicSerializer):
             raise serializers.ValidationError({'is_active': 'Нельзя деактивировать собственный аккаунт.'})
         if actor and actor.is_authenticated and not actor.has_role('admin'):
             forbidden_flags = {}
-            for field in ('is_superuser', 'is_staff'):
+            for field in ('is_superuser', 'is_staff', 'can_delete_settings'):
                 if field in self.initial_data and self.initial_data.get(field) in (True, 'true', 'True', '1', 1):
                     forbidden_flags[field] = 'Менеджер не может назначать административные права.'
             if forbidden_flags:
                 raise serializers.ValidationError(forbidden_flags)
             attrs.pop('is_superuser', None)
             attrs.pop('is_staff', None)
+            attrs.pop('can_delete_settings', None)
         attrs['role'] = attrs['roles'][0]
 
         if would_remove_last_active_admin(self.instance, attrs):

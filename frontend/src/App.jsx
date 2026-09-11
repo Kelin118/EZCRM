@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import api from './api/axios.js';
 import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from './auth.js';
 import AppLayout from './components/layout/AppLayout.jsx';
+import Button from './components/ui/Button.jsx';
+import Modal from './components/ui/Modal.jsx';
 import AuditLogsPage from './pages/AuditLogsPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import CertificatesPage from './pages/CertificatesPage.jsx';
@@ -63,11 +65,73 @@ function ProtectedRoute() {
   if (loading) return <div className="grid min-h-screen place-items-center bg-app text-sm font-semibold text-slate-500">Загрузка...</div>;
   if (user && !canAccessPath(location.pathname, user)) return <Navigate to="/" replace />;
 
-  return <AppLayout />;
+  return (
+    <>
+      <AppLayout />
+      {user && <UnprocessedTrialsModal />}
+    </>
+  );
 }
 
 function PublicRoute({ children }) {
   return localStorage.getItem(ACCESS_TOKEN_KEY) ? <Navigate to="/" replace /> : children;
+}
+
+function UnprocessedTrialsModal() {
+  const navigate = useNavigate();
+  const [payload, setPayload] = useState({ count: 0, results: [] });
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const key = 'ezcrm:unprocessed-trials-shown';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    let mounted = true;
+    api.get('trials/unprocessed/')
+      .then(({ data }) => {
+        if (!mounted || !Number(data.count || 0)) return;
+        setPayload({ count: data.count || 0, results: data.results || [] });
+        setOpen(true);
+      })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, []);
+
+  const close = () => setOpen(false);
+  const goTrials = (trialId = '') => {
+    setOpen(false);
+    navigate(trialId ? `/trials?trial=${trialId}` : '/trials');
+  };
+
+  return (
+    <Modal
+      title="Неразобранные пробники"
+      open={open}
+      onClose={close}
+      footer={<><Button variant="secondary" onClick={close}>Закрыть</Button><Button onClick={() => goTrials()}>К пробникам</Button></>}
+    >
+      <div className="grid gap-3">
+        <p className="text-sm font-semibold text-slate-600">Просроченных пробников: <span className="text-slate-900">{payload.count}</span></p>
+        <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1 scrollbar-thin">
+          {payload.results.map((trial) => (
+            <button
+              key={trial.id}
+              type="button"
+              onClick={() => goTrials(trial.id)}
+              className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-left text-sm transition hover:border-brand/30 hover:bg-brand/5"
+            >
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                <span className="font-bold text-slate-900">{trial.client_name || `Пробник #${trial.id}`}</span>
+                <span className="text-xs font-semibold text-slate-500">{trial.scheduled_at ? new Date(trial.scheduled_at).toLocaleString('ru-RU') : 'Дата не указана'}</span>
+              </div>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{[trial.branch_name, trial.manager_name, trial.teacher_name].filter(Boolean).join(' · ') || 'Ответственные не указаны'}</p>
+              {trial.notes && <p className="mt-2 line-clamp-2 text-xs text-slate-600">{trial.notes}</p>}
+            </button>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 export default function App() {

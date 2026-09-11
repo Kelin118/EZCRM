@@ -26,6 +26,12 @@ const sourceOptions = [
   { value: 'manual', label: 'Вручную' },
 ];
 
+const nowDateTimeLocal = () => {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+};
+
 const kanbanStatuses = statusOptions.filter((item) => item.value);
 
 const emptyClientForm = { first_name: '', last_name: '', phone: '', parent_name: '', branch: '', manager: '', notes: '' };
@@ -34,6 +40,7 @@ const emptyManualLeadForm = {
   contact_phone: '',
   branch: '',
   manager: '',
+  first_message_at: '',
   first_message: '',
   create_client: true,
   existing_client: '',
@@ -143,6 +150,7 @@ export default function LeadsPage() {
     setManualForm({
       ...emptyManualLeadForm,
       manager: defaultManager,
+      first_message_at: nowDateTimeLocal(),
       client: { ...emptyClientForm, manager: defaultManager },
     });
     setManualError('');
@@ -167,6 +175,7 @@ export default function LeadsPage() {
         contact_phone: manualForm.contact_phone,
         branch: manualForm.branch || null,
         manager: manualForm.manager || null,
+        first_message_at: manualForm.first_message_at ? new Date(manualForm.first_message_at).toISOString() : null,
         first_message: manualForm.first_message,
         create_client: manualForm.create_client,
         existing_client: manualForm.existing_client || null,
@@ -400,6 +409,7 @@ export default function LeadsPage() {
           <div className="grid gap-3 md:grid-cols-2">
             <Input label="Имя / контакт *" value={manualForm.contact_name} onChange={(e) => updateManualForm({ contact_name: e.target.value, client: { ...manualForm.client, first_name: manualForm.client.first_name || e.target.value } })} />
             <Input label="Телефон" value={manualForm.contact_phone} onChange={(e) => updateManualForm({ contact_phone: e.target.value, client: { ...manualForm.client, phone: manualForm.client.phone || e.target.value } })} />
+            <Input label="Дата обращения" type="datetime-local" value={manualForm.first_message_at} onChange={(e) => updateManualForm({ first_message_at: e.target.value })} />
             <SelectField label="Филиал" value={manualForm.branch} onChange={(value) => updateManualForm({ branch: value, client: { ...manualForm.client, branch: manualForm.client.branch || value } })} options={[{ value: '', label: 'Не распределено' }, ...branchOptions]} />
             <SelectField label="Менеджер" value={manualForm.manager} onChange={(value) => updateManualForm({ manager: value, client: { ...manualForm.client, manager: manualForm.client.manager || value } })} options={[{ value: '', label: 'Не назначен' }, ...managerOptions]} />
           </div>

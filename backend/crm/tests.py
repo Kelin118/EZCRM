@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+import base64
 import hashlib
 import hmac
 import json
@@ -21,8 +22,10 @@ from .models import (
     AddonSaleItem,
     AuditLog,
     Branch,
+    BusinessMediaAsset,
     CashRegisterSnapshot,
     CatalogItem,
+    CatalogItemImage,
     CertificateBatch,
     CertificateDesignAsset,
     CertificateNumberSequence,
@@ -31,7 +34,9 @@ from .models import (
     Client,
     Discount,
     FinanceTransaction,
+    FinanceTransactionAttachment,
     FinancePaymentPart,
+    EmployeeWorkSchedule,
     GroupMembership,
     GiftCertificate,
     Lesson,
@@ -59,6 +64,11 @@ from .subscription_dates import calculate_subscription_end_date
 from .views import _client_active_subscription
 from .meta_api import MetaApiError
 from .export_excel import export_finance, export_summary_report
+
+
+PNG_BYTES = base64.b64decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAElFTkSuQmCC'
+)
 
 
 class SubscriptionDateHelperTests(APITestCase):
@@ -5344,6 +5354,185 @@ class ManualLeadApiTests(APITestCase):
         lead.refresh_from_db()
         self.assertEqual(lead.status, Lead.Status.WON)
         self.assertIsNotNone(lead.closed_at)
+
+
+class OperationalBacklogApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='ops-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='ops-manager', password='pass', role='manager', roles=['manager'])
+        self.delegate = User.objects.create_user(username='ops-delete', password='pass', role='manager', roles=['manager'], can_delete_settings=True)
+        self.branch = Branch.objects.create(name='Ops branch')
+        self.method = PaymentMethod.objects.create(name='Ops Kaspi', is_active=True)
+        self.student = Client.objects.create(first_name='Ops', last_name='Client', branch=self.branch, manager=self.manager)
+        self.client.force_authenticate(self.admin)
+
+    def upload(self, url, name='receipt.png', content_type='image/png', data=PNG_BYTES):
+        return self.client.post(url, {'file': SimpleUploadedFile(name, data, content_type=content_type)}, format='multipart')
+
+    def test_required_client_name_is_api_source_of_truth(self):
+        response = self.client.post('/api/clients/', {'first_name': '   ', 'branch': self.branch.id, 'manager': self.manager.id}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('first_name', response.data)
+
+        response = self.client.post('/api/clients/', {'first_name': 'Complete', 'branch': self.branch.id, 'manager': self.manager.id}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_manual_finance_requires_payment_context_and_saves_responsible_context(self):
+        response = self.client.post('/api/finance/', {'transaction_type': 'income', 'amount': '1000.00', 'source': 'manual', 'paid_at': timezone.now().isoformat()}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('payment_method', response.data)
+
+        response = self.client.post('/api/finance/', {
+            'transaction_type': 'income',
+            'amount': '1000.00',
+            'source': 'manual',
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'paid_at': timezone.now().isoformat(),
+            'payment_parts': [{'payment_method': self.method.id, 'amount': '1000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        tx = FinanceTransaction.objects.get(pk=response.data['id'])
+        self.assertEqual(tx.branch, self.branch)
+        self.assertEqual(tx.manager, self.manager)
+
+    def test_unprocessed_trials_include_attended_and_exclude_closed(self):
+        old = timezone.now() - timedelta(days=1)
+        Trial.objects.create(client=self.student, branch=self.branch, manager=self.manager, scheduled_at=old, status=Trial.Status.ATTENDED)
+        Trial.objects.create(client=self.student, branch=self.branch, manager=self.manager, scheduled_at=old, status=Trial.Status.BOUGHT)
+
+        response = self.client.get('/api/trials/unprocessed/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['stage'], Trial.Status.ATTENDED)
+
+    def test_manual_lead_accepts_selected_first_message_at(self):
+        self.client.force_authenticate(self.manager)
+        selected = '2026-07-01T09:30:00+05:00'
+        response = self.client.post('/api/leads/manual-create/', {
+            'contact_name': 'Historical lead',
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'first_message_at': selected,
+            'create_client': False,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        lead = Lead.objects.get(pk=response.data['id'])
+        self.assertEqual(timezone.localtime(lead.first_message_at).date(), date(2026, 7, 1))
+        self.assertEqual(lead.first_message_at, lead.last_message_at)
+
+    def test_master_class_bulk_create_allows_same_day_different_titles_and_rolls_back_duplicate(self):
+        starts_at = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'items': [
+                {'title': 'МК Роботы', 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
+                {'title': 'МК Python', 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '6000.00'},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(MasterClass.objects.count(), 2)
+
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'items': [
+                {'title': 'МК Scratch', 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
+                {'title': 'МК Scratch', 'starts_at': (starts_at + timedelta(hours=2)).isoformat(), 'price': '6000.00'},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(MasterClass.objects.count(), 2)
+
+    def test_client_master_class_payment_window_and_additional_payment(self):
+        master_class = MasterClass.objects.create(title='МК Оплата', branch=self.branch, manager=self.manager, starts_at=timezone.now(), price='12000.00')
+        master_class.participants.add(self.student)
+        response = self.client.post(f'/api/master-classes/{master_class.id}/payments/', {
+            'payment_type': 'additional',
+            'amount': '4000.00',
+            'payment_parts': [{'payment_method': self.method.id, 'amount': '4000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+
+        response = self.client.get(f'/api/clients/{self.student.id}/master-class-payments/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['payments'][0]['amount'], '4000.00')
+
+    def test_business_media_finance_and_catalog_validation_and_metadata(self):
+        tx = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount='1000.00',
+            source='manual',
+            branch=self.branch,
+            manager=self.manager,
+            client=self.student,
+            paid_at=timezone.now(),
+        )
+        response = self.upload(f'/api/finance/{tx.id}/attachments/')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertNotIn('file_data', response.data)
+        self.assertEqual(FinanceTransactionAttachment.objects.count(), 1)
+
+        response = self.client.get(f'/api/finance/{tx.id}/attachments/{response.data["id"]}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'image/png')
+
+        bad = self.upload(f'/api/finance/{tx.id}/attachments/', name='receipt.svg', content_type='image/svg+xml', data=b'<svg></svg>')
+        self.assertEqual(bad.status_code, 400)
+
+        item = CatalogItem.objects.create(name='Camera', price='1000.00', category=CatalogItem.Category.PRODUCT)
+        response = self.upload(f'/api/catalog-items/{item.id}/images/')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(CatalogItemImage.objects.get().is_primary)
+        detail = self.client.get(f'/api/catalog-items/{item.id}/')
+        self.assertTrue(detail.data['primary_image_url'])
+        self.assertNotIn('file_data', detail.data['images'][0])
+
+    def test_employee_schedule_bulk_create_rolls_back_on_conflict(self):
+        payload = {
+            'employee': self.manager.id,
+            'branch': self.branch.id,
+            'weekdays': [1, 3],
+            'start_time': '16:00',
+            'end_time': '21:00',
+            'is_working_day': True,
+            'valid_from': '2026-07-01',
+        }
+        response = self.client.post('/api/employee-schedules/bulk-create/', payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(EmployeeWorkSchedule.objects.count(), 2)
+
+        response = self.client.post('/api/employee-schedules/bulk-create/', {**payload, 'weekdays': [2, 3]}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(3, response.data['conflicting_weekdays'])
+        self.assertEqual(EmployeeWorkSchedule.objects.count(), 2)
+
+    def test_settings_delete_flag_allows_destroy_only_and_cannot_be_self_granted_by_manager(self):
+        item = CatalogItem.objects.create(name='Delete by flag', price='1000.00', category=CatalogItem.Category.PRODUCT)
+        self.client.force_authenticate(self.delegate)
+        response = self.client.delete(f'/api/catalog-items/{item.id}/')
+        self.assertEqual(response.status_code, 204)
+
+        self.client.force_authenticate(self.manager)
+        response = self.client.patch(f'/api/users/employees/{self.manager.id}/', {'can_delete_settings': True}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.manager.refresh_from_db()
+        self.assertFalse(self.manager.can_delete_settings)
+
+        method = PaymentMethod.objects.create(name='Patch forbidden for flag')
+        self.client.force_authenticate(self.delegate)
+        response = self.client.patch(f'/api/payment-methods/{method.id}/', {'name': 'Nope'}, format='json')
+        self.assertEqual(response.status_code, 403)
 
 
 class LeadFunnelReportTests(APITestCase):

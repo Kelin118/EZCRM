@@ -21,7 +21,7 @@ const emptyClient = {
 };
 
 const baseFields = [
-  { name: 'first_name', label: 'Имя' },
+  { name: 'first_name', label: 'Имя *' },
   { name: 'last_name', label: 'Фамилия' },
   { name: 'parent_name', label: 'Родитель' },
   { name: 'phone', label: 'Телефон' },
@@ -52,8 +52,8 @@ export default function ClientsPage() {
   const setForm = (value) => crud.setEditing(value);
   const fields = [
     ...baseFields.slice(0, 8),
-    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
-    { name: 'manager', label: 'Менеджер', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
+    { name: 'branch', label: 'Филиал *', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
+    { name: 'manager', label: 'Менеджер *', type: 'select', options: [{ value: '', label: 'Не выбран' }, ...managerOptions] },
     ...baseFields.slice(8),
   ];
 

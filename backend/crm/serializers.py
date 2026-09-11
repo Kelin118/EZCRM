@@ -21,7 +21,9 @@ from .models import (
     AddonSaleItem,
     AuditLog,
     Branch,
+    BusinessMediaAsset,
     CatalogItem,
+    CatalogItemImage,
     CertificateBatch,
     CertificateDesignAsset,
     CertificateRedemption,
@@ -30,6 +32,7 @@ from .models import (
     Client,
     Discount,
     FinanceTransaction,
+    FinanceTransactionAttachment,
     FinancePaymentPart,
     GiftCertificate,
     GroupMembership,
@@ -66,6 +69,47 @@ from .subscription_dates import calculate_subscription_end_date
 
 def user_display_name(user):
     return user.get_full_name() or user.username if user else ''
+
+
+def resolve_required_branch(attrs, instance=None, *, client=None, subscription=None):
+    branch = attrs.get('branch', getattr(instance, 'branch', None) if instance else None)
+    client = client or attrs.get('client', getattr(instance, 'client', None) if instance else None)
+    subscription = subscription or attrs.get('subscription', getattr(instance, 'subscription', None) if instance else None)
+    if not branch and subscription:
+        branch = subscription.branch
+    if not branch and client:
+        branch = client.branch
+    if not branch:
+        raise serializers.ValidationError({'branch': 'Укажите филиал.'})
+    attrs['branch'] = branch
+    return branch
+
+
+def resolve_optional_branch(attrs, instance=None, *, client=None, subscription=None):
+    branch = attrs.get('branch', getattr(instance, 'branch', None) if instance else None)
+    client = client or attrs.get('client', getattr(instance, 'client', None) if instance else None)
+    subscription = subscription or attrs.get('subscription', getattr(instance, 'subscription', None) if instance else None)
+    if not branch and subscription:
+        branch = subscription.branch
+    if not branch and client:
+        branch = client.branch
+    if branch:
+        attrs['branch'] = branch
+    return branch
+
+
+def resolve_responsible_manager(attrs, instance=None, *, client=None, request=None):
+    manager = attrs.get('manager', getattr(instance, 'manager', None) if instance else None)
+    client = client or attrs.get('client', getattr(instance, 'client', None) if instance else None)
+    if not manager and client:
+        manager = client.manager
+    user = getattr(request, 'user', None) if request else None
+    if not manager and user and getattr(user, 'is_authenticated', False) and getattr(user, 'has_any_role', lambda roles: False)({'admin', 'manager'}):
+        manager = user
+    if not manager:
+        raise serializers.ValidationError({'manager': 'Укажите ответственного менеджера.'})
+    attrs['manager'] = manager
+    return manager
 
 
 def lead_first(assignments):
@@ -157,6 +201,13 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_manager_name(self, obj):
         return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        first_name = attrs.get('first_name', getattr(self.instance, 'first_name', ''))
+        if not str(first_name or '').strip():
+            raise serializers.ValidationError({'first_name': 'Укажите имя клиента.'})
+        return attrs
 
 
 class SubjectSerializer(serializers.ModelSerializer):
@@ -496,7 +547,11 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
             Decimal('0'),
         )
         client = attrs.get('client', self.instance.client if self.instance else None)
-        branch = attrs.get('branch', self.instance.branch if self.instance else None) or (client.branch if client else None)
+        branch = resolve_optional_branch(attrs, self.instance, client=client)
+        if branch:
+            attrs['branch'] = branch
+        elif client or total > 0:
+            raise serializers.ValidationError({'branch': 'Укажите филиал.'})
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
         calculation = calculate_discount(total, discount, branch=branch, calculation_date=attrs.get('sale_date'))
         attrs['discount_name'] = calculation['discount_name']
@@ -690,7 +745,11 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         effective_price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
         addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (effective_addons or [])), Decimal('0'))
         client = attrs.get('client', self.instance.client if self.instance else None)
-        branch = attrs.get('branch', self.instance.branch if self.instance else None) or (client.branch if client else None)
+        branch = resolve_optional_branch(attrs, self.instance, client=client)
+        if not client:
+            raise serializers.ValidationError({'client': 'Укажите клиента.'})
+        if branch:
+            attrs['branch'] = branch
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
         calculation = calculate_discount(Decimal(effective_price or 0) + addons_sum, discount, branch=branch, calculation_date=attrs.get('purchase_date'))
         attrs['discount_name'] = calculation['discount_name']
@@ -705,6 +764,11 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         if self.instance is None and paid_amount > 0 and not attrs.get('purchase_date'):
             attrs['purchase_date'] = timezone.localdate()
         payment_parts = initial_data.get('payment_parts')
+        payment_method = attrs.get('payment_method', None)
+        if self.instance and self.instance.finance_transaction_id and not payment_method:
+            payment_method = self.instance.finance_transaction.payment_method
+        if paid_amount and paid_amount > 0 and payment_parts is None and not payment_method:
+            raise serializers.ValidationError({'payment_parts': 'Укажите распределение оплаты или способ оплаты.'})
         if payment_parts is not None:
             attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=paid_amount)
         return attrs
@@ -835,6 +899,27 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
         data['payment_method'] = instance.finance_transaction.payment_method_id if instance.finance_transaction_id and instance.finance_transaction.payment_method_id else None
         data['payment_method_name'] = instance.finance_transaction.payment_method_name if instance.finance_transaction_id else ''
         return data
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        client = attrs.get('client', self.instance.client if self.instance else None)
+        if not client:
+            raise serializers.ValidationError({'client': 'Укажите клиента.'})
+        resolve_required_branch(attrs, self.instance, client=client)
+        resolve_responsible_manager(attrs, self.instance, client=client, request=self.context.get('request'))
+        if not attrs.get('scheduled_at', getattr(self.instance, 'scheduled_at', None)):
+            raise serializers.ValidationError({'scheduled_at': 'Укажите дату и время пробника.'})
+        price = Decimal(attrs.get('price', self.instance.price if self.instance else 0) or 0)
+        initial_data = getattr(self, 'initial_data', {})
+        if price > 0:
+            if not attrs.get('payment_date', getattr(self.instance, 'payment_date', None)):
+                raise serializers.ValidationError({'payment_date': 'Укажите дату оплаты.'})
+            method = attrs.get('payment_method')
+            if self.instance and self.instance.finance_transaction_id and not method:
+                method = self.instance.finance_transaction.payment_method
+            if initial_data.get('payment_parts') is None and not method:
+                raise serializers.ValidationError({'payment_parts': 'Укажите распределение оплаты или способ оплаты.'})
+        return attrs
 
     def create(self, validated_data):
         payment_parts = validated_data.pop('payment_parts', None)
@@ -1179,6 +1264,17 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             price = attrs['payment_amount']
             attrs['price'] = price
         branch = attrs.get('branch', self.instance.branch if self.instance else None)
+        client = attrs.get('client', self.instance.participants.first() if self.instance else None)
+        if self.instance is None:
+            if not str(attrs.get('title') or '').strip():
+                raise serializers.ValidationError({'title': 'Укажите название МК.'})
+            if not client:
+                raise serializers.ValidationError({'client': 'Укажите клиента.'})
+            resolve_required_branch(attrs, self.instance, client=client)
+            resolve_responsible_manager(attrs, self.instance, client=client, request=self.context.get('request'))
+            branch = attrs.get('branch')
+        elif not branch:
+            branch = resolve_required_branch(attrs, self.instance, client=client)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
         calculation = calculate_discount(price, discount, branch=branch, calculation_date=attrs.get('payment_date'))
         attrs['discount_name'] = calculation['discount_name']
@@ -1658,6 +1754,36 @@ class FinancePaymentPartSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'payment_method_name', 'is_cash')
 
 
+class BusinessMediaAssetMixin:
+    url_name = ''
+
+    def get_url(self, obj):
+        request = self.context.get('request')
+        path = self.url_path(obj)
+        return request.build_absolute_uri(path) if request else path
+
+    def get_thumbnail_url(self, obj):
+        return self.get_url(obj)
+
+
+class FinanceTransactionAttachmentSerializer(BusinessMediaAssetMixin, serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+    file_name = serializers.CharField(source='asset.file_name', read_only=True)
+    mime_type = serializers.CharField(source='asset.mime_type', read_only=True)
+    file_size = serializers.IntegerField(source='asset.file_size', read_only=True)
+    width = serializers.IntegerField(source='asset.width', read_only=True)
+    height = serializers.IntegerField(source='asset.height', read_only=True)
+
+    class Meta:
+        model = FinanceTransactionAttachment
+        fields = ('id', 'url', 'thumbnail_url', 'file_name', 'mime_type', 'file_size', 'width', 'height', 'created_at')
+        read_only_fields = fields
+
+    def url_path(self, obj):
+        return f'/api/finance/{obj.transaction_id}/attachments/{obj.id}/'
+
+
 class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer):
     type = serializers.CharField(source='transaction_type', read_only=True)
     client_name = serializers.SerializerMethodField()
@@ -1680,6 +1806,8 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     master_class_outside_regular_hours = serializers.SerializerMethodField()
     master_class_outside_reason = serializers.SerializerMethodField()
     payment_parts = serializers.JSONField(required=False)
+    attachments_count = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
 
     class Meta:
         model = FinanceTransaction
@@ -1812,6 +1940,12 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         data['payment_parts'] = payment_parts_representation(instance)
         return data
 
+    def get_attachments_count(self, obj):
+        return obj.attachments.count()
+
+    def get_attachments(self, obj):
+        return FinanceTransactionAttachmentSerializer(obj.attachments.all(), many=True, context=self.context).data
+
     def validate_payment_method(self, value):
         if value and not value.is_active:
             raise serializers.ValidationError('Выберите активный способ оплаты.')
@@ -1825,6 +1959,15 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
         initial_data = getattr(self, 'initial_data', {})
         payment_parts = initial_data.get('payment_parts', None)
+        if amount is not None and Decimal(amount or 0) > 0:
+            client = attrs.get('client', self.instance.client if self.instance else None)
+            subscription = attrs.get('subscription', self.instance.subscription if self.instance else None)
+            if subscription and not client:
+                attrs['client'] = subscription.client
+                client = subscription.client
+            resolve_optional_branch(attrs, self.instance, client=client, subscription=subscription)
+            if not attrs.get('manager', getattr(self.instance, 'manager', None) if self.instance else None) and client and client.manager_id:
+                attrs['manager'] = client.manager
         if transaction_type == FinanceTransaction.Type.EXPENSE and discount:
             raise serializers.ValidationError({'discount': 'Скидка не применяется к расходам.'})
         if amount is not None and amount < 0:
@@ -2012,6 +2155,8 @@ class StudioSettingsSerializer(serializers.ModelSerializer):
 class CatalogItemSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     service_type_display = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
+    primary_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = CatalogItem
@@ -2033,6 +2178,17 @@ class CatalogItemSerializer(serializers.ModelSerializer):
     def get_service_type_display(self, obj):
         return 'Лагерь' if obj.service_type == CatalogItem.ServiceType.CAMP else 'Учебный курс'
 
+    def get_images(self, obj):
+        return CatalogItemImageSerializer(obj.images.all(), many=True, context=self.context).data
+
+    def get_primary_image_url(self, obj):
+        primary = next((image for image in obj.images.all() if image.is_primary), None)
+        if not primary:
+            primary = next(iter(obj.images.all()), None)
+        if not primary:
+            return ''
+        return CatalogItemImageSerializer(primary, context=self.context).data['url']
+
     def validate_schedule_days(self, value):
         if value in (None, ''):
             return []
@@ -2043,3 +2199,21 @@ class CatalogItemSerializer(serializers.ModelSerializer):
             allowed = ', '.join(DAY_TO_WEEKDAY.keys())
             raise serializers.ValidationError(f'Дни недели должны быть из списка: {allowed}.')
         return normalized
+
+
+class CatalogItemImageSerializer(BusinessMediaAssetMixin, serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+    file_name = serializers.CharField(source='asset.file_name', read_only=True)
+    mime_type = serializers.CharField(source='asset.mime_type', read_only=True)
+    file_size = serializers.IntegerField(source='asset.file_size', read_only=True)
+    width = serializers.IntegerField(source='asset.width', read_only=True)
+    height = serializers.IntegerField(source='asset.height', read_only=True)
+
+    class Meta:
+        model = CatalogItemImage
+        fields = ('id', 'url', 'thumbnail_url', 'file_name', 'mime_type', 'file_size', 'width', 'height', 'is_primary', 'sort_order', 'created_at')
+        read_only_fields = fields
+
+    def url_path(self, obj):
+        return f'/api/catalog-items/{obj.catalog_item_id}/images/{obj.id}/'

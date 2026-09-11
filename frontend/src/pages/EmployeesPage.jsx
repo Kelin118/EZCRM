@@ -8,7 +8,7 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
-import { canAssignRoleSet, canManageEmployee, getStoredUser } from '../auth.js';
+import { canAssignRoleSet, canManageEmployee, getStoredUser, isAdmin } from '../auth.js';
 import { ActionButton, PageHeader } from './pageUtils.jsx';
 import { SelectField } from './pageUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
@@ -29,6 +29,7 @@ const emptyEmployee = {
   is_active: true,
   password: '',
   branch: '',
+  can_delete_settings: false,
 };
 
 const emptyPassword = { password: '', password_confirm: '' };
@@ -84,6 +85,7 @@ export default function EmployeesPage() {
       is_active: Boolean(employee.is_active),
       password: '',
       branch: employee.branch ? String(employee.branch) : '',
+      can_delete_settings: Boolean(employee.can_delete_settings),
     });
     setModalOpen(true);
   };
@@ -315,6 +317,15 @@ export default function EmployeesPage() {
               <input type="checkbox" checked={editing.is_active} onChange={(event) => setEditingField('is_active', event.target.checked)} />
               Активен
             </label>
+            {isAdmin(user) && (
+              <label className="flex items-start gap-3 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">
+                <input className="mt-1" type="checkbox" checked={Boolean(editing.can_delete_settings)} onChange={(event) => setEditingField('can_delete_settings', event.target.checked)} />
+                <span>
+                  <span className="block">Удаление в настройках</span>
+                  <span className="mt-1 block text-xs font-medium text-slate-500">Разрешает удалять неиспользуемые филиалы, способы оплаты, скидки, товары и каналы.</span>
+                </span>
+              </label>
+            )}
           </div>
         )}
       </Modal>

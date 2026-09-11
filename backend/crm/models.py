@@ -749,6 +749,74 @@ class FinanceTransaction(TimeStampedModel):
         super().save(*args, **kwargs)
 
 
+class BusinessMediaAsset(TimeStampedModel):
+    public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    file_name = models.CharField(max_length=255)
+    mime_type = models.CharField(max_length=100)
+    file_size = models.PositiveIntegerField()
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    sha256 = models.CharField(max_length=64, db_index=True)
+    file_data = models.BinaryField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='business_media_assets',
+    )
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return self.file_name
+
+
+class FinanceTransactionAttachment(TimeStampedModel):
+    transaction = models.ForeignKey(FinanceTransaction, on_delete=models.CASCADE, related_name='attachments')
+    asset = models.ForeignKey(BusinessMediaAsset, on_delete=models.CASCADE, related_name='finance_attachments')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='finance_transaction_attachments',
+    )
+
+    class Meta:
+        ordering = ('created_at', 'id')
+        constraints = (
+            models.UniqueConstraint(fields=('transaction', 'asset'), name='unique_finance_transaction_asset'),
+        )
+
+    def __str__(self):
+        return f'{self.transaction_id} · {self.asset.file_name}'
+
+
+class CatalogItemImage(TimeStampedModel):
+    catalog_item = models.ForeignKey('CatalogItem', on_delete=models.CASCADE, related_name='images')
+    asset = models.ForeignKey(BusinessMediaAsset, on_delete=models.CASCADE, related_name='catalog_images')
+    is_primary = models.BooleanField(default=False)
+    sort_order = models.PositiveIntegerField(default=0, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='catalog_item_images',
+    )
+
+    class Meta:
+        ordering = ('sort_order', 'created_at', 'id')
+        constraints = (
+            models.UniqueConstraint(fields=('catalog_item', 'asset'), name='unique_catalog_item_asset'),
+        )
+
+    def __str__(self):
+        return f'{self.catalog_item_id} · {self.asset.file_name}'
+
+
 class EmployeeWorkSchedule(TimeStampedModel):
     employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='work_schedules')
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='employee_work_schedules')

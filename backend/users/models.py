@@ -12,6 +12,7 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MANAGER)
     roles = models.JSONField(default=list, blank=True)
     phone = models.CharField(max_length=30, blank=True)
+    can_delete_settings = models.BooleanField(default=False)
     branch = models.ForeignKey(
         'crm.Branch',
         on_delete=models.SET_NULL,

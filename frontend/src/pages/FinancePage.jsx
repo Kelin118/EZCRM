@@ -10,7 +10,7 @@ import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
-import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { Actions, Badge, Button, CrudModal, Filters, Input, money, normalizePayload, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', manager: '', paid_at: '', comment: '', branch: '' };
 const emptyFilters = { transaction_type: '', source: '', payment_method: 'all', discount: 'all', manager: 'all', teacher: 'all', extra_master_class: '', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
@@ -52,6 +52,8 @@ export default function FinancePage() {
   const [cashForm, setCashForm] = useState(emptyCashForm);
   const [cashPreview, setCashPreview] = useState(cashBalance);
   const [addonSaleOpen, setAddonSaleOpen] = useState(false);
+  const [receiptFiles, setReceiptFiles] = useState([]);
+  const [receiptViewer, setReceiptViewer] = useState({ open: false, transaction: null });
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
@@ -93,10 +95,30 @@ export default function FinancePage() {
     { name: 'subscription', label: 'Абонемент', type: 'select', options: [{ value: '', label: form.client ? 'Без абонемента' : 'Сначала выберите клиента' }, ...subscriptionOptions] },
     { name: 'paid_at', label: 'Дата операции', type: 'datetime-local' },
     { name: 'comment', label: 'Комментарий', type: 'textarea' },
+    {
+      name: 'attachments',
+      type: 'custom',
+      render: (current) => (
+        <div className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+          <Input label="Прикрепить чек" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setReceiptFiles(Array.from(event.target.files || []).slice(0, 5))} />
+          {receiptFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
+              {receiptFiles.map((file) => <span key={`${file.name}-${file.size}`} className="rounded-lg bg-white px-3 py-2">{file.name}</span>)}
+            </div>
+          )}
+          {current.attachments?.length > 0 && (
+            <div className="grid gap-2 sm:grid-cols-3">
+              {current.attachments.map((item) => <img key={item.id} src={item.thumbnail_url || item.url} alt={item.file_name} className="h-24 w-full rounded-xl object-cover" />)}
+            </div>
+          )}
+        </div>
+      ),
+    },
   ];
 
   const editTransaction = (row) => {
     const { type, ...editable } = row;
+    setReceiptFiles([]);
     crud.setEditing({ ...editable, transaction_type: row.transaction_type ?? type, payment_method: row.payment_method ? String(row.payment_method) : '', payment_parts: partsFromTransaction(row) });
     crud.setModalOpen(true);
   };
@@ -127,7 +149,31 @@ export default function FinancePage() {
       dispatchError('Сумма оплат по способам должна совпадать с суммой операции.');
       return;
     }
-    await crud.save({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+    crud.setSaving?.(true);
+    try {
+      const payload = normalizePayload({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
+      delete payload.attachments;
+      delete payload.attachments_count;
+      let saved;
+      if (form.id) {
+        const { data } = await api.patch(`finance/${form.id}/`, payload);
+        saved = data;
+      } else {
+        const { data } = await api.post('finance/', payload);
+        saved = data;
+      }
+      for (const file of receiptFiles) {
+        const formData = new FormData();
+        formData.append('file', file);
+        await api.post(`finance/${saved.id}/attachments/`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      }
+      setReceiptFiles([]);
+      crud.setModalOpen(false);
+      crud.setEditing(null);
+      await refreshFinance();
+    } catch (error) {
+      dispatchError(error.response?.data?.detail || 'Не удалось сохранить финансовую операцию.');
+    }
   };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
 
@@ -218,6 +264,7 @@ export default function FinancePage() {
         ) },
         { key: 'addon_sale_summary', header: 'Состав', render: (row) => ['addon', 'product', 'retail'].includes(row.source) ? (row.addon_sale_summary || row.comment || '—') : '—' },
         { key: 'manager', header: 'Менеджер', render: (row) => row.manager_name || 'Не указан' },
+        { key: 'attachments', header: 'Чеки', render: (row) => Number(row.attachments_count || 0) > 0 ? <Button variant="secondary" onClick={() => setReceiptViewer({ open: true, transaction: row })}>{row.attachments_count} чека</Button> : '—' },
         { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
@@ -225,6 +272,21 @@ export default function FinancePage() {
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
       <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveTransaction} />
+      <Modal
+        title="Чеки"
+        open={receiptViewer.open}
+        onClose={() => setReceiptViewer({ open: false, transaction: null })}
+        footer={<Button variant="secondary" onClick={() => setReceiptViewer({ open: false, transaction: null })}>Закрыть</Button>}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(receiptViewer.transaction?.attachments || []).map((item) => (
+            <a key={item.id} href={item.url} target="_blank" rel="noreferrer" className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+              <img src={item.thumbnail_url || item.url} alt={item.file_name} className="h-56 w-full rounded-xl object-contain bg-white" />
+              <p className="mt-2 truncate text-xs font-semibold text-slate-600">{item.file_name}</p>
+            </a>
+          ))}
+        </div>
+      </Modal>
       <AddonSaleModal open={addonSaleOpen} onClose={() => setAddonSaleOpen(false)} onSaved={refreshFinance} />
       <Modal
         title="Сверить кассу"

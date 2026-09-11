@@ -83,6 +83,10 @@ export function canDeleteDangerous(user = getStoredUser()) {
   return isAdmin(user);
 }
 
+export function canDeleteSettings(user = getStoredUser()) {
+  return isAdmin(user) || Boolean(user?.can_delete_settings);
+}
+
 export function canManageClients(user = getStoredUser()) {
   return hasRole(user, [ROLES.ADMIN, ROLES.MANAGER]);
 }

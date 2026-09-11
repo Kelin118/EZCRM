@@ -77,11 +77,17 @@ export default function EmployeeSchedulePage() {
           { key: 'employee', header: 'Сотрудник', render: (row) => row.employee.display_name || row.employee.full_name || row.employee.username },
           ...weekdays.map((label, index) => ({
             key: `day-${index}`,
+            align: 'center',
             header: label,
             render: (row) => {
               const item = row.days[index];
+              const tone = item
+                ? item.is_working_day
+                  ? 'border-brand/20 bg-brand/10 text-brand hover:border-brand/35 hover:bg-brand/15'
+                  : 'border-slate-200 bg-slate-100 text-slate-500 hover:border-slate-300'
+                : 'border-dashed border-slate-200 bg-white text-slate-400 hover:border-brand/25 hover:bg-brand/5 hover:text-brand';
               return (
-                <button type="button" className="rounded-xl px-3 py-2 text-left text-sm hover:bg-brand/5" onClick={() => openCell(row.employee, index, item)}>
+                <button type="button" className={`min-h-10 w-full rounded-xl border px-3 py-2 text-center text-sm font-semibold transition-colors duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 ${tone}`} onClick={() => openCell(row.employee, index, item)}>
                   {item ? (item.is_working_day ? `${item.start_time?.slice(0, 5)}–${item.end_time?.slice(0, 5)}` : 'Выходной') : '—'}
                 </button>
               );

@@ -6,7 +6,7 @@ export default function KanbanColumn({ children, count = 0, emptyText = 'Нет 
       onDragOver={onDragOver}
       onDrop={onDrop}
       data-kanban-column={id}
-      className={`flex max-h-[72vh] min-h-80 w-[300px] shrink-0 flex-col rounded-[22px] border bg-white p-4 shadow-card transition ${
+      className={`flex max-h-[72vh] min-h-80 w-[300px] shrink-0 flex-col rounded-2xl border bg-white p-3.5 shadow-card transition-[background-color,border-color,box-shadow] duration-150 ${
         isOver ? 'border-brand/40 bg-brand/5 ring-4 ring-brand/10' : 'border-slate-100'
       }`}
     >
@@ -15,7 +15,7 @@ export default function KanbanColumn({ children, count = 0, emptyText = 'Нет 
         <Badge value={count ? 'active' : 'todo'}>{count}</Badge>
       </div>
       <div className="scrollbar-thin grid flex-1 content-start gap-3 overflow-y-auto pr-1">
-        {count ? children : <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-medium text-slate-400">{emptyText}</div>}
+        {count ? children : <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-medium text-slate-400">{emptyText}</div>}
       </div>
     </section>
   );

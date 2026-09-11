@@ -1,5 +1,5 @@
-import { Pencil, Plus, Save, Trash2, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Pencil, Plus, Save, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Children, useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
@@ -187,35 +187,70 @@ export function showApiError(error) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: getApiErrorMessage(error) }));
 }
 
-export function PageHeader({ title, actionLabel, onAction, children }) {
+export function PageHeader({ title, description, actionLabel, onAction, secondaryActions, tabs, children }) {
   return (
-    <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">{title}</h2>
+    <div className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+      <div className="min-w-0">
+        <h2 className="text-2xl font-semibold text-slate-900 text-pretty">{title}</h2>
+        {description && <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">{description}</p>}
+        {tabs && <div className="mt-3 max-w-full overflow-x-auto pb-1 scrollbar-thin">{tabs}</div>}
         {children && <div className="mt-3 flex flex-wrap gap-2">{children}</div>}
       </div>
-      {onAction && (
-        <Button onClick={onAction}>
-          <Plus size={17} />
-          {actionLabel}
-        </Button>
+      {(secondaryActions || onAction) && (
+        <div className="flex flex-wrap gap-2 md:justify-end">
+          {secondaryActions}
+          {onAction && (
+            <Button onClick={onAction}>
+              <Plus size={17} aria-hidden="true" />
+              {actionLabel}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-export function Filters({ children }) {
-  return <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-4">{children}</div>;
+export function Filters({ children, initiallyExpanded = false }) {
+  const items = Children.toArray(children).filter(Boolean);
+  const hasMany = items.length > 4;
+  const [expanded, setExpanded] = useState(initiallyExpanded || !hasMany);
+  const visibleItems = expanded ? items : items.slice(0, 4);
+
+  useEffect(() => {
+    if (!hasMany) setExpanded(true);
+  }, [hasMany]);
+
+  return (
+    <section className="mb-5 rounded-2xl border border-slate-100 bg-white p-4 shadow-card">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {visibleItems}
+      </div>
+      {hasMany && (
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+          <span className="text-xs font-semibold text-slate-500">Фильтры: {items.length}</span>
+          <Button variant="secondary" className="h-9 px-3" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+            <SlidersHorizontal size={15} aria-hidden="true" />
+            {expanded ? 'Скрыть' : 'Ещё фильтры'}
+            <ChevronDown size={15} aria-hidden="true" className={`transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`} />
+          </Button>
+        </div>
+      )}
+    </section>
+  );
 }
 
-export function SelectField({ label, value, onChange, options }) {
+export function SelectField({ label, value, onChange, options, name }) {
+  const fieldName = name || String(label || 'select').toLowerCase().replace(/\s+/g, '-');
+
   return (
     <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
-      {label}
+      <span className="truncate">{label}</span>
       <select
+        name={fieldName}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+        className="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 transition-[border-color,box-shadow,background-color,color] duration-150 hover:border-slate-300 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -239,7 +274,7 @@ export function ActionButton({ icon: Icon, label, title, onClick, variant = 'sec
   const sharedProps = {
     title: accessibilityLabel,
     'aria-label': accessibilityLabel,
-    className: `inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-semibold transition ${tone[variant] || tone.secondary} ${className}`,
+    className: `inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border text-sm font-semibold transition-[background-color,border-color,color,box-shadow,transform] duration-150 hover:shadow-sm active:translate-y-px focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 ${tone[variant] || tone.secondary} ${className}`,
     ...props,
   };
 
@@ -327,7 +362,9 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
               <label key={field.name} className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
                 {field.label}
                 <textarea
-                  className="min-h-28 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition hover:border-slate-300 focus:border-brand focus:ring-4 focus:ring-brand/10"
+                  name={field.name}
+                  autoComplete="off"
+                  className="min-h-28 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 transition-[border-color,box-shadow,background-color,color] duration-150 hover:border-slate-300 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10"
                   value={form[field.name] ?? ''}
                   onChange={(event) => setForm({ ...form, [field.name]: event.target.value })}
                 />
@@ -339,6 +376,7 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
               <Input
                 label={field.label}
                 type={field.type || 'text'}
+                name={field.name}
                 value={field.type === 'datetime-local' ? formatDateTimeLocal(form[field.name]) : field.type === 'date' ? normalizeDateForInput(form[field.name]) : field.type === 'time' ? normalizeTimeForInput(form[field.name]) : form[field.name] ?? ''}
                 onChange={(event) => field.onChange ? field.onChange(event.target.value, form, setForm) : setForm({ ...form, [field.name]: event.target.value })}
               />

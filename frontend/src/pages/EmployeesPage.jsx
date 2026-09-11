@@ -221,13 +221,15 @@ export default function EmployeesPage() {
     <>
       <PageHeader title="Сотрудники" actionLabel="Добавить сотрудника" onAction={openCreate} />
 
-      <div className="mb-5 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card">
+      <div className="mb-5 rounded-2xl border border-slate-100 bg-white p-4 shadow-card">
         <div className="grid gap-3 md:grid-cols-[1fr_260px]">
-        <label className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-500">
+        <label className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-500 focus-within:border-brand focus-within:ring-4 focus-within:ring-brand/10">
           <Search size={17} />
           <input
-            className="min-w-0 flex-1 bg-transparent outline-none"
-            placeholder="Поиск по имени, username, телефону"
+            name="employee-search"
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent focus:outline-none"
+            placeholder="Поиск по имени, username, телефону…"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -258,7 +260,7 @@ export default function EmployeesPage() {
             key: 'actions',
             header: '',
             render: (row) => (
-              <div className="flex justify-end gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 {canManageEmployee(row, user) && (
                   <>
                     <ActionButton icon={Pencil} label="Редактировать" onClick={() => openEdit(row)} />

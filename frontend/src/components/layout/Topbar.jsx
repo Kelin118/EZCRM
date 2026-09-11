@@ -140,28 +140,30 @@ export default function Topbar({ onMenuClick }) {
       : titles[location.pathname] || 'EZCRM';
 
   return (
-    <header className="sticky top-0 z-20 border-b border-white/70 bg-app/90 px-3 py-3 backdrop-blur sm:px-4 lg:px-8">
+    <header className="sticky top-0 z-20 border-b border-white/70 bg-app/92 px-3 py-2.5 backdrop-blur sm:px-4 lg:px-8">
       <div className="mx-auto flex w-full max-w-[1560px] items-center gap-3">
         <Button variant="secondary" className="h-10 w-10 shrink-0 p-0 lg:hidden" onClick={onMenuClick} aria-label="Открыть меню">
           <Menu size={19} />
         </Button>
 
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-bold text-slate-900 sm:text-2xl">{title}</h1>
+          <h1 className="truncate text-xl font-semibold text-slate-900 sm:text-2xl">{title}</h1>
           <p className="hidden text-sm font-medium text-slate-500 sm:block">CRM для учебного центра</p>
         </div>
 
         <div className="ml-auto flex min-w-0 items-center gap-2 lg:flex-1 lg:justify-end">
           <div ref={searchRef} className="relative hidden min-w-0 flex-1 md:block lg:max-w-md">
-            <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500 shadow-sm focus-within:border-brand/50 focus-within:ring-2 focus-within:ring-brand/10">
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-500 shadow-sm focus-within:border-brand/50 focus-within:ring-4 focus-within:ring-brand/10">
               <Search size={17} />
               <input
                 value={searchQuery}
                 onChange={(event) => { setSearchQuery(event.target.value); setSearchOpen(true); }}
                 onFocus={() => { if (searchQuery.trim().length >= 2) setSearchOpen(true); }}
                 onKeyDown={handleSearchKeyDown}
-                className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-400"
-                placeholder="Поиск по CRM"
+                name="global-search"
+                autoComplete="off"
+                className="min-w-0 flex-1 bg-transparent placeholder:text-slate-400 focus:outline-none"
+                placeholder="Поиск по CRM…"
                 aria-label="Поиск по CRM"
                 role="combobox"
                 aria-expanded={searchOpen}
@@ -169,7 +171,7 @@ export default function Topbar({ onMenuClick }) {
               />
             </label>
             {searchOpen && searchQuery.trim().length >= 2 && (
-              <div id="global-search-results" className="absolute right-0 top-full z-50 mt-2 max-h-[min(70vh,34rem)] w-full min-w-[22rem] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl">
+              <div id="global-search-results" className="absolute right-0 top-full z-50 mt-2 max-h-[min(70vh,34rem)] w-full min-w-[22rem] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-soft">
                 {searchState === 'loading' && <p className="px-3 py-5 text-center text-sm text-slate-500">Поиск…</p>}
                 {searchState === 'error' && <p className="px-3 py-5 text-center text-sm text-red-600">Не удалось выполнить поиск</p>}
                 {searchState === 'success' && results.length === 0 && <p className="px-3 py-5 text-center text-sm text-slate-500">Ничего не найдено</p>}
@@ -182,7 +184,7 @@ export default function Topbar({ onMenuClick }) {
                       type="button"
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => openResult(result)}
-                      className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition ${activeIndex === index ? 'bg-brand/10' : 'hover:bg-slate-50'}`}
+                      className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 ${activeIndex === index ? 'bg-brand/10' : 'hover:bg-slate-50'}`}
                     >
                       <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-brand"><Icon size={18} /></span>
                       <span className="min-w-0 flex-1">

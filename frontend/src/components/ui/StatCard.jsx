@@ -8,14 +8,14 @@ export default function StatCard({ title, value, icon: Icon, tone = 'brand' }) {
   };
 
   return (
-    <div className="rounded-[22px] border border-slate-100 bg-white p-5 shadow-card transition hover:-translate-y-0.5 hover:shadow-soft">
+    <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-card transition-[border-color,box-shadow] duration-150 hover:border-brand/15">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm font-medium text-slate-500">{title}</p>
-          <p className="mt-2 text-2xl font-bold text-slate-900">{value ?? 0}</p>
+          <p className="mt-2 truncate text-2xl font-semibold text-slate-900">{value ?? 0}</p>
         </div>
         {Icon && (
-          <div className={`grid h-12 w-12 place-items-center rounded-2xl ${tones[tone]}`}>
+          <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${tones[tone]}`}>
             <Icon size={20} />
           </div>
         )}

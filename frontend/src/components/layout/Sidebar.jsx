@@ -56,6 +56,13 @@ export const navItems = [
 
 const groupOrder = ['Основное', 'Продажи', 'Обучение', 'Управление', 'Администрирование'];
 
+const roleLabels = {
+  admin: 'Администратор',
+  manager: 'Менеджер',
+  teacher: 'Преподаватель',
+  accountant: 'Бухгалтер',
+};
+
 export default function Sidebar({ open = false, onNavigate }) {
   const user = getStoredUser();
   const [unreadLeads, setUnreadLeads] = useState(0);
@@ -86,10 +93,10 @@ export default function Sidebar({ open = false, onNavigate }) {
         open ? 'translate-x-0' : '-translate-x-full'
       }`}
     >
-      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[24px] border border-white/70 bg-white shadow-soft">
-        <div className="shrink-0 border-b border-slate-100 px-5 py-5">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-white/70 bg-white shadow-soft">
+        <div className="shrink-0 border-b border-slate-100 px-5 py-4">
           <div className="flex items-center gap-3">
-            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-brand text-white shadow-md shadow-brand/25">
+            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-brand text-white shadow-sm shadow-brand/20">
               <BarChart3 size={23} />
             </div>
             <div className="min-w-0">
@@ -102,7 +109,7 @@ export default function Sidebar({ open = false, onNavigate }) {
         <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-3 scrollbar-thin">
           {groupedItems.map(({ group, items }) => (
             <div key={group} className="mb-4 last:mb-0">
-              <p className="mb-1.5 px-3 text-[11px] font-bold uppercase tracking-wide text-slate-400">{group}</p>
+              <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{group}</p>
               <div className="grid gap-1.5">
                 {items.map(({ to, label, icon: Icon }) => (
                   <NavLink
@@ -110,17 +117,17 @@ export default function Sidebar({ open = false, onNavigate }) {
                     to={to}
                     onClick={onNavigate}
                     className={({ isActive }) =>
-                      `flex min-w-0 items-center gap-3 rounded-2xl px-3.5 py-3 text-sm font-semibold transition ${
+                      `relative flex min-w-0 items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 ${
                         isActive
-                          ? 'bg-brand text-white shadow-md shadow-brand/20'
-                          : 'text-slate-600 hover:bg-brand/5 hover:text-brand'
+                          ? 'bg-brand/10 text-brand shadow-none before:absolute before:left-1 before:top-2 before:h-[calc(100%-1rem)] before:w-1 before:rounded-full before:bg-brand'
+                          : 'text-slate-600 hover:bg-slate-50 hover:text-brand'
                       }`
                     }
                   >
                     <Icon size={18} className="shrink-0" />
                     <span className="min-w-0 truncate whitespace-nowrap">{label}</span>
                     {to === '/leads' && unreadLeads > 0 && (
-                      <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[11px] font-black text-white">{unreadLeads}</span>
+                      <span className="ml-auto rounded-full bg-red-500 px-2 py-0.5 text-[11px] font-bold text-white">{unreadLeads}</span>
                     )}
                   </NavLink>
                 ))}

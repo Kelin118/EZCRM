@@ -257,8 +257,8 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
   return (
     <KanbanCard draggable={canEdit} dragHandleLabel="Перетащить МК" {...dragProps}>
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-slate-900">{clientName}</p>
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-slate-900">{clientName}</p>
           {clientInfo && <p className="mt-1 text-xs font-medium text-slate-500">{clientInfo}</p>}
         </div>
         <div className="grid justify-items-end gap-1">
@@ -280,7 +280,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Мастер</dt><dd className="text-right font-medium">{leadName}{assistantNames.length ? ` +${assistantNames.length}` : ''}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплачено</dt><dd className="text-right font-semibold text-brand">{money(item.paid_total ?? item.payment_amount)} / {money(item.amount_due ?? item.price)}</dd></div>
       </dl>
-      {item.description && <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
+      {item.description && <p className="mt-3 line-clamp-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
       {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
     </KanbanCard>
   );

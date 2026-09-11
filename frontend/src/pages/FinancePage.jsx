@@ -54,6 +54,7 @@ export default function FinancePage() {
   const [addonSaleOpen, setAddonSaleOpen] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState([]);
   const [receiptViewer, setReceiptViewer] = useState({ open: false, transaction: null });
+  const [transactionSaving, setTransactionSaving] = useState(false);
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
@@ -149,7 +150,7 @@ export default function FinancePage() {
       dispatchError('Сумма оплат по способам должна совпадать с суммой операции.');
       return;
     }
-    crud.setSaving?.(true);
+    setTransactionSaving(true);
     try {
       const payload = normalizePayload({ ...form, payment_parts: paymentPartsPayload(form.payment_parts) });
       delete payload.attachments;
@@ -173,6 +174,8 @@ export default function FinancePage() {
       await refreshFinance();
     } catch (error) {
       dispatchError(error.response?.data?.detail || 'Не удалось сохранить финансовую операцию.');
+    } finally {
+      setTransactionSaving(false);
     }
   };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
@@ -271,7 +274,7 @@ export default function FinancePage() {
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit && !row.master_class_payment_id} canDelete={canDelete && !row.master_class_payment_id} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
-      <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={crud.saving} onSubmit={saveTransaction} />
+      <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={transactionSaving} onSubmit={saveTransaction} />
       <Modal
         title="Чеки"
         open={receiptViewer.open}

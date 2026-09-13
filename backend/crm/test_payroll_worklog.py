@@ -262,6 +262,78 @@ class PayrollWorklogApiTests(APITestCase):
         self.assertEqual(statement.status, PayrollStatement.Status.PAID)
         self.assertEqual(statement.outside_master_class_count, 1)
 
+    def test_payroll_generate_accepts_admin_and_accountant_frontend_payload(self):
+        payload = {
+            'date_from': '2026-08-17',
+            'date_to': '2026-08-17',
+            'branch': 'all',
+            'employee': self.teacher.id,
+            'status': '',
+        }
+
+        for user in (self.admin, self.accountant):
+            with self.subTest(user=user.username):
+                self.client.force_authenticate(user)
+                response = self.client.post('/api/payroll/generate/', payload, format='json')
+
+                self.assertEqual(response.status_code, 201, response.data)
+                self.assertEqual(len(response.data), 1)
+                self.assertEqual(response.data[0]['employee'], self.teacher.id)
+
+    def test_manager_cannot_generate_payroll(self):
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/payroll/generate/', {
+            'date_from': '2026-08-17',
+            'date_to': '2026-08-17',
+            'employee': self.teacher.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_payroll_generate_rejects_invalid_period(self):
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post('/api/payroll/generate/', {
+            'date_from': '2026-08-18',
+            'date_to': '2026-08-17',
+            'employee': self.teacher.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_payroll_generate_selected_employee_only_and_no_duplicates(self):
+        self.client.force_authenticate(self.accountant)
+        payload = {'date_from': '2026-08-17', 'date_to': '2026-08-17', 'employee': self.teacher.id}
+
+        first = self.client.post('/api/payroll/generate/', payload, format='json')
+        second = self.client.post('/api/payroll/generate/', payload, format='json')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(len(first.data), 1)
+        self.assertEqual(first.data[0]['id'], second.data[0]['id'])
+        self.assertEqual(PayrollStatement.objects.filter(employee=self.teacher, date_from=date(2026, 8, 17), date_to=date(2026, 8, 17)).count(), 1)
+        self.assertFalse(PayrollStatement.objects.filter(employee=self.assistant, date_from=date(2026, 8, 17), date_to=date(2026, 8, 17)).exists())
+
+    def test_payroll_generate_does_not_overwrite_approved_statement(self):
+        self.create_mc(aware_dt(2026, 8, 17, 16), duration=60)
+        self.client.force_authenticate(self.accountant)
+        generated = self.client.post('/api/payroll/generate/', {'date_from': '2026-08-17', 'date_to': '2026-08-17', 'employee': self.teacher.id}, format='json')
+        statement_id = generated.data[0]['id']
+        approved = self.client.post(f'/api/payroll/{statement_id}/approve/')
+        self.create_mc(aware_dt(2026, 8, 17, 17), duration=60)
+
+        regenerated = self.client.post('/api/payroll/generate/', {'date_from': '2026-08-17', 'date_to': '2026-08-17', 'employee': self.teacher.id}, format='json')
+        statement = PayrollStatement.objects.get(pk=statement_id)
+
+        self.assertEqual(generated.status_code, 201, generated.data)
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(regenerated.status_code, 201, regenerated.data)
+        self.assertEqual(regenerated.data[0]['id'], statement_id)
+        self.assertEqual(statement.status, PayrollStatement.Status.APPROVED)
+        self.assertEqual(statement.regular_minutes, 60)
+
     def test_payroll_bonus_counts_manual_extra_work_only(self):
         self.create_mc(aware_dt(2026, 8, 17, 15, 30), duration=60, is_extra_work=False)
         marked_inside = self.create_mc(aware_dt(2026, 8, 17, 18, 0), duration=60, is_extra_work=True)

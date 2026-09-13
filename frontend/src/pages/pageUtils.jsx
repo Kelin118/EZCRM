@@ -187,7 +187,7 @@ export function showApiError(error) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: getApiErrorMessage(error) }));
 }
 
-export function PageHeader({ title, description, actionLabel, onAction, secondaryActions, tabs, children }) {
+export function PageHeader({ title, description, actionLabel, onAction, actionDisabled = false, secondaryActions, tabs, children }) {
   return (
     <div className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
       <div className="min-w-0">
@@ -200,7 +200,7 @@ export function PageHeader({ title, description, actionLabel, onAction, secondar
         <div className="flex flex-wrap gap-2 md:justify-end">
           {secondaryActions}
           {onAction && (
-            <Button onClick={onAction}>
+            <Button onClick={onAction} disabled={actionDisabled}>
               <Plus size={17} aria-hidden="true" />
               {actionLabel}
             </Button>

@@ -9,8 +9,14 @@ import { Badge, Filters, Input, money, PageHeader, SelectField, showApiError, Ta
 import { useEmployeeOptions } from './lookupUtils.jsx';
 
 const today = new Date();
-const monthStart = () => new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-const monthEnd = () => new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+const dateInputValue = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const monthStart = () => dateInputValue(new Date(today.getFullYear(), today.getMonth(), 1));
+const monthEnd = () => dateInputValue(new Date(today.getFullYear(), today.getMonth() + 1, 0));
 const minutes = (value) => `${Math.floor(Number(value || 0) / 60)} ч ${Number(value || 0) % 60} мин`;
 const emptyPay = { payment_method: '', payment_parts: [] };
 
@@ -20,6 +26,7 @@ export default function PayrollPage() {
   const [details, setDetails] = useState(null);
   const [payTarget, setPayTarget] = useState(null);
   const [payForm, setPayForm] = useState(emptyPay);
+  const [generating, setGenerating] = useState(false);
   const { branchFilterOptions } = useBranches();
   const { employeeOptions } = useEmployeeOptions(['admin', 'manager', 'teacher', 'accountant']);
 
@@ -31,11 +38,25 @@ export default function PayrollPage() {
   useEffect(() => { load().catch(showApiError); }, [filters]);
 
   const generate = async () => {
+    if (generating) return;
+    if (!filters.date_from || !filters.date_to || filters.date_to < filters.date_from) {
+      window.dispatchEvent(new CustomEvent('api-error', { detail: 'Укажите корректный период.' }));
+      return;
+    }
+    const payload = {
+      date_from: filters.date_from,
+      date_to: filters.date_to,
+      branch: filters.branch || 'all',
+      ...(filters.employee ? { employee: filters.employee } : {}),
+    };
     try {
-      await api.post('payroll/generate/', filters);
+      setGenerating(true);
+      await api.post('payroll/generate/', payload);
       await load();
     } catch (error) {
       showApiError(error);
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -60,7 +81,7 @@ export default function PayrollPage() {
 
   return (
     <>
-      <PageHeader title="Зарплата" actionLabel="Рассчитать зарплату" onAction={generate} />
+      <PageHeader title="Зарплата" actionLabel={generating ? 'Рассчитываем...' : 'Рассчитать зарплату'} onAction={generate} actionDisabled={generating} />
       <Filters>
         <Input label="Дата от" type="date" value={filters.date_from} onChange={(event) => setFilters({ ...filters, date_from: event.target.value })} />
         <Input label="Дата до" type="date" value={filters.date_to} onChange={(event) => setFilters({ ...filters, date_to: event.target.value })} />

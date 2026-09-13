@@ -24,6 +24,7 @@ from .models import (
     LeadMessage,
     MasterClass,
     MasterClassPayment,
+    MasterClassSubject,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -95,6 +96,13 @@ class SubjectAdmin(admin.ModelAdmin):
     search_fields = ('name', 'description')
 
 
+@admin.register(MasterClassSubject)
+class MasterClassSubjectAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active', 'sort_order', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'description')
+
+
 @admin.register(Room)
 class RoomAdmin(admin.ModelAdmin):
     list_display = ('name', 'capacity', 'is_active')
@@ -146,9 +154,9 @@ class TrialAdmin(admin.ModelAdmin):
 
 @admin.register(MasterClass)
 class MasterClassAdmin(admin.ModelAdmin):
-    list_display = ('title', 'teacher', 'starts_at', 'capacity', 'price')
-    list_filter = ('starts_at',)
-    search_fields = ('title',)
+    list_display = ('title', 'subject', 'teacher', 'starts_at', 'capacity', 'price')
+    list_filter = ('starts_at', 'subject')
+    search_fields = ('title', 'subject__name')
 
 
 @admin.register(MasterClassPayment)

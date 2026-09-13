@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 from django.utils import timezone
+from django.db.models.functions import Lower, Trim
 
 from .group_schedule import (
     DAY_TO_WEEKDAY,
@@ -42,6 +43,7 @@ from .models import (
     MasterClass,
     MasterClassPayment,
     MasterClassStaffAssignment,
+    MasterClassSubject,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -234,6 +236,25 @@ class SubjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Subject
         fields = '__all__'
+
+
+class MasterClassSubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MasterClassSubject
+        fields = '__all__'
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('Укажите название предмета МК.')
+        queryset = MasterClassSubject.objects.annotate(
+            normalized_name=Lower(Trim('name')),
+        ).filter(normalized_name=name.lower())
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError('Предмет МК с таким названием уже существует.')
+        return name
 
 
 class RoomSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -1069,6 +1090,7 @@ class MasterClassPaymentSerializer(serializers.ModelSerializer):
 
 
 class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
+    subject_name = serializers.CharField(source='subject.name', read_only=True, default='')
     client_name = serializers.SerializerMethodField()
     client_display_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
@@ -1093,6 +1115,11 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = MasterClass
         fields = '__all__'
         read_only_fields = ('payment_amount', 'payment_date', 'finance_transaction')
+
+    def validate_subject(self, value):
+        if value and not value.is_active:
+            raise serializers.ValidationError('Выберите активный предмет МК.')
+        return value
 
     def _sync_staff_assignments(self, master_class, assignments, explicit):
         if explicit:
@@ -1285,7 +1312,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             attrs['price'] = price
         branch = attrs.get('branch', self.instance.branch if self.instance else None)
         client = attrs.get('client', self.instance.participants.first() if self.instance else None)
+        subject = attrs.get('subject', self.instance.subject if self.instance else None)
+        if subject:
+            attrs['title'] = subject.name
         if self.instance is None:
+            if not subject:
+                raise serializers.ValidationError({'subject': 'Выберите предмет МК.'})
             if not str(attrs.get('title') or '').strip():
                 raise serializers.ValidationError({'title': 'Укажите название МК.'})
             if not client:
@@ -1293,6 +1325,8 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             resolve_required_branch(attrs, self.instance, client=client)
             resolve_responsible_manager(attrs, self.instance, client=client, request=self.context.get('request'))
             branch = attrs.get('branch')
+        elif not subject:
+            raise serializers.ValidationError({'subject': 'Выберите предмет МК.'})
         elif not branch:
             branch = resolve_required_branch(attrs, self.instance, client=client)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
@@ -1879,7 +1913,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
 
     def get_master_class_title(self, obj):
         item = self._master_class(obj)
-        return item.title if item else ''
+        return item.display_title if item else ''
 
     def get_master_class_teacher(self, obj):
         item = self._master_class(obj)

@@ -80,6 +80,7 @@ from .models import (
     MasterClass,
     MasterClassPayment,
     MasterClassStaffAssignment,
+    MasterClassSubject,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -152,6 +153,7 @@ from .serializers import (
     LeadMessageSerializer,
     MasterClassPaymentSerializer,
     MasterClassSerializer,
+    MasterClassSubjectSerializer,
     MessagingChannelSerializer,
     MetaWebhookEventSerializer,
     PaymentMethodSerializer,
@@ -370,7 +372,8 @@ def _master_class_payment_type_name(payment_type):
 
 def _master_class_payment_comment(master_class, payment_type, comment=''):
     prefix = f'{_master_class_payment_type_name(payment_type)} МК'
-    title = f': {master_class.title}' if master_class.title else ''
+    title_text = master_class.display_title
+    title = f': {title_text}' if title_text else ''
     suffix = f' · {comment}' if comment else ''
     return f'{prefix}{title}{suffix}'
 
@@ -845,6 +848,32 @@ class SubjectViewSet(EducationBaseViewSet):
         return queryset.order_by('name')
 
 
+class MasterClassSubjectViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, SettingsPermission)
+    queryset = MasterClassSubject.objects.all()
+    serializer_class = MasterClassSubjectSerializer
+    audit_entity_type = 'MasterClassSubject'
+    audit_create_description = 'Создан предмет МК'
+    audit_update_description = 'Изменён предмет МК'
+    delete_audit_description = 'Удалён предмет МК'
+    delete_blocked_detail = 'Предмет используется в мастер-классах. Отключите его вместо удаления.'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        is_active = self.request.query_params.get('is_active')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(description__icontains=search))
+        if is_active in ('1', 'true', 'True', 'yes'):
+            queryset = queryset.filter(is_active=True)
+        elif is_active in ('0', 'false', 'False', 'no'):
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by('sort_order', 'name')
+
+    def get_delete_usage(self, instance):
+        return {'master_classes': instance.master_classes.count()}
+
+
 class RoomViewSet(EducationBaseViewSet):
     queryset = Room.objects.all()
     serializer_class = RoomSerializer
@@ -1222,7 +1251,7 @@ class GlobalSearchView(APIView):
             for task in tasks:
                 results.append(_result('task', task, task.title, _client_name(task.client), f'/tasks?task={task.id}'))
 
-        master_classes = _search_branch(MasterClass.objects.prefetch_related('participants'), request)
+        master_classes = _search_branch(MasterClass.objects.select_related('subject').prefetch_related('participants'), request)
         if teacher_only:
             master_classes = master_classes.filter(teacher=user)
         master_classes = master_classes.filter(
@@ -1231,7 +1260,7 @@ class GlobalSearchView(APIView):
         ).distinct()[:self.result_limit]
         for master_class in master_classes:
             participants = ', '.join(str(item) for item in master_class.participants.all()[:2])
-            results.append(_result('master_class', master_class, master_class.title, participants, f'/master-classes?master_class={master_class.id}'))
+            results.append(_result('master_class', master_class, master_class.display_title, participants, f'/master-classes?master_class={master_class.id}'))
 
         if has_any_role(user, {MANAGER, ACCOUNTANT}) or is_admin(user):
             finance = _search_branch(FinanceTransaction.objects.select_related('client'), request)
@@ -2492,7 +2521,7 @@ def _parse_master_class_starts_at(value):
 
 class MasterClassViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, MasterClassPermission)
-    queryset = MasterClass.objects.select_related('branch', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related(
+    queryset = MasterClass.objects.select_related('branch', 'subject', 'manager', 'teacher', 'discount', 'finance_transaction').prefetch_related(
         'participants',
         'staff_assignments__employee',
         'payments__accepted_by',
@@ -5210,7 +5239,7 @@ class MasterClassesExportView(BaseExportView):
     description = 'Экспорт МК'
 
     def get(self, request):
-        queryset = MasterClass.objects.select_related('manager', 'teacher').prefetch_related('participants').all()
+        queryset = MasterClass.objects.select_related('manager', 'teacher', 'subject').prefetch_related('participants').all()
         queryset = _filter_period(queryset, 'starts_at__date', request)
         status_value = request.query_params.get('status')
         manager = request.query_params.get('manager')

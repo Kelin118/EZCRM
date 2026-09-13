@@ -21,6 +21,7 @@ const tabs = [
   { key: 'finance', label: 'Финансы', roles: [ROLES.ADMIN, ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { key: 'tasks', label: 'Задачи', roles: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TEACHER] },
 ];
+const masterClassTitle = (item = {}) => item.subject_name || item.title || '';
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const paymentTypeLabels = { prepayment: 'Предоплата', additional: 'Доплата', legacy: 'Ранее внесена' };
 const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Частично', paid: 'Оплачено', overpaid: 'Переплата' };
@@ -183,7 +184,7 @@ export default function ClientDetailPage() {
       >
         <div className="grid gap-4">
           <div className="rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-700">
-            <p>{paymentModal.masterClass?.title || 'МК'}</p>
+            <p>{masterClassTitle(paymentModal.masterClass) || 'МК'}</p>
             <p className="mt-1 text-slate-500">Остаток: {money(paymentModal.masterClass?.remaining_amount)}</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
@@ -243,7 +244,7 @@ function renderTab(activeTab, data, actions = {}) {
   }
   if (activeTab === 'masterClasses') {
     return <Table data={data.masterClasses} columns={[
-      { key: 'title', header: 'Название' },
+      { key: 'subject_name', header: 'Название', render: (row) => masterClassTitle(row) || '—' },
       { key: 'starts_at', header: 'Дата', render: (row) => row.starts_at ? new Date(row.starts_at).toLocaleString('ru-RU') : '—' },
       { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage} /> },
       { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
@@ -258,7 +259,7 @@ function renderTab(activeTab, data, actions = {}) {
             <section key={item.id} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="font-bold text-slate-900">{item.title}</p>
+                  <p className="font-bold text-slate-900">{masterClassTitle(item)}</p>
                   <p className="mt-1 text-sm font-semibold text-slate-500">{item.starts_at ? new Date(item.starts_at).toLocaleString('ru-RU') : 'Дата не указана'} · {item.branch_name || 'Филиал не указан'}</p>
                 </div>
                 <div className="grid gap-1 text-sm font-semibold text-slate-700 sm:text-right">

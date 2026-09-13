@@ -6,7 +6,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, MasterClassPayment, MasterClassStaffAssignment, PaymentMethod
+from .models import Branch, Client, FinancePaymentPart, FinanceTransaction, MasterClass, MasterClassPayment, MasterClassStaffAssignment, MasterClassSubject, PaymentMethod
 
 
 def aware_dt(year, month, day, hour=0, minute=0):
@@ -414,8 +414,13 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
 
     def post_master_class(self, title='Рисование', client=None, starts_at='2026-08-17T16:00', is_extra_work=False, teacher='default', duration_minutes=60, staff_assignments=None):
         self.client.force_authenticate(self.manager)
+        subject_name = str(title or '').strip()
+        subject = MasterClassSubject.objects.filter(name__iexact=subject_name).first()
+        if not subject:
+            subject = MasterClassSubject.objects.create(name=subject_name)
         payload = {
-            'title': title,
+            'title': 'Fake title',
+            'subject': subject.id,
             'client': (client or self.client_obj).id,
             'starts_at': starts_at,
             'manager': self.manager.id,
@@ -694,6 +699,8 @@ class MasterClassFiltersAndDuplicateTests(APITestCase):
         self.client.force_authenticate(self.manager)
 
         response = self.client.patch(f"/api/master-classes/{second.data['id']}/", {'title': 'рисование'}, format='json')
+
+        response = self.client.patch(f"/api/master-classes/{second.data['id']}/", {'subject': first.data['subject']}, format='json')
 
         self.assertEqual(first.status_code, 201)
         self.assertEqual(response.status_code, 400)

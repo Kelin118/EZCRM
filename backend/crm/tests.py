@@ -45,6 +45,7 @@ from .models import (
     LeadMessage,
     MasterClass,
     MasterClassPayment,
+    MasterClassSubject,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -2886,6 +2887,7 @@ class AdminApiSmokeTests(APITestCase):
             '/api/visits/',
             '/api/trials/',
             '/api/master-classes/',
+            '/api/master-class-subjects/',
             '/api/tasks/',
             '/api/finance/',
             '/api/dashboard/stats/',
@@ -4149,6 +4151,93 @@ class MasterClassClientDisplayTests(APITestCase):
         self.assertNotIn(other.id, {item['id'] for item in by_name.data})
 
 
+class MasterClassSubjectApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='mc-subject-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='mc-subject-manager', password='pass', role='manager', roles=['manager'])
+        self.client.force_authenticate(self.admin)
+        self.branch = Branch.objects.create(name='МК subjects branch')
+        self.student = Client.objects.create(first_name='Subject', last_name='Student', branch=self.branch)
+
+    def create_subject(self, name='Рисование', **overrides):
+        data = {'name': name, 'description': '', 'is_active': True, 'sort_order': 0}
+        data.update(overrides)
+        response = self.client.post('/api/master-class-subjects/', data, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        return response
+
+    def master_class_payload(self, subject=None, **overrides):
+        data = {
+            'subject': subject,
+            'title': 'Произвольное название',
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'starts_at': timezone.now().isoformat(),
+            'price': '9000.00',
+        }
+        data.update(overrides)
+        return data
+
+    def test_subject_create_duplicate_filter_and_delete_rules(self):
+        subject = self.create_subject(' Рисование ').data
+        duplicate = self.client.post('/api/master-class-subjects/', {'name': 'РИСОВАНИЕ'}, format='json')
+        self.assertEqual(duplicate.status_code, 400)
+
+        inactive = self.create_subject('Лепка', is_active=False).data
+        active_response = self.client.get('/api/master-class-subjects/', {'is_active': 'true'})
+        active_items = active_response.data if isinstance(active_response.data, list) else active_response.data.get('results', [])
+        active_ids = {item['id'] for item in active_items}
+        self.assertIn(subject['id'], active_ids)
+        self.assertNotIn(inactive['id'], active_ids)
+
+        unused_delete = self.client.delete(f"/api/master-class-subjects/{inactive['id']}/")
+        self.assertEqual(unused_delete.status_code, 204)
+
+        create = self.client.post('/api/master-classes/', self.master_class_payload(subject=subject['id']), format='json')
+        self.assertEqual(create.status_code, 201, create.data)
+        used_delete = self.client.delete(f"/api/master-class-subjects/{subject['id']}/")
+        self.assertEqual(used_delete.status_code, 409)
+        self.assertEqual(used_delete.data['usage']['master_classes'], 1)
+        self.assertTrue(used_delete.data['can_disable'])
+
+    def test_subject_required_title_snapshot_and_legacy_read(self):
+        missing = self.client.post('/api/master-classes/', self.master_class_payload(subject=None), format='json')
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn('subject', missing.data)
+
+        first = self.create_subject('Робототехника').data
+        second = self.create_subject('Python').data
+        create = self.client.post('/api/master-classes/', self.master_class_payload(subject=first['id'], title='Fake ignored'), format='json')
+        self.assertEqual(create.status_code, 201, create.data)
+        self.assertEqual(create.data['subject'], first['id'])
+        self.assertEqual(create.data['subject_name'], 'Робототехника')
+        self.assertEqual(create.data['title'], 'Робототехника')
+
+        patch = self.client.patch(f"/api/master-classes/{create.data['id']}/", {'subject': second['id']}, format='json')
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertEqual(patch.data['subject_name'], 'Python')
+        self.assertEqual(patch.data['title'], 'Python')
+
+        legacy = MasterClass.objects.create(
+            title='Старый МК',
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            price='5000.00',
+        )
+        legacy.participants.add(self.student)
+        detail = self.client.get(f'/api/master-classes/{legacy.id}/')
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertIsNone(detail.data['subject'])
+        self.assertEqual(detail.data['title'], 'Старый МК')
+
+        blocked = self.client.patch(f'/api/master-classes/{legacy.id}/', {'price': '6000.00'}, format='json')
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn('subject', blocked.data)
+
+
 class MasterClassFinanceSyncTests(APITestCase):
     def setUp(self):
         User = get_user_model()
@@ -4163,10 +4252,18 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.card = PaymentMethod.objects.create(name='МК card', code='mc_card')
         self.discount = Discount.objects.create(name='МК 10%', discount_type=Discount.Type.PERCENTAGE, value=10)
         self.fixed_discount = Discount.objects.create(name='МК fixed', discount_type=Discount.Type.FIXED, value=2000)
+        self.master_class_subject = MasterClassSubject.objects.create(name='МК Python')
 
     def payload(self, **overrides):
+        subject = self.master_class_subject
+        if 'title' in overrides and 'subject' not in overrides:
+            subject_name = str(overrides['title'] or '').strip()
+            subject = MasterClassSubject.objects.filter(name__iexact=subject_name).first()
+            if not subject:
+                subject = MasterClassSubject.objects.create(name=subject_name)
         data = {
-            'title': 'МК Python',
+            'title': 'Fake title',
+            'subject': subject.id,
             'client': self.student.id,
             'branch': self.branch.id,
             'starts_at': timezone.now().isoformat(),
@@ -5702,13 +5799,16 @@ class OperationalBacklogApiTests(APITestCase):
 
     def test_master_class_bulk_create_allows_same_day_different_titles_and_rolls_back_duplicate(self):
         starts_at = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        robots = MasterClassSubject.objects.create(name='МК Роботы')
+        python = MasterClassSubject.objects.create(name='МК Python')
+        scratch = MasterClassSubject.objects.create(name='МК Scratch')
         response = self.client.post('/api/master-classes/bulk-create/', {
             'client': self.student.id,
             'branch': self.branch.id,
             'manager': self.manager.id,
             'items': [
-                {'title': 'МК Роботы', 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
-                {'title': 'МК Python', 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '6000.00'},
+                {'subject': robots.id, 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
+                {'subject': python.id, 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '6000.00'},
             ],
         }, format='json')
 
@@ -5720,8 +5820,8 @@ class OperationalBacklogApiTests(APITestCase):
             'branch': self.branch.id,
             'manager': self.manager.id,
             'items': [
-                {'title': 'МК Scratch', 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
-                {'title': 'МК Scratch', 'starts_at': (starts_at + timedelta(hours=2)).isoformat(), 'price': '6000.00'},
+                {'subject': scratch.id, 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
+                {'subject': scratch.id, 'starts_at': (starts_at + timedelta(hours=2)).isoformat(), 'price': '6000.00'},
             ],
         }, format='json')
 

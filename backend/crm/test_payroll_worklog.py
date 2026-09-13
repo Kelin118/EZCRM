@@ -19,6 +19,7 @@ from .models import (
     MasterClass,
     MasterClassPayment,
     MasterClassStaffAssignment,
+    MasterClassSubject,
     PaymentMethod,
     PayrollStatement,
     StudyGroup,
@@ -41,6 +42,7 @@ class PayrollWorklogApiTests(APITestCase):
         self.other_teacher = User.objects.create_user(username='pay-teacher-2', password='pass', role='teacher', roles=['teacher'])
         self.assistant = User.objects.create_user(username='pay-assistant', password='pass', role='teacher', roles=['teacher'])
         self.branch = Branch.objects.create(name='Payroll Branch')
+        self.master_class_subject = MasterClassSubject.objects.create(name='МК')
         self.cash = PaymentMethod.objects.create(name='Payroll cash', code='payroll_cash', is_cash=True)
         self.client_obj = Client.objects.create(first_name='Payroll', last_name='Client', manager=self.manager, branch=self.branch)
         EmployeeWorkSchedule.objects.create(employee=self.teacher, branch=self.branch, weekday=0, start_time=time(16), end_time=time(21), valid_from=date(2026, 8, 1))
@@ -115,6 +117,7 @@ class PayrollWorklogApiTests(APITestCase):
     def test_master_class_finance_inherits_manager_and_outside_filter_works(self):
         self.client.force_authenticate(self.manager)
         response = self.client.post('/api/master-classes/', {
+            'subject': self.master_class_subject.id,
             'title': 'МК outside',
             'client': self.client_obj.id,
             'starts_at': '2026-08-17T15:59',

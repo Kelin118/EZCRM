@@ -31,6 +31,7 @@ from .views import (
     LessonViewSet,
     LeadViewSet,
     MasterClassViewSet,
+    MasterClassSubjectViewSet,
     MessagingChannelViewSet,
     MetaEmbeddedSignupCompleteView,
     MetaIntegrationStatusView,
@@ -70,6 +71,7 @@ router.register('schedule-slots', ScheduleSlotViewSet, basename='schedule-slot')
 router.register('lessons', LessonViewSet, basename='lesson')
 router.register('leads', LeadViewSet, basename='lead')
 router.register('trials', TrialViewSet, basename='trial')
+router.register('master-class-subjects', MasterClassSubjectViewSet, basename='master-class-subject')
 router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
 router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')

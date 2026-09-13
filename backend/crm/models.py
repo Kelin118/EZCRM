@@ -4,6 +4,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower, Trim
 from django.utils import timezone
 
 
@@ -222,6 +223,25 @@ class Subject(TimeStampedModel):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
+
+
+class MasterClassSubject(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0, blank=True)
+
+    class Meta:
+        ordering = ('sort_order', 'name')
+        constraints = [
+            models.UniqueConstraint(
+                Lower(Trim('name')),
+                name='unique_master_class_subject_normalized_name',
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -499,6 +519,7 @@ class MasterClass(TimeStampedModel):
         CANCELLED = 'cancelled', 'Cancelled'
 
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
+    subject = models.ForeignKey(MasterClassSubject, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     manager = models.ForeignKey(
@@ -539,6 +560,10 @@ class MasterClass(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+    @property
+    def display_title(self):
+        return self.subject.name if self.subject_id and self.subject else self.title
 
     @staticmethod
     def money(value):

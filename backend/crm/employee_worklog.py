@@ -129,7 +129,7 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
     warnings = 0
 
     if source in ('all', 'master_class'):
-        master_classes = MasterClass.objects.select_related('teacher', 'branch').prefetch_related('participants', 'staff_assignments__employee').filter(
+        master_classes = MasterClass.objects.select_related('teacher', 'branch', 'subject').prefetch_related('participants', 'staff_assignments__employee').filter(
             starts_at__date__gte=date_from,
             starts_at__date__lte=date_to,
         ).exclude(stage__in=EXCLUDED_MASTER_CLASS_STAGES)
@@ -189,7 +189,7 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
                     'is_extra_work': assignment.is_extra_work,
                     'time_outside_regular_hours': is_outside_regular_master_class_hours(item.starts_at),
                     'outside_regular_master_class_hours': assignment.is_extra_work,
-                    'title': item.title,
+                    'title': item.display_title,
                     'warning': warning,
                 })
 

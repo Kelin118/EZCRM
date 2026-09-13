@@ -198,7 +198,7 @@ def export_master_classes(queryset):
             _display_client(client),
             _display_user(item.manager),
             _display_user(item.teacher),
-            item.title,
+            item.display_title,
             item.stage,
             item.stage,
             _datetime(item.starts_at),

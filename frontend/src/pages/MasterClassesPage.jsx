@@ -26,6 +26,7 @@ const masterClassStages = [
 
 const empty = {
   title: '',
+  subject: '',
   client: '',
   description: '',
   manager: '',
@@ -108,6 +109,7 @@ const managerScheduleTones = {
   unknown_start: 'border-slate-200 bg-slate-50 text-slate-600',
 };
 const clientDisplay = (item) => item.client_display_name || item.client_name || item.client?.display_name || item.client?.full_name || 'Не указан';
+const masterClassTitle = (item = {}) => item.subject_name || item.title || '';
 const clientSecondary = (item) => {
   const display = clientDisplay(item);
   if (!item.client_display_name || display === item.client_name) return item.client_phone || '';
@@ -276,7 +278,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name || item.manager)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата МК</dt><dd className="text-right font-medium">{dateTime(item.starts_at)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Длительность</dt><dd className="text-right font-medium">{item.duration_minutes ? `${item.duration_minutes} мин` : 'Не указана'}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(item.title)}</dd></div>
+        <div className="flex justify-between gap-3"><dt className="text-slate-400">Предмет</dt><dd className="text-right font-medium">{dash(masterClassTitle(item))}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Мастер</dt><dd className="text-right font-medium">{leadName}{assistantNames.length ? ` +${assistantNames.length}` : ''}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплачено</dt><dd className="text-right font-semibold text-brand">{money(item.paid_total ?? item.payment_amount)} / {money(item.amount_due ?? item.price)}</dd></div>
       </dl>
@@ -304,6 +306,7 @@ export default function MasterClassesPage() {
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [deletingPaymentId, setDeletingPaymentId] = useState(null);
   const [extraMasterClasses, setExtraMasterClasses] = useState([]);
+  const [masterClassSubjects, setMasterClassSubjects] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -323,6 +326,14 @@ export default function MasterClassesPage() {
   const changeDiscount = (value) => {
     setForm({ ...form, discount: value });
   };
+  const masterClassSubjectOptions = masterClassSubjects.map((subject) => ({ value: subject.id, label: subject.name }));
+  const hasMasterClassSubjects = masterClassSubjectOptions.length > 0;
+
+  useEffect(() => {
+    api.get('master-class-subjects/', { params: { is_active: 'true' } })
+      .then(({ data }) => setMasterClassSubjects(Array.isArray(data) ? data : data.results || []))
+      .catch(() => setMasterClassSubjects([]));
+  }, []);
 
   useEffect(() => {
     const params = { ...crud.filters, outside_regular_hours: 'true', extra_work: 'false' };
@@ -508,7 +519,34 @@ export default function MasterClassesPage() {
         </div>
       ),
     },
-    baseFields[0],
+    {
+      name: 'subject',
+      type: 'custom',
+      className: '',
+      render: (current, update) => (
+        <div className="grid gap-2">
+          <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+            <span className="truncate">Предмет МК *</span>
+            <select
+              value={current.subject || ''}
+              disabled={!hasMasterClassSubjects}
+              onChange={(event) => update({ ...current, subject: event.target.value })}
+              className="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 transition-[border-color,box-shadow,background-color,color] duration-150 hover:border-slate-300 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              <option value="">{hasMasterClassSubjects ? 'Выберите предмет' : 'Нет предметов МК'}</option>
+              {masterClassSubjectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          {!hasMasterClassSubjects && <p className="text-xs font-semibold text-amber-700">Сначала добавьте предметы МК в Настройки.</p>}
+          {current.id && !current.subject && current.title && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+              <p>У этого старого МК предмет не привязан к справочнику.</p>
+              <p className="mt-1">Текущий предмет: {current.title}</p>
+            </div>
+          )}
+        </div>
+      ),
+    },
     { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
     { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Не распределено' }, ...branchOptions] },
     { name: 'discount', type: 'custom', className: '', render: () => <DiscountSelect value={form.discount} onChange={changeDiscount} branch={form.branch} /> },
@@ -526,13 +564,13 @@ export default function MasterClassesPage() {
               <p className="font-black text-slate-900">Несколько МК в один день</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Клиент, филиал и куратор берутся из основной формы.</p>
             </div>
-            <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => [...items, { title: '', starts_at: form.starts_at, duration_minutes: form.duration_minutes, price: form.price }])}>
+            <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => [...items, { subject: form.subject || '', starts_at: form.starts_at, duration_minutes: form.duration_minutes, price: form.price }])}>
               Добавить ещё МК
             </Button>
           </div>
           {extraMasterClasses.map((item, index) => (
             <div key={index} className="grid gap-3 rounded-2xl bg-white p-3 shadow-sm md:grid-cols-4">
-              <Input label="Предмет" value={item.title} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, title: event.target.value } : row))} />
+              <SelectField label="Предмет МК" value={item.subject || ''} onChange={(value) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, subject: value } : row))} options={[{ value: '', label: 'Выберите предмет' }, ...masterClassSubjectOptions]} />
               <Input label="Дата и время" type="datetime-local" value={item.starts_at} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, starts_at: event.target.value } : row))} />
               <Input label="Минут" type="number" value={item.duration_minutes} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, duration_minutes: event.target.value } : row))} />
               <div className="grid gap-2">
@@ -771,6 +809,14 @@ export default function MasterClassesPage() {
       dispatchError('Для дополнительного выхода укажите длительность МК.');
       return;
     }
+    if (!form.subject) {
+      dispatchError('Выберите предмет МК.');
+      return;
+    }
+    if (!form.id && extraMasterClasses.some((item) => !item.subject)) {
+      dispatchError('Выберите предмет МК для каждой строки.');
+      return;
+    }
     if (form.initial_payment_enabled) {
       const initialAmount = Number(form.initial_payment_amount || 0);
       if (initialAmount <= 0) {
@@ -800,6 +846,7 @@ export default function MasterClassesPage() {
         payment_parts: paymentPartsPayload(form.payment_parts),
       });
       [
+        'title',
         'initial_payment_enabled',
         'initial_payment_amount',
         'initial_payment_date',
@@ -832,7 +879,7 @@ export default function MasterClassesPage() {
           payload,
           ...extraMasterClasses.map((item) => normalizePayload({
             ...payload,
-            title: item.title,
+            subject: item.subject,
             starts_at: item.starts_at || form.starts_at,
             duration_minutes: item.duration_minutes || form.duration_minutes,
             price: item.price || form.price,
@@ -920,7 +967,7 @@ export default function MasterClassesPage() {
               {clientSecondary(row) && <p className="text-xs font-medium text-slate-500">{clientSecondary(row)}</p>}
             </div>
           ) },
-          { key: 'title', header: 'Предмет' },
+          { key: 'subject_name', header: 'Предмет', render: (row) => masterClassTitle(row) || '—' },
           { key: 'staff', header: 'Мастера', render: (row) => {
             const { leadName, assistantNames } = staffNames(row);
             return (

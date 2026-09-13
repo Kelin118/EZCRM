@@ -12,6 +12,7 @@ import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
+import { formatDateTimeLocal } from '../utils/dateTime.js';
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -125,8 +126,14 @@ const masterClassColumnId = (item) => {
 
 const isOutsideRegularHours = (value) => {
   if (!value) return false;
-  const date = new Date(value);
-  const minutes = date.getHours() * 60 + date.getMinutes();
+  const text = String(value);
+  const localValue = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(text)
+    ? text
+    : formatDateTimeLocal(value);
+  const timeText = localValue.slice(11, 16);
+  const [hours, minutesValue] = timeText.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutesValue)) return false;
+  const minutes = hours * 60 + minutesValue;
   return minutes < 16 * 60 || minutes >= 21 * 60;
 };
 

@@ -1115,6 +1115,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = MasterClass
         fields = '__all__'
         read_only_fields = ('payment_amount', 'payment_date', 'finance_transaction')
+        extra_kwargs = {'title': {'required': False}}
 
     def validate_subject(self, value):
         if value and not value.is_active:

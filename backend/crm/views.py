@@ -2515,7 +2515,7 @@ def _parse_master_class_starts_at(value):
     else:
         starts_at = parse_datetime(str(value))
     if starts_at and timezone.is_naive(starts_at):
-        starts_at = timezone.make_aware(starts_at)
+        starts_at = timezone.make_aware(starts_at, timezone.get_default_timezone())
     return starts_at
 
 

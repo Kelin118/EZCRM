@@ -23,7 +23,7 @@ MANAGER_WORK_SCHEDULE_LABELS = {
 
 def _aware_datetime(day, value):
     dt = datetime.combine(day, value)
-    return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
+    return timezone.make_aware(dt, timezone.get_default_timezone()) if timezone.is_naive(dt) else dt
 
 
 def _local(value):

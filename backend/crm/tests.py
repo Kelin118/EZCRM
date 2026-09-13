@@ -942,7 +942,7 @@ class DiscountApiAndSalesTests(APITestCase):
         self.assertEqual(transaction.discount_name, 'Скидка 10%')
         self.assertEqual(transaction.discount_amount, Decimal('6000.00'))
         self.assertEqual(transaction.amount, Decimal('54000.00'))
-        self.assertEqual(transaction.paid_at.date(), timezone.localdate())
+        self.assertEqual(timezone.localtime(transaction.paid_at).date(), timezone.localdate())
 
     def test_subscription_percentage_discount_stores_exact_snapshot(self):
         self.service.price = Decimal('30000.00')

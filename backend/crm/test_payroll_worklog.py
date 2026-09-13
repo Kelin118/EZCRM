@@ -33,7 +33,7 @@ def aware_dt(year, month, day, hour=0, minute=0):
 
 class PayrollWorklogApiTests(APITestCase):
     def setUp(self):
-        timezone.activate('Asia/Qyzylorda')
+        timezone.activate('Asia/Almaty')
         User = get_user_model()
         self.admin = User.objects.create_user(username='pay-admin', password='pass', role='admin', roles=['admin'])
         self.accountant = User.objects.create_user(username='pay-accountant', password='pass', role='accountant', roles=['accountant'])
@@ -209,6 +209,29 @@ class PayrollWorklogApiTests(APITestCase):
         self.assertEqual(by_employee[self.teacher.id]['outside_minutes'], 0)
         self.assertEqual(by_employee[self.assistant.id]['regular_minutes'], 60)
         self.assertEqual(by_employee[self.assistant.id]['outside_minutes'], 60)
+
+    def test_worklog_uses_business_timezone_for_persisted_utc_master_class(self):
+        EmployeeWorkSchedule.objects.create(
+            employee=self.teacher,
+            branch=self.branch,
+            weekday=6,
+            start_time=time(16),
+            end_time=time(21),
+            valid_from=date(2026, 9, 1),
+        )
+        self.create_mc(datetime(2026, 9, 13, 11, 59, tzinfo=datetime_timezone.utc), duration=60)
+
+        data = build_employee_worklog(
+            date_from=date(2026, 9, 13),
+            date_to=date(2026, 9, 13),
+            employee=self.teacher.id,
+            include_future=True,
+        )
+        entry = data['entries'][0]
+
+        self.assertEqual(entry['regular_minutes'], 60)
+        self.assertEqual(entry['outside_minutes'], 0)
+        self.assertFalse(entry['time_outside_regular_hours'])
 
     def test_worklog_missing_master_class_duration_warns_per_assignment(self):
         item = self.create_mc(aware_dt(2026, 8, 17, 18), duration=None)
@@ -404,7 +427,7 @@ class PayrollWorklogApiTests(APITestCase):
 
 class MasterClassManagerScheduleContextTests(APITestCase):
     def setUp(self):
-        timezone.activate('Asia/Qyzylorda')
+        timezone.activate('Asia/Almaty')
         User = get_user_model()
         self.admin = User.objects.create_user(username='mc-schedule-admin', password='pass', role='admin', roles=['admin'])
         self.manager = User.objects.create_user(username='mc-schedule-manager', password='pass', role='manager', roles=['manager'])
@@ -598,6 +621,55 @@ class MasterClassManagerScheduleContextTests(APITestCase):
         self.assertEqual(preview.data['status'], detail.data['manager_work_schedule']['status'])
         self.assertEqual(preview.data['regular_minutes'], detail.data['manager_work_schedule']['regular_minutes'])
         self.assertEqual(preview.data['outside_minutes'], detail.data['manager_work_schedule']['outside_minutes'])
+
+    def test_preview_naive_business_time_matches_persisted_utc_time(self):
+        self.schedule(weekday=6, start=time(16), end=time(21), valid_from=date(2026, 9, 1))
+        persisted = self.create_master_class(
+            starts_at=datetime(2026, 9, 13, 11, 59, tzinfo=datetime_timezone.utc),
+            duration=60,
+        )
+
+        detail = self.client.get(f'/api/master-classes/{persisted.id}/')
+        preview = self.client.post('/api/master-classes/manager-schedule-preview/', {
+            'manager': self.manager.id,
+            'starts_at': '2026-09-13T16:59',
+            'duration_minutes': 60,
+        }, format='json')
+        pay_preview = self.client.post('/api/master-classes/pay-preview/', {
+            'starts_at': '2026-09-13T16:59',
+            'duration_minutes': 60,
+            'staff_assignments': [{'employee': self.manager.id, 'is_extra_work': False}],
+        }, format='json')
+
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual(pay_preview.status_code, 200, pay_preview.data)
+        self.assertEqual(preview.data['status'], 'within_schedule')
+        self.assertEqual(preview.data['regular_minutes'], 60)
+        self.assertEqual(preview.data['outside_minutes'], 0)
+        self.assertEqual(pay_preview.data['items'][0]['regular_minutes'], 60)
+        self.assertEqual(pay_preview.data['items'][0]['outside_minutes'], 0)
+        self.assertFalse(detail.data['outside_regular_hours'])
+        self.assertEqual(preview.data['status'], detail.data['manager_work_schedule']['status'])
+        self.assertEqual(preview.data['regular_minutes'], detail.data['manager_work_schedule']['regular_minutes'])
+        self.assertEqual(preview.data['outside_minutes'], detail.data['manager_work_schedule']['outside_minutes'])
+
+    def test_business_timezone_standard_window_edges(self):
+        self.schedule(weekday=6, start=time(16), end=time(21), valid_from=date(2026, 9, 1))
+
+        before = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-09-13T15:59', 'duration_minutes': 60}, format='json')
+        inside = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-09-13T16:00', 'duration_minutes': 60}, format='json')
+        late = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-09-13T20:30', 'duration_minutes': 60}, format='json')
+        at_end = self.client.post('/api/master-classes/manager-schedule-preview/', {'manager': self.manager.id, 'starts_at': '2026-09-13T21:00', 'duration_minutes': 60}, format='json')
+
+        self.assertEqual(before.data['status'], 'partial')
+        self.assertEqual(before.data['regular_minutes'], 59)
+        self.assertEqual(before.data['outside_minutes'], 1)
+        self.assertEqual(inside.data['status'], 'within_schedule')
+        self.assertEqual(late.data['status'], 'partial')
+        self.assertEqual(late.data['regular_minutes'], 30)
+        self.assertEqual(late.data['outside_minutes'], 30)
+        self.assertEqual(at_end.data['status'], 'outside_schedule')
 
     def test_preview_changes_when_manager_changes(self):
         self.schedule(employee=self.manager, weekday=0, start=time(10), end=time(20))

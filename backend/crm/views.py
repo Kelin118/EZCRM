@@ -29,6 +29,15 @@ from .audit import log_action
 from .branch_filters import apply_branch_filter
 from .backup import create_database_backup
 from .certificates import allocate_certificate_numbers, certificate_serial_code
+from .client_duplicates import (
+    client_usage,
+    clients_payload,
+    duplicate_clients_for_phone,
+    duplicate_info_map,
+    duplicate_phone_groups,
+    has_client_usage,
+    merge_clients,
+)
 from .export_excel import (
     export_clients,
     export_certificates,
@@ -160,7 +169,7 @@ from .serializers import (
     certificate_template_snapshot,
     refresh_certificate_status,
 )
-from .meta_webhooks import normalize_kz_phone, process_meta_webhook, verify_meta_signature
+from .meta_webhooks import process_meta_webhook, verify_meta_signature
 from .meta_api import (
     MetaApiError,
     exchange_embedded_signup_code,
@@ -172,6 +181,7 @@ from .subscription_addons import addons_comment, addons_total, sync_subscription
 from .discounts import calculate_discount
 from .employee_worklog import build_employee_worklog, get_employee_schedule_context, split_work_interval_by_schedule
 from .payroll import apply_payroll_calculation, generate_payroll_statements
+from .phone import normalize_kz_phone
 from .subscription_dates import calculate_subscription_end_date
 from users.role_hierarchy import manageable_by_manager
 
@@ -372,8 +382,6 @@ def _sync_master_class_payment_summary(master_class):
         .select_related('finance_transaction')
         .order_by('payment_date', 'created_at', 'id')
     )
-    if not payments and master_class.finance_transaction_id and FinanceTransaction.objects.filter(pk=master_class.finance_transaction_id).exists():
-        return
     paid_total = _money(sum((payment.amount for payment in payments), Decimal('0.00')))
     latest = payments[-1] if payments else None
     latest_transaction = latest.finance_transaction if latest else None
@@ -1826,6 +1834,13 @@ class ClientViewSet(BaseAuthenticatedViewSet):
     audit_update_description = 'Изменён клиент'
     audit_delete_description = 'Удалён клиент'
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.action in {'list', 'retrieve', 'phone_duplicates'}:
+            queryset = self.get_queryset() if self.action == 'list' else Client.objects.all()
+            context['duplicate_info_map'] = duplicate_info_map(queryset)
+        return context
+
     @action(detail=False, methods=['get'], url_path='options')
     def options(self, request):
         clients = self.filter_queryset(self.get_queryset().filter(is_active=True))
@@ -1846,6 +1861,45 @@ class ClientViewSet(BaseAuthenticatedViewSet):
                 for client in clients
             ]
         )
+
+    @action(detail=False, methods=['get'], url_path='phone-duplicates')
+    def phone_duplicates(self, request):
+        exclude_client = request.query_params.get('exclude_client') or request.query_params.get('client')
+        try:
+            exclude_client = int(exclude_client) if exclude_client not in (None, '') else None
+        except (TypeError, ValueError):
+            exclude_client = None
+        normalized, clients = duplicate_clients_for_phone(request.query_params.get('phone'), exclude_client=exclude_client)
+        return Response({
+            'normalized_phone': normalized,
+            'count': len(clients),
+            'has_duplicates': bool(clients),
+            'results': clients_payload(clients),
+        })
+
+    @action(detail=False, methods=['post'], url_path='merge')
+    def merge(self, request):
+        if not is_admin(request.user):
+            return Response({'detail': 'Объединять клиентов может только администратор.'}, status=status.HTTP_403_FORBIDDEN)
+        primary = get_object_or_404(Client.objects.select_related('branch', 'manager'), pk=request.data.get('primary_client'))
+        duplicate = get_object_or_404(Client.objects.select_related('branch', 'manager'), pk=request.data.get('duplicate_client'))
+        normalized = normalize_kz_phone(primary.phone) or normalize_kz_phone(duplicate.phone)
+        primary, merge_changes = merge_clients(primary=primary, duplicate=duplicate)
+        changes = {
+            **merge_changes,
+            'normalized_phone': normalized,
+        }
+        log_action(
+            request,
+            AuditLog.Action.CLIENT_MERGE,
+            'Client',
+            entity_id=primary.id,
+            entity_name=str(primary),
+            description='Клиенты объединены',
+            changes=changes,
+        )
+        serializer = self.get_serializer(primary)
+        return Response({'client': serializer.data, 'changes': changes})
 
     @action(detail=True, methods=['get'], url_path='master-class-payments')
     def master_class_payments(self, request, pk=None):
@@ -1873,6 +1927,7 @@ class ClientViewSet(BaseAuthenticatedViewSet):
         search = self.request.query_params.get('search')
         status_value = self.request.query_params.get('status')
         manager = self.request.query_params.get('manager')
+        duplicates = self.request.query_params.get('duplicates')
 
         if search:
             queryset = queryset.filter(first_name__icontains=search) | queryset.filter(
@@ -1884,7 +1939,23 @@ class ClientViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(manager_id=manager)
         if _my_param(self.request):
             queryset = queryset.filter(manager=self.request.user)
+        if str(duplicates).lower() in {'1', 'true', 'yes'}:
+            duplicate_ids = {client_id for ids in duplicate_phone_groups().values() for client_id in ids}
+            queryset = queryset.filter(id__in=duplicate_ids) if duplicate_ids else queryset.none()
         return queryset.order_by('-created_at')
+
+    def destroy(self, request, *args, **kwargs):
+        client = self.get_object()
+        usage = client_usage(client)
+        if has_client_usage(client):
+            return Response(
+                {
+                    'detail': 'Клиент содержит связанную историю. Используйте объединение клиентов.',
+                    'usage': usage,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class SubscriptionViewSet(BaseAuthenticatedViewSet):
@@ -2783,9 +2854,16 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 if not is_admin(request.user):
                     self.permission_denied(request, message='Удалять оплаты МК может только администратор.')
                 finance_transaction = payment.finance_transaction
-                snapshot = {'payment_id': payment.id, 'amount': str(payment.amount), 'payment_type': payment.payment_type}
-                payment.delete()
+                snapshot = {
+                    'payment_id': payment.id,
+                    'finance_transaction_id': finance_transaction.id,
+                    'amount': str(payment.amount),
+                    'payment_type': payment.payment_type,
+                    'payment_date': str(payment.payment_date),
+                    'payment_parts': payment_parts_audit(finance_transaction),
+                }
                 finance_transaction.delete()
+                master_class.refresh_from_db()
                 _sync_master_class_payment_summary(master_class)
                 self._log_instance(AuditLog.Action.PAYMENT, master_class, 'Удалена оплата МК', snapshot)
                 return Response(status=status.HTTP_204_NO_CONTENT)

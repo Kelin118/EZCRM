@@ -63,6 +63,7 @@ from .models import (
 from .payment_parts import payment_parts_representation, sync_finance_payment_parts, validate_payment_parts
 from .discounts import calculate_discount, validate_discount_for_sale
 from .employee_worklog import get_employee_schedule_context
+from .client_duplicates import default_duplicate_info
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
 from .subscription_dates import calculate_subscription_end_date
 
@@ -188,6 +189,10 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
+    normalized_phone = serializers.SerializerMethodField()
+    duplicate_phone_count = serializers.SerializerMethodField()
+    has_phone_duplicate = serializers.SerializerMethodField()
+    duplicate_client_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
@@ -201,6 +206,21 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
 
     def get_manager_name(self, obj):
         return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
+
+    def _duplicate_info(self, obj):
+        return self.context.get('duplicate_info_map', {}).get(obj.id, default_duplicate_info(obj.phone))
+
+    def get_normalized_phone(self, obj):
+        return self._duplicate_info(obj)['normalized_phone']
+
+    def get_duplicate_phone_count(self, obj):
+        return self._duplicate_info(obj)['duplicate_phone_count']
+
+    def get_has_phone_duplicate(self, obj):
+        return self._duplicate_info(obj)['has_phone_duplicate']
+
+    def get_duplicate_client_ids(self, obj):
+        return self._duplicate_info(obj)['duplicate_client_ids']
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

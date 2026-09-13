@@ -31,6 +31,7 @@ from .models import (
     CertificateNumberSequence,
     CertificateTemplate,
     CertificateRedemption,
+    ChatMessage,
     Client,
     Discount,
     FinanceTransaction,
@@ -64,6 +65,7 @@ from .subscription_dates import calculate_subscription_end_date
 from .views import _client_active_subscription
 from .meta_api import MetaApiError
 from .export_excel import export_finance, export_summary_report
+from .phone import normalize_kz_phone
 
 
 PNG_BYTES = base64.b64decode(
@@ -1020,6 +1022,9 @@ class ClientPhoneDuplicateTests(APITestCase):
     def setUp(self):
         User = get_user_model()
         self.admin = User.objects.create_user(username='client-admin', password='pass', role='admin')
+        self.manager = User.objects.create_user(username='client-manager', password='pass', role='manager')
+        self.teacher = User.objects.create_user(username='client-teacher', password='pass', role='teacher')
+        self.branch = Branch.objects.create(name='Client Duplicate Branch')
         self.client.force_authenticate(self.admin)
 
     def payload(self, first_name='Алихан', last_name='Сатыбалдин'):
@@ -1092,6 +1097,147 @@ class ClientPhoneDuplicateTests(APITestCase):
             if details.get('unique') and details.get('columns') == ['phone']
         ]
         self.assertEqual(unique_phone_constraints, [])
+
+    def test_normalize_kz_phone_variants(self):
+        expected = '77076569064'
+        self.assertEqual(normalize_kz_phone('+7 707 656 9064'), expected)
+        self.assertEqual(normalize_kz_phone('8 707 656 9064'), expected)
+        self.assertEqual(normalize_kz_phone('77076569064'), expected)
+        self.assertEqual(normalize_kz_phone('87076569064'), expected)
+        self.assertEqual(normalize_kz_phone('7 (707) 656-90-64'), expected)
+        self.assertEqual(normalize_kz_phone(''), '')
+        self.assertEqual(normalize_kz_phone('123'), '')
+
+    def test_duplicate_fields_filter_and_lookup(self):
+        first = Client.objects.create(first_name='First', phone='+7 707 656 9064', branch=self.branch, manager=self.manager)
+        second = Client.objects.create(first_name='Second', phone='87076569064', branch=self.branch, manager=self.manager)
+        other = Client.objects.create(first_name='Other', phone='87010000000', branch=self.branch, manager=self.manager)
+        Client.objects.create(first_name='Blank 1', phone='', branch=self.branch, manager=self.manager)
+        Client.objects.create(first_name='Blank 2', phone='', branch=self.branch, manager=self.manager)
+
+        response = self.client.get('/api/clients/')
+        filtered = self.client.get('/api/clients/', {'duplicates': 'true'})
+        lookup = self.client.get('/api/clients/phone-duplicates/', {'phone': '7 (707) 656-90-64'})
+
+        by_id = {item['id']: item for item in response.data}
+        self.assertTrue(by_id[first.id]['has_phone_duplicate'])
+        self.assertEqual(by_id[first.id]['duplicate_phone_count'], 2)
+        self.assertEqual(by_id[first.id]['normalized_phone'], '77076569064')
+        self.assertEqual(by_id[first.id]['duplicate_client_ids'], [second.id])
+        self.assertFalse(by_id[other.id]['has_phone_duplicate'])
+        self.assertEqual({item['id'] for item in filtered.data}, {first.id, second.id})
+        self.assertEqual(lookup.data['count'], 2)
+
+    def _create_merge_history(self, duplicate):
+        payment = PaymentMethod.objects.create(name='Client duplicate cash', code='client_duplicate_cash')
+        service = CatalogItem.objects.create(name='Duplicate Course', price=1000, category='service')
+        subscription = Subscription.objects.create(client=duplicate, branch=self.branch, service=service, title='Duplicate Course', start_date=date(2026, 1, 1), price=1000)
+        FinanceTransaction.objects.create(transaction_type='income', amount=1000, source='manual', client=duplicate, branch=self.branch, payment_method=payment)
+        Visit.objects.create(client=duplicate, subscription=subscription, branch=self.branch, visited_at=timezone.now())
+        Trial.objects.create(client=duplicate, branch=self.branch, manager=self.manager, scheduled_at=timezone.now())
+        master_class = MasterClass.objects.create(title='Duplicate MK', starts_at=timezone.now(), branch=self.branch, manager=self.manager)
+        master_class.participants.add(duplicate)
+        Task.objects.create(title='Duplicate task', client=duplicate, branch=self.branch)
+        AddonSale.objects.create(client=duplicate, branch=self.branch, total_price=100, payment_amount=100)
+        CertificateBatch.objects.create(
+            purchaser_client=duplicate,
+            purchaser_name='Buyer',
+            purchaser_phone='87076569064',
+            purchaser_phone_snapshot='87076569064',
+            template_name='Template',
+            quantity=1,
+            face_value_per_certificate=1000,
+            sale_price_per_certificate=900,
+            total_face_value=1000,
+            total_sale_price=900,
+            issued_at=date(2026, 1, 1),
+        )
+        GiftCertificate.objects.create(
+            purchaser_client=duplicate,
+            template_name='Template',
+            code='DUP-CERT',
+            face_value=1000,
+            sale_price=900,
+            remaining_amount=1000,
+            valid_until=date(2027, 1, 1),
+        )
+        group = StudyGroup.objects.create(name='Duplicate Group', branch=self.branch)
+        GroupMembership.objects.create(group=group, client=duplicate, status='active')
+        ChatMessage.objects.create(sender=self.manager, client=duplicate, text='hello')
+        channel = MessagingChannel.objects.create(provider='whatsapp', name='WA', external_account_id='dup-wa')
+        contact = MessagingContact.objects.create(channel=channel, external_contact_id='dup-contact', client=duplicate)
+        Lead.objects.create(
+            source='manual',
+            contact=contact,
+            client=duplicate,
+            manager=self.manager,
+            branch=self.branch,
+            title='Duplicate lead',
+            first_message_at=timezone.now(),
+            last_message_at=timezone.now(),
+        )
+
+    def test_merge_moves_history_and_creates_audit_log(self):
+        primary = Client.objects.create(first_name='Primary', phone='', branch=self.branch, manager=self.manager)
+        duplicate = Client.objects.create(first_name='Duplicate', last_name='Child', phone='87076569064', parent_name='Parent', branch=self.branch, manager=self.manager)
+        self._create_merge_history(duplicate)
+
+        response = self.client.post('/api/clients/merge/', {'primary_client': primary.id, 'duplicate_client': duplicate.id}, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(Client.objects.filter(pk=duplicate.id).exists())
+        primary.refresh_from_db()
+        self.assertEqual(primary.phone, '87076569064')
+        self.assertEqual(primary.last_name, 'Child')
+        self.assertEqual(primary.parent_name, 'Parent')
+        self.assertEqual(Subscription.objects.filter(client=primary).count(), 1)
+        self.assertEqual(FinanceTransaction.objects.filter(client=primary).count(), 1)
+        self.assertEqual(Visit.objects.filter(client=primary).count(), 1)
+        self.assertEqual(Trial.objects.filter(client=primary).count(), 1)
+        self.assertEqual(MasterClass.objects.filter(participants=primary).count(), 1)
+        self.assertEqual(Task.objects.filter(client=primary).count(), 1)
+        self.assertEqual(AddonSale.objects.filter(client=primary).count(), 1)
+        self.assertEqual(CertificateBatch.objects.filter(purchaser_client=primary).count(), 1)
+        self.assertEqual(GiftCertificate.objects.filter(purchaser_client=primary).count(), 1)
+        self.assertEqual(GroupMembership.objects.filter(client=primary).count(), 1)
+        self.assertEqual(ChatMessage.objects.filter(client=primary).count(), 1)
+        self.assertEqual(MessagingContact.objects.filter(client=primary).count(), 1)
+        self.assertEqual(Lead.objects.filter(client=primary).count(), 1)
+        self.assertTrue(AuditLog.objects.filter(action='client_merge', entity_type='Client', entity_id=str(primary.id)).exists())
+
+    def test_merge_group_membership_conflict_does_not_partially_delete_data(self):
+        primary = Client.objects.create(first_name='Primary', phone='87076569064', branch=self.branch, manager=self.manager)
+        duplicate = Client.objects.create(first_name='Duplicate', phone='77076569064', branch=self.branch, manager=self.manager)
+        group = StudyGroup.objects.create(name='Conflict Group', branch=self.branch)
+        GroupMembership.objects.create(group=group, client=primary, status='active')
+        GroupMembership.objects.create(group=group, client=duplicate, status='active')
+
+        response = self.client.post('/api/clients/merge/', {'primary_client': primary.id, 'duplicate_client': duplicate.id}, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(Client.objects.filter(pk=duplicate.id).exists())
+        self.assertEqual(GroupMembership.objects.filter(client=primary, group=group).count(), 2)
+
+    def test_empty_duplicate_safe_delete_allowed_and_history_delete_blocked(self):
+        empty = Client.objects.create(first_name='Empty duplicate', phone='87076569064')
+        duplicate_with_history = Client.objects.create(first_name='History duplicate', phone='77076569064')
+        Task.objects.create(title='History task', client=duplicate_with_history)
+
+        deleted = self.client.delete(f'/api/clients/{empty.id}/')
+        blocked = self.client.delete(f'/api/clients/{duplicate_with_history.id}/')
+
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn('usage', blocked.data)
+
+    def test_non_admin_cannot_merge(self):
+        primary = Client.objects.create(first_name='Primary', phone='87076569064', branch=self.branch, manager=self.manager)
+        duplicate = Client.objects.create(first_name='Duplicate', phone='77076569064', branch=self.branch, manager=self.manager)
+        self.client.force_authenticate(self.manager)
+
+        response = self.client.post('/api/clients/merge/', {'primary_client': primary.id, 'duplicate_client': duplicate.id}, format='json')
+
+        self.assertEqual(response.status_code, 403)
 
 
 class CatalogItemApiTests(APITestCase):
@@ -4008,6 +4154,7 @@ class MasterClassFinanceSyncTests(APITestCase):
         User = get_user_model()
         self.admin = User.objects.create_user(username='master-finance-admin', password='pass', role='admin', roles=['admin'])
         self.manager = User.objects.create_user(username='master-finance-manager', password='pass', role='manager', roles=['manager'])
+        self.accountant = User.objects.create_user(username='master-finance-accountant', password='pass', role='accountant', roles=['accountant'])
         self.client.force_authenticate(self.admin)
         self.branch = Branch.objects.create(name='Master finance branch')
         self.student = Client.objects.create(first_name='Алихан', last_name='МК', branch=self.branch)
@@ -4044,6 +4191,25 @@ class MasterClassFinanceSyncTests(APITestCase):
             },
             **overrides,
         )
+
+    def add_payment(self, master_class, amount='7000.00', method=None, payment_date='2026-07-21', parts=None):
+        method = method or self.card
+        payload = {
+            'payment_type': 'additional',
+            'amount': amount,
+            'payment_date': payment_date,
+            'payment_parts': parts or [{'payment_method': method.id, 'amount': amount}],
+        }
+        response = self.client.post(f'/api/master-classes/{master_class.id}/payments/', payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        return MasterClassPayment.objects.get(pk=response.data['id'])
+
+    def assert_master_class_payment_summary(self, master_class, *, paid_total, remaining_amount, compatibility_amount, transaction_id):
+        master_class.refresh_from_db()
+        self.assertEqual(master_class.paid_total, Decimal(paid_total))
+        self.assertEqual(master_class.remaining_amount, Decimal(remaining_amount))
+        self.assertEqual(master_class.payment_amount, Decimal(compatibility_amount))
+        self.assertEqual(master_class.finance_transaction_id, transaction_id)
 
     def test_create_without_initial_payment_does_not_create_finance_transaction(self):
         master_class = self.create_master_class()
@@ -4273,6 +4439,112 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(timezone.localtime(second_transaction.paid_at).date(), date(2026, 7, 21))
         self.assertEqual(first_payment.accepted_by, self.admin)
         self.assertEqual(second_payment.accepted_by, self.admin)
+
+    def test_admin_deletes_second_master_class_payment_and_keeps_first(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        first_payment = MasterClassPayment.objects.get(master_class=master_class)
+        first_transaction_id = first_payment.finance_transaction_id
+        second_payment = self.add_payment(master_class, amount='7000.00', method=self.card)
+        second_transaction_id = second_payment.finance_transaction_id
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{second_payment.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(MasterClassPayment.objects.filter(master_class=master_class).count(), 1)
+        self.assertTrue(FinanceTransaction.objects.filter(pk=first_transaction_id).exists())
+        self.assertFalse(FinanceTransaction.objects.filter(pk=second_transaction_id).exists())
+        self.assert_master_class_payment_summary(
+            master_class,
+            paid_total='5000.00',
+            remaining_amount='7000.00',
+            compatibility_amount='5000.00',
+            transaction_id=first_transaction_id,
+        )
+
+    def test_admin_deletes_first_master_class_payment_and_keeps_second_as_latest(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        first_payment = MasterClassPayment.objects.get(master_class=master_class)
+        first_transaction_id = first_payment.finance_transaction_id
+        second_payment = self.add_payment(master_class, amount='7000.00', method=self.card)
+        second_transaction_id = second_payment.finance_transaction_id
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{first_payment.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(MasterClassPayment.objects.filter(master_class=master_class).count(), 1)
+        self.assertFalse(FinanceTransaction.objects.filter(pk=first_transaction_id).exists())
+        self.assertTrue(FinanceTransaction.objects.filter(pk=second_transaction_id).exists())
+        self.assert_master_class_payment_summary(
+            master_class,
+            paid_total='7000.00',
+            remaining_amount='5000.00',
+            compatibility_amount='7000.00',
+            transaction_id=second_transaction_id,
+        )
+
+    def test_admin_deletes_last_master_class_payment_and_clears_legacy_summary(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        payment = MasterClassPayment.objects.get(master_class=master_class)
+        transaction_id = payment.finance_transaction_id
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{payment.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(MasterClassPayment.objects.filter(master_class=master_class).count(), 0)
+        self.assertFalse(FinanceTransaction.objects.filter(pk=transaction_id).exists())
+        self.assert_master_class_payment_summary(
+            master_class,
+            paid_total='0.00',
+            remaining_amount='12000.00',
+            compatibility_amount='0.00',
+            transaction_id=None,
+        )
+        master_class.refresh_from_db()
+        self.assertIsNone(master_class.payment_date)
+
+    def test_delete_master_class_payment_with_multiple_payment_parts_cascades_parts(self):
+        master_class = self.create_master_class()
+        payment = self.add_payment(
+            master_class,
+            amount='12000.00',
+            parts=[
+                {'payment_method': self.cash.id, 'amount': '5000.00'},
+                {'payment_method': self.card.id, 'amount': '7000.00'},
+            ],
+        )
+        transaction_id = payment.finance_transaction_id
+        self.assertEqual(FinancePaymentPart.objects.filter(transaction_id=transaction_id).count(), 2)
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{payment.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(FinanceTransaction.objects.filter(pk=transaction_id).exists())
+        self.assertEqual(FinancePaymentPart.objects.filter(transaction_id=transaction_id).count(), 0)
+
+    def test_only_admin_can_delete_master_class_payment(self):
+        for user in (self.manager, self.accountant):
+            master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+            payment = MasterClassPayment.objects.get(master_class=master_class)
+            self.client.force_authenticate(user)
+
+            response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{payment.id}/')
+
+            self.assertEqual(response.status_code, 403)
+            self.assertTrue(MasterClassPayment.objects.filter(pk=payment.id).exists())
+            self.assertTrue(FinanceTransaction.objects.filter(pk=payment.finance_transaction_id).exists())
+            self.client.force_authenticate(self.admin)
+
+    def test_delete_missing_or_foreign_master_class_payment_returns_404(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        other_master_class = self.create_master_class(title='Другой МК')
+        foreign_payment = MasterClassPayment.objects.get(master_class=master_class)
+
+        missing = self.client.delete(f'/api/master-classes/{master_class.id}/payments/999999/')
+        foreign = self.client.delete(f'/api/master-classes/{other_master_class.id}/payments/{foreign_payment.id}/')
+
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(foreign.status_code, 404)
+        self.assertTrue(MasterClassPayment.objects.filter(pk=foreign_payment.id).exists())
 
 
 class FinanceJournalAndPaymentMethodTests(APITestCase):

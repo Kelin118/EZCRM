@@ -12,15 +12,7 @@ from django.utils import timezone
 from .audit import log_action
 from .models import AuditLog, Client, Lead, LeadMessage, MessagingChannel, MessagingContact, MetaWebhookEvent
 from .permissions import MANAGER
-
-
-def normalize_kz_phone(value):
-    digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
-    if len(digits) == 11 and digits.startswith('8'):
-        return f'7{digits[1:]}'
-    if len(digits) == 10:
-        return f'7{digits}'
-    return digits
+from .phone import normalize_kz_phone
 
 
 def verify_meta_signature(body, signature):

@@ -1451,6 +1451,7 @@ class AuditLog(models.Model):
         LEAD_CONVERT_TO_TRIAL = 'lead_convert_to_trial', 'Lead convert to trial'
         LEAD_MARK_READ = 'lead_mark_read', 'Lead mark read'
         META_WEBHOOK_ERROR = 'meta_webhook_error', 'Meta webhook error'
+        CLIENT_MERGE = 'client_merge', 'Client merge'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

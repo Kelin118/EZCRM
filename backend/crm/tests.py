@@ -4522,8 +4522,12 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(FinancePaymentPart.objects.filter(transaction_id=transaction_id).count(), 0)
 
     def test_only_admin_can_delete_master_class_payment(self):
-        for user in (self.manager, self.accountant):
-            master_class = self.create_master_class_with_initial_payment(amount='5000.00')
+        for index, user in enumerate((self.manager, self.accountant), start=1):
+            master_class = self.create_master_class_with_initial_payment(
+                amount='5000.00',
+                title=f'Permission MK {index}',
+                starts_at=(timezone.now() + timedelta(days=index)).isoformat(),
+            )
             payment = MasterClassPayment.objects.get(master_class=master_class)
             self.client.force_authenticate(user)
 

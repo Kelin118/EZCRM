@@ -302,6 +302,7 @@ export default function MasterClassesPage() {
   const [paymentModal, setPaymentModal] = useState({ open: false, payment: null });
   const [paymentForm, setPaymentForm] = useState(emptyPaymentForm());
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [deletingPaymentId, setDeletingPaymentId] = useState(null);
   const [extraMasterClasses, setExtraMasterClasses] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
@@ -482,12 +483,16 @@ export default function MasterClassesPage() {
   };
 
   const deletePayment = async (payment) => {
+    if (deletingPaymentId) return;
     if (!window.confirm('Удалить оплату мастер-класса?')) return;
+    setDeletingPaymentId(payment.id);
     try {
       await api.delete(`master-classes/${form.id}/payments/${payment.id}/`);
       await refreshCurrentMasterClass();
     } catch (error) {
       showApiError(error);
+    } finally {
+      setDeletingPaymentId(null);
     }
   };
 
@@ -736,7 +741,7 @@ export default function MasterClassesPage() {
                       </div>
                       <div className="flex gap-2">
                         {canEdit && <Button variant="secondary" onClick={() => openPaymentModal(payment)}>Изменить</Button>}
-                        {canDelete && <Button variant="danger" onClick={() => deletePayment(payment)}>Удалить</Button>}
+                        {canDelete && <Button variant="danger" onClick={() => deletePayment(payment)} disabled={deletingPaymentId === payment.id}>{deletingPaymentId === payment.id ? 'Удаляем...' : 'Удалить'}</Button>}
                       </div>
                     </div>
                   </div>

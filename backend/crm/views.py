@@ -2846,7 +2846,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         with transaction.atomic():
             master_class = MasterClass.objects.select_for_update().prefetch_related('participants').get(pk=pk)
             self.check_object_permissions(request, master_class)
-            payment = get_object_or_404(MasterClassPayment.objects.select_for_update().select_related(
+            payment = get_object_or_404(MasterClassPayment.objects.select_for_update(of=('self',)).select_related(
                 'master_class',
                 'finance_transaction__payment_method',
             ).prefetch_related('finance_transaction__payment_parts__payment_method'), pk=payment_id, master_class=master_class)

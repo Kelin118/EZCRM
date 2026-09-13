@@ -32,12 +32,12 @@ const emptyCatalogForm = {
   validity_days: '',
   schedule_days: [],
   service_type: 'course',
+  owner_name: '',
   is_active: true,
-  sort_order: 0,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
-const emptyMasterClassSubjectForm = { name: '', description: '', is_active: true, sort_order: 0 };
-const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true, sort_order: 0 };
+const emptyMasterClassSubjectForm = { name: '', description: '', is_active: true };
+const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true };
 const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
 const emptyChannelForm = { provider: 'whatsapp', name: '', external_account_id: '', phone_number: '', branch: '', default_manager: '', is_active: true };
 
@@ -406,8 +406,8 @@ export default function SettingsPage() {
     const payload = {
       ...masterClassSubjectForm,
       name: masterClassSubjectForm.name.trim(),
-      sort_order: masterClassSubjectForm.sort_order !== '' ? Number(masterClassSubjectForm.sort_order) : 0,
     };
+    delete payload.sort_order;
     if (masterClassSubjectModal.item) await api.patch(`master-class-subjects/${masterClassSubjectModal.item.id}/`, payload);
     else await api.post('master-class-subjects/', payload);
     setMasterClassSubjectModal({ open: false, item: null });
@@ -422,8 +422,10 @@ export default function SettingsPage() {
 
   const savePaymentMethod = async () => {
     if (!paymentMethodForm.name.trim()) return;
-    if (paymentMethodModal.item) await api.patch(`payment-methods/${paymentMethodModal.item.id}/`, paymentMethodForm);
-    else await api.post('payment-methods/', paymentMethodForm);
+    const payload = { ...paymentMethodForm, name: paymentMethodForm.name.trim() };
+    delete payload.sort_order;
+    if (paymentMethodModal.item) await api.patch(`payment-methods/${paymentMethodModal.item.id}/`, payload);
+    else await api.post('payment-methods/', payload);
     setPaymentMethodModal({ open: false, item: null });
     setPaymentMethodForm(emptyPaymentMethodForm);
     await refreshPaymentMethods();
@@ -461,7 +463,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], service_type: item.service_type || 'course', is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }
+        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], service_type: item.service_type || 'course', owner_name: item.owner_name || '', is_active: item.is_active ?? true }
         : { ...emptyCatalogForm },
     );
   };
@@ -505,7 +507,7 @@ export default function SettingsPage() {
       price,
       category: catalogModal.category,
       is_active: catalogForm.is_active,
-      sort_order: catalogForm.sort_order !== '' ? Number(catalogForm.sort_order) : 0,
+      owner_name: catalogModal.category === 'product' ? (catalogForm.owner_name || '').trim() : '',
       service_type: catalogModal.category === 'service' ? catalogForm.service_type : 'course',
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
       validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
@@ -679,7 +681,7 @@ export default function SettingsPage() {
                     <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.description || '—'}</td>
                     <td className="border-b border-slate-100 px-4 py-3"><Badge value={item.is_active ? 'paid' : 'cancelled'}>{item.is_active ? 'Активен' : 'Отключён'}</Badge></td>
-                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, ...item, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
+                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, name: item.name ?? '', description: item.description || '', is_active: item.is_active ?? true }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
                   </tr>
                 ))}
                 {!masterClassSubjects.length && <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Предметы МК ещё не добавлены</td></tr>}
@@ -699,7 +701,7 @@ export default function SettingsPage() {
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="border-b border-slate-100 px-4 py-3 font-bold">Название</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Описание</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Наличные</th><th className="border-b border-slate-100 px-4 py-3 font-bold">Статус</th><th className="border-b border-slate-100 px-4 py-3 text-right font-bold">Действия</th></tr></thead>
               <tbody>{paymentMethods.length ? paymentMethods.map((item) => <tr key={item.id} className="transition hover:bg-brand/[0.03]">
                 <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td><td className="max-w-sm break-words border-b border-slate-100 px-4 py-3 text-slate-700">{item.description || '—'}</td><td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.is_cash ? 'Да' : 'Нет'}</td><td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} /></td>
-                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, ...item, is_cash: item.is_cash ?? false, is_active: item.is_active ?? true, sort_order: item.sort_order ?? 0 }); setPaymentMethodModal({ open: true, item }); }} onToggle={() => togglePaymentMethod(item)} onDelete={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })} /></td>
+                <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setPaymentMethodForm({ ...emptyPaymentMethodForm, name: item.name ?? '', code: item.code || '', description: item.description || '', is_cash: item.is_cash ?? false, is_active: item.is_active ?? true }); setPaymentMethodModal({ open: true, item }); }} onToggle={() => togglePaymentMethod(item)} onDelete={() => requestDelete({ title: 'Удалить способ оплаты?', itemName: item.name, endpoint: `payment-methods/${item.id}/`, onDeleted: refreshPaymentMethods })} /></td>
               </tr>) : <EmptyTableRow colSpan={5} message="Способы оплаты ещё не добавлены" />}</tbody>
             </table>
           </div>
@@ -946,7 +948,6 @@ export default function SettingsPage() {
       >
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={masterClassSubjectForm.name} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, name: event.target.value })} />
-          <Input label="Порядок" type="number" min="0" value={masterClassSubjectForm.sort_order ?? 0} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={masterClassSubjectForm.description || ''} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectForm.is_active} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, is_active: event.target.checked })} />Активен</label>
         </div>
@@ -961,7 +962,6 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={paymentMethodForm.name} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, name: event.target.value })} />
           <Input label="Код" value={paymentMethodForm.code || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, code: event.target.value })} />
-          <Input label="Порядок" type="number" value={paymentMethodForm.sort_order ?? 0} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, sort_order: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={paymentMethodForm.description || ''} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={paymentMethodForm.is_cash} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_cash: event.target.checked })} />Наличные</label>
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={paymentMethodForm.is_active} onChange={(event) => setPaymentMethodForm({ ...paymentMethodForm, is_active: event.target.checked })} />Активен</label>
@@ -1048,7 +1048,9 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Наименование" value={catalogForm.name} onChange={(event) => setCatalogForm({ ...catalogForm, name: event.target.value })} />
           <Input label="Цена" type="number" min="0" value={catalogForm.price} onChange={(event) => setCatalogForm({ ...catalogForm, price: event.target.value })} />
-          <Input label="Порядок" type="number" min="0" value={catalogForm.sort_order ?? 0} onChange={(event) => setCatalogForm({ ...catalogForm, sort_order: event.target.value })} />
+          {catalogModal.category === 'product' && (
+            <Input label="Чей товар" placeholder="Например: ArtHub, Аружан, Компания" value={catalogForm.owner_name || ''} onChange={(event) => setCatalogForm({ ...catalogForm, owner_name: event.target.value })} />
+          )}
           {catalogModal.category === 'product' && catalogModal.item?.id && (
             <div className="grid gap-3 md:col-span-2">
               <Input label="Фото товара" type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadCatalogImage} />
@@ -1212,6 +1214,8 @@ function SettingsCard({ id, icon: Icon, title, subtitle, action, children }) {
 
 function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd, onEdit, onToggle, onDelete }) {
   const Icon = section.icon;
+  const isProduct = section.category === 'product';
+  const emptyColSpan = section.category === 'service' ? 8 : isProduct ? 5 : 4;
 
   return (
     <section id={id} className="scroll-mt-24 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card sm:p-6">
@@ -1239,6 +1243,7 @@ function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd
             <tr>
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Наименование</th>
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
+              {isProduct && <th className="border-b border-slate-100 px-4 py-3 font-bold">Чей товар</th>}
               {section.category === 'service' && (
                 <>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Тип услуги</th>
@@ -1253,19 +1258,22 @@ function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd
           </thead>
           <tbody>
             {loading ? (
-              <EmptyTableRow colSpan={section.category === 'service' ? 8 : 4} message="Загрузка…" />
+              <EmptyTableRow colSpan={emptyColSpan} message="Загрузка…" />
             ) : items.length === 0 ? (
-              <EmptyTableRow colSpan={section.category === 'service' ? 8 : 4} message="Пока нет позиций" />
+              <EmptyTableRow colSpan={emptyColSpan} message="Пока нет позиций" />
             ) : (
               items.map((item) => (
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
                   <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">
                     <div className="flex items-center gap-3">
-                      {section.category === 'product' && item.primary_image_url && <img src={item.primary_image_url} alt="" className="h-11 w-11 rounded-xl object-cover" />}
+                      {isProduct && item.primary_image_url && <img src={item.primary_image_url} alt="" className="h-11 w-11 rounded-xl object-cover" />}
                       <span>{item.name}</span>
                     </div>
                   </td>
                   <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{money(item.price)}</td>
+                  {isProduct && (
+                    <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.owner_name || '—'}</td>
+                  )}
                   {section.category === 'service' && (
                     <>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.service_type === 'camp' ? 'Лагерь' : 'Основной курс'}</td>

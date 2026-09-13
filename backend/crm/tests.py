@@ -553,7 +553,7 @@ class AddonSaleApiTests(APITestCase):
         self.payment_method = PaymentMethod.objects.create(name='Addon cash', code='addon_cash')
         self.books = CatalogItem.objects.create(name='Учебники', price='5000.00', category=CatalogItem.Category.ADDON)
         self.prolongation = CatalogItem.objects.create(name='Продлёнка', price='10000.00', category=CatalogItem.Category.ADDON)
-        self.product = CatalogItem.objects.create(name='Workbook', price='3500.00', category=CatalogItem.Category.PRODUCT)
+        self.product = CatalogItem.objects.create(name='Workbook', price='3500.00', category=CatalogItem.Category.PRODUCT, owner_name='ArtHub')
 
     def payload(self, **overrides):
         data = {
@@ -612,6 +612,22 @@ class AddonSaleApiTests(APITestCase):
         self.assertEqual(item.name, 'Учебники')
         self.assertEqual(item.unit_price, Decimal('5000.00'))
         self.assertEqual(item.total_price, Decimal('5000.00'))
+
+    def test_product_sale_item_snapshots_owner_name(self):
+        self.client.force_authenticate(self.manager)
+        response = self.client.post(
+            '/api/addon-sales/',
+            self.payload(items=[{'catalog_item': self.product.id, 'quantity': 1}]),
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        self.product.owner_name = 'Aruzhan'
+        self.product.save(update_fields=('owner_name', 'updated_at'))
+
+        item = AddonSaleItem.objects.get(sale_id=response.data['id'])
+        self.assertEqual(item.owner_name, 'ArtHub')
+        self.assertEqual(response.data['items'][0]['owner_name'], 'ArtHub')
 
     def test_rejects_service_and_inactive_item(self):
         self.client.force_authenticate(self.manager)
@@ -1318,6 +1334,63 @@ class CatalogItemApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['category'], 'product')
+
+    def test_product_owner_name_is_saved_returned_and_searchable(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            '/api/catalog-items/',
+            {'name': 'Sketchbook', 'price': '3500.00', 'category': 'product', 'owner_name': ' ArtHub '},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['owner_name'], 'ArtHub')
+
+        detail = self.client.get(f"/api/catalog-items/{response.data['id']}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data['owner_name'], 'ArtHub')
+
+        search = self.client.get('/api/catalog-items/', {'search': 'arthub'})
+        items = search.data if isinstance(search.data, list) else search.data['results']
+        self.assertIn(response.data['id'], {item['id'] for item in items})
+
+    def test_product_owner_name_can_be_updated(self):
+        self.client.force_authenticate(self.admin)
+        product = CatalogItem.objects.create(name='Book', price='3500.00', category=CatalogItem.Category.PRODUCT, owner_name='ArtHub')
+
+        response = self.client.patch(f'/api/catalog-items/{product.id}/', {'owner_name': 'Aruzhan'}, format='json')
+
+        self.assertEqual(response.status_code, 200, response.data)
+        product.refresh_from_db()
+        self.assertEqual(product.owner_name, 'Aruzhan')
+
+    def test_non_product_owner_name_is_cleared(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            '/api/catalog-items/',
+            {'name': 'Consulting', 'price': '7000.00', 'category': 'extra_service', 'owner_name': 'ArtHub'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['owner_name'], '')
+        self.assertEqual(CatalogItem.objects.get(pk=response.data['id']).owner_name, '')
+
+    def test_catalog_item_auto_sort_and_patch_preserves_sort_order(self):
+        CatalogItem.objects.create(name='First service', price='1000.00', category=CatalogItem.Category.SERVICE, sort_order=30)
+        CatalogItem.objects.create(name='First product', price='1000.00', category=CatalogItem.Category.PRODUCT, sort_order=90)
+        self.client.force_authenticate(self.admin)
+
+        service = self.client.post('/api/catalog-items/', {'name': 'Second service', 'price': '1000.00', 'category': 'service'}, format='json')
+        product = self.client.post('/api/catalog-items/', {'name': 'Second product', 'price': '1000.00', 'category': 'product'}, format='json')
+        self.assertEqual(service.status_code, 201, service.data)
+        self.assertEqual(product.status_code, 201, product.data)
+        self.assertEqual(service.data['sort_order'], 40)
+        self.assertEqual(product.data['sort_order'], 100)
+
+        patch = self.client.patch(f"/api/catalog-items/{service.data['id']}/", {'name': 'Renamed service'}, format='json')
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertEqual(CatalogItem.objects.get(pk=service.data['id']).sort_order, 40)
 
     def test_admin_can_create_extra_service(self):
         response = self.create_item(category='extra_service', name='Индивидуальное занятие', price='7000.00')
@@ -4180,6 +4253,14 @@ class MasterClassSubjectApiTests(APITestCase):
         data.update(overrides)
         return data
 
+    def test_subject_auto_sort_order_when_omitted(self):
+        MasterClassSubject.objects.create(name='First subject', sort_order=20)
+
+        response = self.client.post('/api/master-class-subjects/', {'name': 'Second subject'}, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['sort_order'], 30)
+
     def test_subject_create_duplicate_filter_and_delete_rules(self):
         subject = self.create_subject(' Рисование ').data
         duplicate = self.client.post('/api/master-class-subjects/', {'name': 'РИСОВАНИЕ'}, format='json')
@@ -4739,6 +4820,16 @@ class FinanceJournalAndPaymentMethodTests(APITestCase):
 
         self.client.force_authenticate(self.manager_a)
         self.assertEqual(self.client.patch(f'/api/payment-methods/{self.method.id}/', {'name': 'Подмена'}, format='json').status_code, 403)
+
+    def test_payment_method_auto_sort_order_when_omitted(self):
+        self.method.sort_order = 20
+        self.method.save(update_fields=('sort_order', 'updated_at'))
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post('/api/payment-methods/', {'name': 'Terminal'}, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['sort_order'], 30)
 
     def test_inactive_method_cannot_be_used_and_old_snapshot_survives(self):
         self.method.is_active = False

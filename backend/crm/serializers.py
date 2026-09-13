@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 from django.utils import timezone
+from django.db.models import Max
 from django.db.models.functions import Lower, Trim
 
 from .group_schedule import (
@@ -68,6 +69,11 @@ from .employee_worklog import get_employee_schedule_context
 from .client_duplicates import default_duplicate_info
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
 from .subscription_dates import calculate_subscription_end_date
+
+
+def next_sort_order(model, **filters):
+    max_order = model.objects.filter(**filters).aggregate(max_sort_order=Max('sort_order'))['max_sort_order']
+    return (max_order or 0) + 10
 
 
 def user_display_name(user):
@@ -255,6 +261,12 @@ class MasterClassSubjectSerializer(serializers.ModelSerializer):
         if queryset.exists():
             raise serializers.ValidationError('Предмет МК с таким названием уже существует.')
         return name
+
+
+    def create(self, validated_data):
+        if 'sort_order' not in getattr(self, 'initial_data', {}):
+            validated_data['sort_order'] = next_sort_order(MasterClassSubject)
+        return super().create(validated_data)
 
 
 class RoomSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -474,7 +486,7 @@ class AddonSaleItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AddonSaleItem
-        fields = ('id', 'catalog_item', 'category', 'category_display', 'name', 'unit_price', 'quantity', 'total_price')
+        fields = ('id', 'catalog_item', 'category', 'category_display', 'name', 'owner_name', 'unit_price', 'quantity', 'total_price')
         read_only_fields = fields
 
     def get_category(self, obj):
@@ -651,6 +663,7 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
                 sale=sale,
                 catalog_item=catalog_item,
                 name=catalog_item.name,
+                owner_name=catalog_item.owner_name,
                 unit_price=catalog_item.price,
                 quantity=quantity,
                 total_price=catalog_item.price * Decimal(quantity),
@@ -2188,6 +2201,12 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
         return value.strip()
 
 
+    def create(self, validated_data):
+        if 'sort_order' not in getattr(self, 'initial_data', {}):
+            validated_data['sort_order'] = next_sort_order(PaymentMethod)
+        return super().create(validated_data)
+
+
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender = serializers.PrimaryKeyRelatedField(read_only=True)
     sender_name = serializers.SerializerMethodField()
@@ -2228,7 +2247,17 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         category = attrs.get('category', self.instance.category if self.instance else None)
         if category != CatalogItem.Category.SERVICE:
             attrs['service_type'] = CatalogItem.ServiceType.COURSE
+        if category != CatalogItem.Category.PRODUCT:
+            attrs['owner_name'] = ''
+        elif 'owner_name' in attrs:
+            attrs['owner_name'] = str(attrs.get('owner_name') or '').strip()
         return attrs
+
+    def create(self, validated_data):
+        if 'sort_order' not in getattr(self, 'initial_data', {}):
+            category = validated_data.get('category')
+            validated_data['sort_order'] = next_sort_order(CatalogItem, category=category)
+        return super().create(validated_data)
 
     def get_service_type_display(self, obj):
         return 'Лагерь' if obj.service_type == CatalogItem.ServiceType.CAMP else 'Учебный курс'

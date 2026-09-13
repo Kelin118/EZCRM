@@ -207,6 +207,7 @@ class AddonSaleItem(models.Model):
         related_name='addon_sale_items',
     )
     name = models.CharField(max_length=150)
+    owner_name = models.CharField(max_length=150, blank=True, default='')
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
     total_price = models.DecimalField(max_digits=12, decimal_places=2)
@@ -1398,6 +1399,7 @@ class CatalogItem(TimeStampedModel):
     schedule_days = models.JSONField(default=list, blank=True)
     category = models.CharField(max_length=30, choices=Category.choices)
     service_type = models.CharField(max_length=20, choices=ServiceType.choices, default=ServiceType.COURSE)
+    owner_name = models.CharField(max_length=150, blank=True, default='')
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)
 

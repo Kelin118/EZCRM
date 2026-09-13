@@ -4958,6 +4958,9 @@ class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
             queryset = queryset.filter(category=category)
         if service_type:
             queryset = queryset.filter(service_type=service_type)
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(Q(name__icontains=search) | Q(owner_name__icontains=search))
         if is_active in ('1', 'true', 'True', 'yes'):
             queryset = queryset.filter(is_active=True)
         elif is_active in ('0', 'false', 'False', 'no'):
@@ -4970,6 +4973,7 @@ class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
             'price': str(instance.price),
             'category': instance.category,
             'service_type': instance.service_type,
+            'owner_name': instance.owner_name,
             'is_active': instance.is_active,
             'lessons_count': instance.lessons_count,
             'validity_days': instance.validity_days,

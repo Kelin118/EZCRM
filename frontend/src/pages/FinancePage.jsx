@@ -1,4 +1,4 @@
-import { formatFinanceDate } from '../utils/dateTime.js';
+import { formatDisplayDateTime, formatFinanceDate } from '../utils/dateTime.js';
 import { ShoppingCart } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -208,7 +208,7 @@ export default function FinancePage() {
             <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Наличные в кассе</p>
             <p className="mt-2 text-3xl font-black text-slate-900">{money(cashBalance.expected_balance)}</p>
             <p className="mt-1 text-sm text-slate-500">
-              Последняя сверка: {cashBalance.last_reconciliation?.recorded_at ? new Date(cashBalance.last_reconciliation.recorded_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : 'не было'}
+              Последняя сверка: {cashBalance.last_reconciliation?.recorded_at ? formatDisplayDateTime(cashBalance.last_reconciliation.recorded_at) : 'не было'}
             </p>
           </div>
           <div className="grid gap-3 text-sm sm:grid-cols-3 lg:min-w-[520px]">
@@ -267,7 +267,7 @@ export default function FinancePage() {
             {row.master_class_is_extra_work && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}
             {row.master_class_staff?.length ? <p className="text-xs text-slate-500">Мастера: {masterClassStaffNames(row).join(', ')}</p> : (row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>)}
             {masterClassExtraStaffNames(row).length ? <p className="text-xs font-semibold text-amber-700">Доп. выход: {masterClassExtraStaffNames(row).join(', ')}</p> : null}
-            {row.master_class_starts_at && <p className="text-xs text-slate-500">{new Date(row.master_class_starts_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE })}</p>}
+            {row.master_class_starts_at && <p className="text-xs text-slate-500">{formatDisplayDateTime(row.master_class_starts_at)}</p>}
           </div>
         ) },
         { key: 'addon_sale_summary', header: 'Состав', render: (row) => ['addon', 'product', 'retail'].includes(row.source) ? (row.addon_sale_summary || row.comment || '—') : '—' },

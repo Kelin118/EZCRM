@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { build } from 'esbuild';
 import {
-  addCalendarDays, businessMonthRange, formatDateTimeLocal, formatFinanceDate, normalizeDateForInput, serializeDateTimeLocal, todayLocalDate,
+  addCalendarDays, businessMonthRange, formatDateTimeLocal, formatDisplayDateTime, formatFinanceDate, normalizeDateForInput, serializeDateTimeLocal, todayLocalDate,
 } from '../src/utils/dateTime.js';
 
 const require = createRequire(import.meta.url);
@@ -120,6 +120,7 @@ test('finance date formatter uses API precision across workstation timezones', (
       paid_at_precision: 'datetime',
       paid_at: '2026-09-14T10:43:27Z',
     }), '14.09.2026, 15:43');
+    assert.equal(formatDisplayDateTime('2026-09-14T10:43:00Z'), '14.09.2026, 15:43');
   }
 });
 

@@ -45,6 +45,7 @@ from .models import (
     LeadMessage,
     MasterClass,
     MasterClassPayment,
+    MasterClassStaffAssignment,
     MasterClassSubject,
     MessagingChannel,
     MessagingContact,
@@ -377,6 +378,142 @@ class FinanceTransactionApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
+
+    def _finance_with_parts(self, amount, parts, *, transaction_type=FinanceTransaction.Type.INCOME,
+                            branch=None, source='manual', paid_at=None):
+        transaction_item = FinanceTransaction.objects.create(
+            transaction_type=transaction_type,
+            amount=Decimal(amount),
+            subtotal_amount=Decimal(amount),
+            source=source,
+            branch=branch,
+            paid_at=paid_at or timezone.now(),
+            payment_method=None,
+            payment_method_name='Смешанная оплата',
+        )
+        for method, part_amount in parts:
+            FinancePaymentPart.objects.create(
+                transaction=transaction_item,
+                payment_method=method,
+                payment_method_name=method.name,
+                amount=Decimal(part_amount),
+            )
+        return transaction_item
+
+    def _finance_summary(self, **params):
+        response = self.client.get('/api/finance/summary/', params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_payment_method_filter_returns_matched_amount_for_mixed_and_legacy(self):
+        self.client.force_authenticate(self.accountant)
+        mixed = self._finance_with_parts('10000.00', [(self.payment_method, '3000.00'), (self.card_method, '7000.00')])
+        cash_only = self._finance_with_parts('2000.00', [(self.payment_method, '2000.00')])
+        card_only = self._finance_with_parts('5000.00', [(self.card_method, '5000.00')])
+        legacy = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('2500.00'),
+            source='manual',
+            payment_method=self.payment_method,
+            payment_method_name=self.payment_method.name,
+            paid_at=timezone.now(),
+        )
+        unassigned = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal('900.00'),
+            source='manual',
+            paid_at=timezone.now(),
+        )
+
+        cash = self.client.get('/api/finance/', {'payment_method': self.payment_method.id})
+        self.assertEqual(cash.status_code, 200, cash.data)
+        cash_by_id = {item['id']: Decimal(item['matched_payment_amount']) for item in cash.data}
+        self.assertEqual(set(cash_by_id), {mixed.id, cash_only.id, legacy.id})
+        self.assertEqual(cash_by_id[mixed.id], Decimal('3000.00'))
+        self.assertEqual(cash_by_id[cash_only.id], Decimal('2000.00'))
+        self.assertEqual(cash_by_id[legacy.id], Decimal('2500.00'))
+
+        card = self.client.get('/api/finance/', {'payment_method': self.card_method.id})
+        self.assertEqual(card.status_code, 200, card.data)
+        card_by_id = {item['id']: Decimal(item['matched_payment_amount']) for item in card.data}
+        self.assertEqual(set(card_by_id), {mixed.id, card_only.id})
+        self.assertEqual(card_by_id[mixed.id], Decimal('7000.00'))
+        self.assertEqual(card_by_id[card_only.id], Decimal('5000.00'))
+
+        no_method = self.client.get('/api/finance/', {'payment_method': 'unassigned'})
+        self.assertEqual(no_method.status_code, 200, no_method.data)
+        self.assertEqual([item['id'] for item in no_method.data], [unassigned.id])
+
+    def test_payment_method_summary_uses_matched_parts_for_income_expense_and_average(self):
+        self.client.force_authenticate(self.accountant)
+        self._finance_with_parts('10000.00', [(self.payment_method, '3000.00'), (self.card_method, '7000.00')])
+        self._finance_with_parts('2000.00', [(self.payment_method, '2000.00')])
+        self._finance_with_parts('5000.00', [(self.card_method, '5000.00')])
+        self._finance_with_parts(
+            '10000.00',
+            [(self.payment_method, '4000.00'), (self.card_method, '6000.00')],
+            transaction_type=FinanceTransaction.Type.EXPENSE,
+        )
+
+        all_methods = self._finance_summary()
+        self.assertEqual(Decimal(all_methods['income']), Decimal('17000.00'))
+        self.assertEqual(Decimal(all_methods['expense']), Decimal('10000.00'))
+        self.assertEqual(Decimal(all_methods['balance']), Decimal('7000.00'))
+
+        cash = self._finance_summary(payment_method=self.payment_method.id)
+        self.assertEqual(Decimal(cash['income']), Decimal('5000.00'))
+        self.assertEqual(Decimal(cash['expense']), Decimal('4000.00'))
+        self.assertEqual(Decimal(cash['balance']), Decimal('1000.00'))
+        self.assertEqual(cash['transactions_count'], 3)
+        self.assertEqual(Decimal(cash['average_income']), Decimal('2500.00'))
+
+        card = self._finance_summary(payment_method=self.card_method.id)
+        self.assertEqual(Decimal(card['income']), Decimal('12000.00'))
+        self.assertEqual(Decimal(card['expense']), Decimal('6000.00'))
+        self.assertEqual(Decimal(card['balance']), Decimal('6000.00'))
+        self.assertEqual(card['transactions_count'], 3)
+        self.assertEqual(Decimal(card['average_income']), Decimal('6000.00'))
+
+    def test_payment_method_summary_combines_with_branch_date_source_and_avoids_join_duplicates(self):
+        self.client.force_authenticate(self.accountant)
+        branch = Branch.objects.create(name='Finance filtered branch')
+        other_branch = Branch.objects.create(name='Other finance filtered branch')
+        paid_at = timezone.make_aware(datetime(2026, 9, 14, 10, 0), timezone.get_default_timezone())
+        matched = self._finance_with_parts(
+            '10000.00',
+            [(self.payment_method, '3000.00'), (self.card_method, '7000.00')],
+            branch=branch,
+            source='master_class',
+            paid_at=paid_at,
+        )
+        self._finance_with_parts('2000.00', [(self.payment_method, '2000.00')], branch=other_branch, source='master_class', paid_at=paid_at)
+        self._finance_with_parts('5000.00', [(self.payment_method, '5000.00')], branch=branch, source='manual', paid_at=paid_at)
+        teacher = get_user_model().objects.create_user(username='finance-filter-teacher', password='pass', role='teacher', roles=['teacher'])
+        subject = MasterClassSubject.objects.create(name='Finance filter subject')
+        master_class = MasterClass.objects.create(subject=subject, title=subject.name, branch=branch, starts_at=paid_at, price=10000)
+        MasterClassStaffAssignment.objects.create(master_class=master_class, employee=teacher, role=MasterClassStaffAssignment.Role.LEAD)
+        MasterClassPayment.objects.create(master_class=master_class, amount=Decimal('10000.00'), payment_date=date(2026, 9, 14), finance_transaction=matched)
+        asset = BusinessMediaAsset.objects.create(
+            file_name='receipt.png',
+            mime_type='image/png',
+            file_size=1,
+            sha256='a' * 64,
+            file_data=b'x',
+        )
+        FinanceTransactionAttachment.objects.create(transaction=matched, asset=asset)
+
+        summary = self._finance_summary(
+            payment_method=self.payment_method.id,
+            branch=branch.id,
+            date_from='2026-09-14',
+            date_to='2026-09-14',
+            source='master_class',
+            teacher=teacher.id,
+        )
+
+        self.assertEqual(Decimal(summary['income']), Decimal('3000.00'))
+        self.assertEqual(summary['transactions_count'], 1)
+        self.assertEqual(Decimal(summary['average_income']), Decimal('3000.00'))
 
 
 class CashBalanceApiTests(APITestCase):
@@ -4318,6 +4455,72 @@ class MasterClassSubjectApiTests(APITestCase):
         self.assertEqual(patched.status_code, 200, patched.data)
         self.assertIsNone(patched.data['subject'])
         self.assertEqual(patched.data['title'], 'Старый МК')
+
+
+class MasterClassSubjectFilterTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username='master-subject-filter-admin', password='pass', role='admin', roles=['admin'])
+        self.manager = User.objects.create_user(username='master-subject-filter-manager', password='pass', role='manager', roles=['manager'])
+        self.client.force_authenticate(self.admin)
+        self.branch = Branch.objects.create(name='Subject filter branch')
+        self.other_branch = Branch.objects.create(name='Subject filter other branch')
+        self.subject_a = MasterClassSubject.objects.create(name='Subject A')
+        self.subject_b = MasterClassSubject.objects.create(name='Subject B')
+        self.master_a = MasterClass.objects.create(
+            subject=self.subject_a,
+            title=self.subject_a.name,
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            stage=MasterClass.Stage.ATTENDED,
+            price='9000.00',
+        )
+        self.master_b = MasterClass.objects.create(
+            subject=self.subject_b,
+            title=self.subject_b.name,
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            stage=MasterClass.Stage.BOOKED,
+            price='9000.00',
+        )
+        self.legacy = MasterClass.objects.create(
+            subject=None,
+            title='Legacy master class',
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            stage=MasterClass.Stage.ATTENDED,
+            price='9000.00',
+        )
+        self.other_branch_master = MasterClass.objects.create(
+            subject=self.subject_a,
+            title=self.subject_a.name,
+            branch=self.other_branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            stage=MasterClass.Stage.ATTENDED,
+            price='9000.00',
+        )
+
+    def ids(self, **params):
+        response = self.client.get('/api/master-classes/', params)
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data if isinstance(response.data, list) else response.data['results']
+        return {item['id'] for item in data}
+
+    def test_subject_filter_supports_ids_unassigned_all_and_combinations(self):
+        self.assertEqual(self.ids(subject=self.subject_a.id), {self.master_a.id, self.other_branch_master.id})
+        self.assertEqual(self.ids(subject=self.subject_b.id), {self.master_b.id})
+        self.assertEqual(self.ids(subject='unassigned'), {self.legacy.id})
+        self.assertTrue({self.master_a.id, self.master_b.id, self.legacy.id}.issubset(self.ids()))
+        self.assertEqual(self.ids(subject=self.subject_a.id, branch=self.branch.id), {self.master_a.id})
+        self.assertEqual(self.ids(subject=self.subject_a.id, stage=MasterClass.Stage.ATTENDED), {self.master_a.id, self.other_branch_master.id})
+
+    def test_search_checks_subject_name_and_keeps_legacy_title(self):
+        self.assertEqual(self.ids(search='Subject A'), {self.master_a.id, self.other_branch_master.id})
+        self.assertEqual(self.ids(search='Legacy'), {self.legacy.id})
 
 
 class MasterClassFinanceSyncTests(APITestCase):

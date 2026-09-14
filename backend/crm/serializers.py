@@ -1892,6 +1892,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     manager_name = serializers.SerializerMethodField()
     paid_at_precision = serializers.SerializerMethodField()
     paid_on = serializers.SerializerMethodField()
+    matched_payment_amount = serializers.SerializerMethodField()
     addon_sale_summary = serializers.SerializerMethodField()
     master_class_id = serializers.SerializerMethodField()
     master_class_payment_id = serializers.SerializerMethodField()
@@ -1914,7 +1915,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     class Meta:
         model = FinanceTransaction
         fields = '__all__'
-        read_only_fields = ('created_by', 'payment_method_name', 'paid_at_precision', 'paid_on')
+        read_only_fields = ('created_by', 'payment_method_name', 'paid_at_precision', 'paid_on', 'matched_payment_amount')
 
     def get_client_name(self, obj):
         return str(obj.client) if obj.client else ''
@@ -1969,6 +1970,24 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         if obj.paid_at:
             return timezone.localdate(obj.paid_at)
         return None
+
+    def _selected_payment_method_id(self):
+        request = self.context.get('request')
+        value = request.query_params.get('payment_method') if request else None
+        if not value or value in ('all', 'unassigned'):
+            return None
+        return int(value) if str(value).isdigit() else None
+
+    def get_matched_payment_amount(self, obj):
+        payment_method_id = self._selected_payment_method_id()
+        if not payment_method_id:
+            return obj.amount
+        parts = list(obj.payment_parts.all())
+        if parts:
+            return sum((part.amount for part in parts if part.payment_method_id == payment_method_id), Decimal('0.00'))
+        if obj.payment_method_id == payment_method_id:
+            return obj.amount
+        return Decimal('0.00')
 
     def get_addon_sale_summary(self, obj):
         sale = getattr(obj, 'addon_sale', None)

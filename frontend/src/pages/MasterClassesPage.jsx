@@ -296,7 +296,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { search: '', stage: '', event_date: '', manager: '', teacher: '', extra_work: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', stage: '', subject: 'all', event_date: '', manager: '', teacher: '', extra_work: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
@@ -314,6 +314,7 @@ export default function MasterClassesPage() {
   const [deletingPaymentId, setDeletingPaymentId] = useState(null);
   const [extraMasterClasses, setExtraMasterClasses] = useState([]);
   const [masterClassSubjects, setMasterClassSubjects] = useState([]);
+  const [masterClassSubjectFilters, setMasterClassSubjectFilters] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -334,12 +335,16 @@ export default function MasterClassesPage() {
     setForm({ ...form, discount: value });
   };
   const masterClassSubjectOptions = masterClassSubjects.map((subject) => ({ value: subject.id, label: subject.name }));
+  const masterClassSubjectFilterOptions = masterClassSubjectFilters.map((subject) => ({ value: subject.id, label: subject.name }));
   const hasMasterClassSubjects = masterClassSubjectOptions.length > 0;
 
   useEffect(() => {
     api.get('master-class-subjects/', { params: { is_active: 'true' } })
       .then(({ data }) => setMasterClassSubjects(Array.isArray(data) ? data : data.results || []))
       .catch(() => setMasterClassSubjects([]));
+    api.get('master-class-subjects/')
+      .then(({ data }) => setMasterClassSubjectFilters(Array.isArray(data) ? data : data.results || []))
+      .catch(() => setMasterClassSubjectFilters([]));
   }, []);
 
   useEffect(() => {
@@ -941,6 +946,7 @@ export default function MasterClassesPage() {
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
         <Input label="Дата проведения" type="date" value={crud.filters.event_date} onChange={(e) => crud.setFilters({ ...crud.filters, event_date: e.target.value })} />
+        <SelectField label="Предмет МК" value={crud.filters.subject || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, subject: value })} options={[{ value: 'all', label: 'Все предметы' }, ...masterClassSubjectFilterOptions, { value: 'unassigned', label: 'Без предмета / старые МК' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
         <SelectField label="Учёт времени" value={crud.filters.extra_work} onChange={(value) => crud.setFilters({ ...crud.filters, extra_work: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычные' }, { value: 'true', label: 'Вне времени МК' }]} />

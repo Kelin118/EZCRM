@@ -184,6 +184,7 @@ export default function FinancePage() {
     }
   };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
+  const hasSpecificPaymentMethodFilter = crud.filters.payment_method && !['all', 'unassigned'].includes(crud.filters.payment_method);
 
   return (
     <>
@@ -246,17 +247,24 @@ export default function FinancePage() {
       <Table data={crud.items} columns={[
         { key: 'paid_at', header: 'Дата', render: formatFinanceDate },
         { key: 'type', header: 'Тип', render: (row) => <Badge value={row.transaction_type}>{typeLabel(row.transaction_type)}</Badge> },
-        { key: 'amount', header: 'Сумма', render: (row) => (
-          <div className="text-sm">
-            <p>{money(row.subtotal_amount || row.amount)}</p>
-            {Number(row.discount_amount || 0) > 0 && <p className="text-emerald-700">Скидка: −{money(row.discount_amount)}</p>}
-            <p className="font-bold">Оплачено: {money(row.amount)}</p>
-          </div>
-        ) },
+        { key: 'amount', header: 'Сумма', render: (row) => {
+          const displayAmount = hasSpecificPaymentMethodFilter ? row.matched_payment_amount : (row.subtotal_amount || row.amount);
+          return (
+            <div className="text-sm">
+              <p className="font-bold">{money(displayAmount)}</p>
+              {hasSpecificPaymentMethodFilter && <p className="text-xs text-slate-500">Всего по операции: {money(row.amount)}</p>}
+              {!hasSpecificPaymentMethodFilter && Number(row.discount_amount || 0) > 0 && <p className="text-emerald-700">Скидка: −{money(row.discount_amount)}</p>}
+              {!hasSpecificPaymentMethodFilter && <p className="font-semibold text-slate-600">Оплачено: {money(row.amount)}</p>}
+            </div>
+          );
+        } },
         { key: 'payment_method_name', header: 'Оплата', render: (row) => row.payment_parts?.length ? (
           <div className="text-sm">
             {row.payment_parts.length > 1 && <Badge value="mixed">Смешанная оплата</Badge>}
-            {row.payment_parts.map((part) => <p key={part.id || part.payment_method}>{part.payment_method_name} — {money(part.amount)}</p>)}
+            {row.payment_parts.map((part) => {
+              const selected = hasSpecificPaymentMethodFilter && String(part.payment_method) === String(crud.filters.payment_method);
+              return <p key={part.id || part.payment_method} className={selected ? 'font-bold text-slate-900' : ''}>{part.payment_method_name} — {money(part.amount)}</p>;
+            })}
           </div>
         ) : (row.payment_method_name || 'Не указан') },
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },

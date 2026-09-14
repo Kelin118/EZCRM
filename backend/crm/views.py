@@ -72,6 +72,7 @@ from .models import (
     EmployeeWorkSchedule,
     FinanceTransaction,
     FinanceTransactionAttachment,
+    FinancePaymentPart,
     GiftCertificate,
     GroupMembership,
     Lesson,
@@ -2553,6 +2554,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         manager = self.request.query_params.get('manager')
         teacher = self.request.query_params.get('teacher')
         client = self.request.query_params.get('client')
+        subject = self.request.query_params.get('subject')
         search = self.request.query_params.get('search')
         event_date = _date_param(self.request, 'event_date')
         event_date_from = _date_param(self.request, 'event_date_from')
@@ -2570,9 +2572,15 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(Q(teacher_id=teacher) | Q(staff_assignments__employee_id=teacher))
         if client:
             queryset = queryset.filter(participants__id=client)
+        if subject and subject != 'all':
+            if subject == 'unassigned':
+                queryset = queryset.filter(subject__isnull=True)
+            else:
+                queryset = queryset.filter(subject_id=subject)
         if search:
             queryset = queryset.filter(
                 Q(title__icontains=search)
+                | Q(subject__name__icontains=search)
                 | Q(description__icontains=search)
                 | Q(participants__first_name__icontains=search)
                 | Q(participants__last_name__icontains=search)
@@ -4564,7 +4572,10 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             if payment_method == 'unassigned':
                 queryset = queryset.filter(payment_method__isnull=True, payment_parts__isnull=True)
             else:
-                queryset = queryset.filter(Q(payment_method_id=payment_method) | Q(payment_parts__payment_method_id=payment_method))
+                queryset = queryset.filter(
+                    Q(payment_parts__payment_method_id=payment_method)
+                    | Q(payment_parts__isnull=True, payment_method_id=payment_method)
+                )
         if discount and discount != 'all':
             queryset = queryset.filter(discount__isnull=True) if discount == 'unassigned' else queryset.filter(discount_id=discount)
         if manager and manager != 'all':
@@ -4808,8 +4819,31 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
         queryset = self.filter_queryset(self.get_queryset())
-        income = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total'])
-        expense = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total'])
+        payment_method = request.query_params.get('payment_method')
+        if payment_method and payment_method not in ('all', 'unassigned') and str(payment_method).isdigit():
+            method_id = int(payment_method)
+
+            def method_total(transaction_type):
+                scoped = queryset.filter(transaction_type=transaction_type)
+                parts_total = _decimal(
+                    FinancePaymentPart.objects.filter(
+                        transaction__in=scoped,
+                        payment_method_id=method_id,
+                    ).aggregate(total=Sum('amount'))['total']
+                )
+                legacy_total = _decimal(
+                    scoped.filter(
+                        payment_method_id=method_id,
+                        payment_parts__isnull=True,
+                    ).aggregate(total=Sum('amount'))['total']
+                )
+                return parts_total + legacy_total
+
+            income = method_total(FinanceTransaction.Type.INCOME)
+            expense = method_total(FinanceTransaction.Type.EXPENSE)
+        else:
+            income = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.INCOME).aggregate(total=Sum('amount'))['total'])
+            expense = _decimal(queryset.filter(transaction_type=FinanceTransaction.Type.EXPENSE).aggregate(total=Sum('amount'))['total'])
         income_count = queryset.filter(transaction_type=FinanceTransaction.Type.INCOME).count()
         return Response({
             'income': income, 'expense': expense, 'balance': income - expense,

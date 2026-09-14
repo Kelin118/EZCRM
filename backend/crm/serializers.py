@@ -2,6 +2,7 @@ from datetime import datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Max
@@ -1889,6 +1890,8 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     created_by_name = serializers.SerializerMethodField()
     created_by_roles = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
+    paid_at_precision = serializers.SerializerMethodField()
+    paid_on = serializers.SerializerMethodField()
     addon_sale_summary = serializers.SerializerMethodField()
     master_class_id = serializers.SerializerMethodField()
     master_class_payment_id = serializers.SerializerMethodField()
@@ -1911,7 +1914,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     class Meta:
         model = FinanceTransaction
         fields = '__all__'
-        read_only_fields = ('created_by', 'payment_method_name')
+        read_only_fields = ('created_by', 'payment_method_name', 'paid_at_precision', 'paid_on')
 
     def get_client_name(self, obj):
         return str(obj.client) if obj.client else ''
@@ -1924,6 +1927,48 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
 
     def get_manager_name(self, obj):
         return (obj.manager.get_full_name() or obj.manager.username) if obj.manager else None
+
+    def _related(self, obj, name):
+        try:
+            return getattr(obj, name, None)
+        except ObjectDoesNotExist:
+            return None
+
+    def _certificate_date(self, obj):
+        prefetched = getattr(obj, '_prefetched_objects_cache', {}).get('certificates')
+        certificates = prefetched if prefetched is not None else obj.certificates.all()
+        dates = {item.issued_at for item in certificates if item.issued_at}
+        return dates.pop() if len(dates) == 1 else None
+
+    def _payment_date_info(self, obj):
+        for related_name, field_name in (
+            ('master_class_payment_entry', 'payment_date'),
+            ('trial_payment', 'payment_date'),
+            ('subscription_payment', 'purchase_date'),
+            ('addon_sale', 'sale_date'),
+            ('certificate_batch', 'issued_at'),
+            ('master_class_payment', 'payment_date'),
+        ):
+            related = self._related(obj, related_name)
+            if related is not None:
+                return 'date', getattr(related, field_name, None)
+        certificates_date = self._certificate_date(obj)
+        if certificates_date is not None:
+            return 'date', certificates_date
+        return 'datetime', None
+
+    def get_paid_at_precision(self, obj):
+        return self._payment_date_info(obj)[0]
+
+    def get_paid_on(self, obj):
+        precision, value = self._payment_date_info(obj)
+        if value:
+            return value
+        if precision == 'date' and obj.paid_at:
+            return timezone.localdate(obj.paid_at)
+        if obj.paid_at:
+            return timezone.localdate(obj.paid_at)
+        return None
 
     def get_addon_sale_summary(self, obj):
         sale = getattr(obj, 'addon_sale', None)

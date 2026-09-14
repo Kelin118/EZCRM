@@ -331,9 +331,9 @@ def _create_income_transaction(
     discount_amount=0,
     subtotal_amount=None,
 ):
-    if not branch:
+    if not branch and source != 'trial':
         branch = (subscription.branch if subscription else None) or (client.branch if client else None)
-    if not manager:
+    if not manager and source != 'trial':
         manager = (client.manager if client else None) or (created_by if created_by and has_any_role(created_by, {MANAGER, 'admin'}) else None)
     amount = _money(amount)
     if amount > 0:
@@ -2291,6 +2291,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     comment='Оплата пробника',
                     created_by=self.request.user,
                     manager=trial.manager,
+                    branch=trial.branch,
                     payment_method=payment_method,
                     payment_parts=payment_parts,
                 )
@@ -2300,9 +2301,11 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
+        previous_payment_date = serializer.instance.payment_date
         with transaction.atomic():
             trial = serializer.save()
             finance_transaction = trial.finance_transaction
+            payment_date_changed = previous_payment_date != trial.payment_date
             payment_method = getattr(trial, 'selected_payment_method', None) or (finance_transaction.payment_method if finance_transaction else None)
             payment_parts = getattr(trial, 'selected_payment_parts', None)
             if trial.price > 0 and trial.payment_date:
@@ -2314,8 +2317,11 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.manager = trial.manager
                     finance_transaction.source = 'trial'
                     finance_transaction.comment = 'Оплата пробника'
-                    finance_transaction.paid_at = _paid_at_from_date(trial.payment_date)
-                    finance_transaction.save(update_fields=('amount', 'subtotal_amount', 'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at'))
+                    update_fields = ['amount', 'subtotal_amount', 'client', 'branch', 'manager', 'source', 'comment', 'updated_at']
+                    if payment_date_changed:
+                        finance_transaction.paid_at = _paid_at_from_date(trial.payment_date)
+                        update_fields.append('paid_at')
+                    finance_transaction.save(update_fields=update_fields)
                     update_finance_payment_parts(finance_transaction, payment_parts, payment_method=payment_method,
                                                  method_changed=bool(getattr(trial, 'selected_payment_method', None)))
                 elif payment_method or payment_parts is not None:
@@ -2327,6 +2333,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                         comment='Оплата пробника',
                         created_by=self.request.user,
                         manager=trial.manager,
+                        branch=trial.branch,
                         payment_method=payment_method,
                         payment_parts=payment_parts,
                     )
@@ -4500,6 +4507,9 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         'payment_method',
         'discount',
         'addon_sale',
+        'trial_payment',
+        'subscription_payment',
+        'certificate_batch',
         'master_class_payment',
         'master_class_payment__teacher',
         'master_class_payment_entry',
@@ -4509,6 +4519,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         'payment_parts__payment_method',
         'attachments__asset',
         'addon_sale__items__catalog_item',
+        'certificates',
         'master_class_payment__staff_assignments__employee',
         'master_class_payment_entry__master_class__staff_assignments__employee',
     ).all()

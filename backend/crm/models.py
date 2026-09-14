@@ -768,7 +768,7 @@ class FinanceTransaction(TimeStampedModel):
     def save(self, *args, **kwargs):
         if self._state.adding and self.payment_method_id and not self.payment_method_name:
             self.payment_method_name = self.payment_method.name
-        if not self.branch_id:
+        if not self.branch_id and self.source != 'trial':
             self.branch_id = (
                 self.subscription.branch_id if self.subscription_id else None
             ) or (self.client.branch_id if self.client_id else None)

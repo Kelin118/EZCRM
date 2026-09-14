@@ -1,4 +1,4 @@
-import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
+import { formatFinanceDate } from '../utils/dateTime.js';
 import { ShoppingCart } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -244,7 +244,7 @@ export default function FinancePage() {
         <div className="flex items-end"><Button variant="secondary" onClick={resetFilters}>Сбросить фильтры</Button></div>
       </Filters>
       <Table data={crud.items} columns={[
-        { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
+        { key: 'paid_at', header: 'Дата', render: formatFinanceDate },
         { key: 'type', header: 'Тип', render: (row) => <Badge value={row.transaction_type}>{typeLabel(row.transaction_type)}</Badge> },
         { key: 'amount', header: 'Сумма', render: (row) => (
           <div className="text-sm">

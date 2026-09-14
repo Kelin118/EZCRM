@@ -66,3 +66,29 @@ export function businessMonthRange(value = todayLocalDate()) {
   const [year, month] = value.split('-').map(Number);
   return { date_from: `${value.slice(0, 7)}-01`, date_to: new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10) };
 }
+
+export function formatDisplayDate(value) {
+  const dateValue = normalizeDateForInput(value);
+  if (!dateValue) return '—';
+  const [year, month, day] = dateValue.split('-');
+  return [day, month, year].filter(Boolean).join('.');
+}
+
+export function formatDisplayDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export function formatFinanceDate(row = {}) {
+  if (row.paid_at_precision === 'date') return formatDisplayDate(row.paid_on || row.paid_at);
+  return formatDisplayDateTime(row.paid_at);
+}

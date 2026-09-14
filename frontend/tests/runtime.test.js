@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { build } from 'esbuild';
 import {
-  addCalendarDays, businessMonthRange, formatDateTimeLocal, normalizeDateForInput, serializeDateTimeLocal, todayLocalDate,
+  addCalendarDays, businessMonthRange, formatDateTimeLocal, formatFinanceDate, normalizeDateForInput, serializeDateTimeLocal, todayLocalDate,
 } from '../src/utils/dateTime.js';
 
 const require = createRequire(import.meta.url);
@@ -100,12 +100,27 @@ test('calendar navigation and month bounds do not shift in local timezone', () =
 
 test('finance metadata patch omits unchanged money and minute-rounded timestamp', async () => {
   const { normalizeItemForForm, normalizePayload } = await loadModule('pages/pageUtils.jsx');
-  const original = { id: 1, amount: '100.00', paid_at: '2026-09-14T11:00:37Z', comment: 'Old',
+  const original = { id: 1, amount: '100.00', paid_at: '2026-09-14T11:00:37Z', paid_at_precision: 'datetime', paid_on: '2026-09-14', comment: 'Old',
     payment_parts: [{ payment_method: 2, amount: '100.00' }] };
   const form = { ...normalizeItemForForm(original), comment: 'New' };
   assert.deepEqual(normalizePayload(form, original), { comment: 'New' });
   assert.deepEqual(normalizePayload({ ...form, amount: '120.00' }, original), { amount: '120.00', comment: 'New' });
   assert.equal(normalizePayload({ paid_at: '2026-09-14T16:00' }).paid_at, '2026-09-14T11:00:00.000Z');
+});
+
+test('finance date formatter uses API precision across workstation timezones', () => {
+  for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
+    process.env.TZ = zone;
+    assert.equal(formatFinanceDate({
+      paid_at_precision: 'date',
+      paid_on: '2026-09-14',
+      paid_at: '2026-09-13T00:00:00Z',
+    }), '14.09.2026');
+    assert.equal(formatFinanceDate({
+      paid_at_precision: 'datetime',
+      paid_at: '2026-09-14T10:43:27Z',
+    }), '14.09.2026, 15:43');
+  }
 });
 
 for (const status of [401, 500]) {

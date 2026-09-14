@@ -83,6 +83,8 @@ const readOnlyFields = new Set([
   'payment_status',
   'payments',
   'payment_method_name',
+  'paid_at_precision',
+  'paid_on',
 ]);
 
 const timeFields = new Set(['start_time', 'end_time']);

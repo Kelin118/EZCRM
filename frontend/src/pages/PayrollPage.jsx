@@ -7,16 +7,10 @@ import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { Badge, Filters, Input, money, PageHeader, SelectField, showApiError, Table } from './pageUtils.jsx';
 import { useEmployeeOptions } from './lookupUtils.jsx';
+import { businessMonthRange } from '../utils/dateTime.js';
 
-const today = new Date();
-const dateInputValue = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-const monthStart = () => dateInputValue(new Date(today.getFullYear(), today.getMonth(), 1));
-const monthEnd = () => dateInputValue(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+const monthStart = () => businessMonthRange().date_from;
+const monthEnd = () => businessMonthRange().date_to;
 const minutes = (value) => `${Math.floor(Number(value || 0) / 60)} ч ${Number(value || 0) % 60} мин`;
 const emptyPay = { payment_method: '', payment_parts: [] };
 

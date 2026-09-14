@@ -52,7 +52,7 @@ from .export_excel import (
 )
 from .excel_import import import_excel
 from .group_schedule import sync_group_schedule_slots
-from .payment_parts import payment_parts_audit, sync_finance_payment_parts, validate_payment_parts
+from .payment_parts import payment_parts_audit, sync_finance_payment_parts, update_finance_payment_parts, validate_payment_parts
 from .models import (
     AddonSale,
     AuditLog,
@@ -509,12 +509,16 @@ def _lesson_visited_at(lesson):
 
 
 def _restore_subscription_lesson(subscription):
+    if subscription:
+        subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
     if subscription and subscription.remaining_visits < subscription.total_visits:
         subscription.remaining_visits += 1
         subscription.save(update_fields=('remaining_visits', 'updated_at'))
 
 
 def _deduct_subscription_lesson(visit):
+    if visit.subscription_id:
+        visit.subscription = Subscription.objects.select_for_update().get(pk=visit.subscription_id)
     if (
         visit.status == Visit.Status.ATTENDED
         and visit.subscription_id
@@ -611,6 +615,18 @@ class BaseAuthenticatedViewSet(viewsets.ModelViewSet):
     audit_create_description = ''
     audit_update_description = ''
     audit_delete_description = ''
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if isinstance(instance, (Subscription, Trial, MasterClass, AddonSale, PayrollStatement)):
+            has_payments = bool(instance.finance_transaction_id)
+            if isinstance(instance, MasterClass):
+                has_payments = has_payments or instance.payments.exists()
+            if isinstance(instance, Subscription):
+                has_payments = has_payments or instance.finance_transactions.exists()
+            if has_payments:
+                return Response({'detail': 'Запись содержит финансовую историю. Сначала обработайте оплату в её карточке.'}, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
 
     def _audit_entity_type(self):
         return self.audit_entity_type or self.get_queryset().model.__name__
@@ -1510,21 +1526,24 @@ class LessonViewSet(EducationBaseViewSet):
             return Response({'detail': 'items должен быть списком.'}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            lesson = get_object_or_404(Lesson.objects.select_for_update(), pk=lesson.pk)
             for item in items:
+                if not isinstance(item, dict):
+                    raise drf_serializers.ValidationError({'items': 'Строка табеля должна быть объектом.'})
                 client_id = item.get('client')
                 if not GroupMembership.objects.filter(
                     group=lesson.group,
                     client_id=client_id,
                     status=GroupMembership.Status.ACTIVE,
                 ).exists():
-                    return Response(
-                        {'detail': 'Ученик не состоит в группе выбранного урока.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    raise drf_serializers.ValidationError({'detail': 'Ученик не состоит в группе выбранного урока.'})
                 status_value = item.get('status') or Visit.Status.PLANNED
                 if status_value not in Visit.Status.values:
-                    return Response({'detail': f'Invalid status: {status_value}'}, status=status.HTTP_400_BAD_REQUEST)
+                    raise drf_serializers.ValidationError({'status': 'Недопустимый статус посещения.'})
                 subscription_id = item.get('subscription') or None
+                if subscription_id:
+                    subscription = drf_serializers.PrimaryKeyRelatedField(queryset=Subscription.objects.filter(client_id=client_id)).run_validation(subscription_id)
+                    subscription_id = subscription.pk
                 if not subscription_id:
                     subscription = (
                         Subscription.objects.filter(client_id=client_id, status=Subscription.Status.ACTIVE)
@@ -2095,16 +2114,8 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
                         'amount', 'subtotal_amount', 'discount', 'discount_name', 'discount_amount',
                         'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at',
                     ))
-                    if payment_parts is None and finance_transaction.payment_parts.exists():
-                        existing_parts = list(finance_transaction.payment_parts.all())
-                        if len(existing_parts) == 1:
-                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': subscription.paid_amount}]
-                        else:
-                            payment_parts = [
-                                {'payment_method': part.payment_method_id, 'amount': part.amount}
-                                for part in existing_parts
-                            ]
-                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
+                    update_finance_payment_parts(finance_transaction, payment_parts, payment_method=payment_method,
+                                                 method_changed=bool(getattr(subscription, 'selected_payment_method', None)))
                 else:
                     if not payment_method and payment_parts is None:
                         raise drf_serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
@@ -2179,22 +2190,10 @@ class VisitViewSet(BaseAuthenticatedViewSet):
         return queryset.order_by('-visited_at', '-created_at')
 
     def _restore_lesson(self, subscription):
-        if subscription and subscription.remaining_visits < subscription.total_visits:
-            subscription.remaining_visits += 1
-            subscription.save(update_fields=('remaining_visits', 'updated_at'))
+        _restore_subscription_lesson(subscription)
 
     def _deduct_lesson(self, visit):
-        if (
-            visit.status == Visit.Status.ATTENDED
-            and visit.subscription_id
-            and not visit.lesson_deducted
-            and visit.subscription.total_visits > 0
-            and visit.subscription.remaining_visits > 0
-        ):
-            visit.subscription.remaining_visits -= 1
-            visit.subscription.save(update_fields=('remaining_visits', 'updated_at'))
-            visit.lesson_deducted = True
-            visit.save(update_fields=('lesson_deducted', 'updated_at'))
+        _deduct_subscription_lesson(visit)
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -2205,21 +2204,31 @@ class VisitViewSet(BaseAuthenticatedViewSet):
 
     def perform_update(self, serializer):
         with transaction.atomic():
-            previous = Visit.objects.select_related('subscription').get(pk=serializer.instance.pk)
+            previous = Visit.objects.select_for_update(of=('self',)).select_related('subscription').get(pk=serializer.instance.pk)
+            previous_subscription = previous.subscription
+            was_deducted = previous.lesson_deducted
+            serializer.instance = previous
             visit = serializer.save()
-            subscription_changed = previous.subscription_id != visit.subscription_id
-            should_restore = previous.lesson_deducted and (
+            subscription_changed = getattr(previous_subscription, 'pk', None) != visit.subscription_id
+            should_restore = was_deducted and (
                 visit.status != Visit.Status.ATTENDED or subscription_changed
             )
 
             if should_restore:
-                self._restore_lesson(previous.subscription)
+                self._restore_lesson(previous_subscription)
                 visit.lesson_deducted = False
                 visit.save(update_fields=('lesson_deducted', 'updated_at'))
 
             self._deduct_lesson(visit)
             description = 'Занятие отмечено как посещённое' if visit.status == Visit.Status.ATTENDED else 'Изменено посещение'
             self._log_instance(AuditLog.Action.UPDATE, visit, description, self._audit_changes())
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        instance = Visit.objects.select_for_update().get(pk=instance.pk)
+        if instance.lesson_deducted:
+            self._restore_lesson(instance.subscription)
+        super().perform_destroy(instance)
 
 
 class TrialViewSet(BaseAuthenticatedViewSet):
@@ -2307,16 +2316,8 @@ class TrialViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.comment = 'Оплата пробника'
                     finance_transaction.paid_at = _paid_at_from_date(trial.payment_date)
                     finance_transaction.save(update_fields=('amount', 'subtotal_amount', 'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at'))
-                    if payment_parts is None and finance_transaction.payment_parts.exists():
-                        existing_parts = list(finance_transaction.payment_parts.all())
-                        if len(existing_parts) == 1:
-                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': trial.price}]
-                        else:
-                            payment_parts = [
-                                {'payment_method': part.payment_method_id, 'amount': part.amount}
-                                for part in existing_parts
-                            ]
-                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=payment_method)
+                    update_finance_payment_parts(finance_transaction, payment_parts, payment_method=payment_method,
+                                                 method_changed=bool(getattr(trial, 'selected_payment_method', None)))
                 elif payment_method or payment_parts is not None:
                     finance_transaction = _create_income_transaction(
                         client=trial.client,
@@ -2371,8 +2372,10 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         return Response({'count': queryset.count(), 'results': results})
 
     @action(detail=True, methods=['post'], url_path='convert-to-subscription')
+    @transaction.atomic
     def convert_to_subscription(self, request, pk=None):
         trial = self.get_object()
+        trial = get_object_or_404(Trial.objects.select_for_update(), pk=trial.pk)
         if not (is_admin(request.user) or has_role(request.user, MANAGER)):
             return Response({'detail': 'Нет доступа к этому действию'}, status=status.HTTP_403_FORBIDDEN)
         if not trial.client_id:
@@ -2393,15 +2396,18 @@ class TrialViewSet(BaseAuthenticatedViewSet):
 
         addons = validate_addons_payload(request.data.get('addons', []))
         title = (service.name if service else None) or request.data.get('subscription_type') or request.data.get('title') or ''
-        start_date = parse_date(request.data.get('start_date') or '') or (timezone.localdate() if service else None)
-        purchase_date = parse_date(request.data.get('purchase_date') or request.data.get('payment_date') or '') or timezone.localdate()
-        total_visits = int(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
-        price = Decimal(str(request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0)))
+        start_value = request.data.get('start_date') or (timezone.localdate() if service else None)
+        start_date = drf_serializers.DateField().run_validation(start_value)
+        purchase_date = drf_serializers.DateField().run_validation(request.data.get('purchase_date') or request.data.get('payment_date') or timezone.localdate())
+        total_visits = drf_serializers.IntegerField(min_value=1).run_validation(request.data.get('total_visits') or (service.lessons_count if service else 0) or 0)
+        price = drf_serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0')).run_validation(
+            request.data.get('price') if request.data.get('price') not in (None, '') else (service.price if service else 0))
         addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in addons), Decimal('0'))
         branch = trial.branch or trial.client.branch
         discount = Discount.objects.filter(pk=request.data.get('discount')).first() if request.data.get('discount') else None
         discount_result = calculate_discount(price + addons_sum, discount, branch=branch, calculation_date=purchase_date)
-        payment_amount = Decimal(str(request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price']))
+        payment_amount = drf_serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0')).run_validation(
+            request.data.get('payment_amount') if request.data.get('payment_amount') not in (None, '') else discount_result['total_price'])
         try:
             payment_method = _resolve_payment_method(request.data.get('payment_method'), required=payment_amount > 0 and request.data.get('payment_parts') is None)
         except ValueError as error:
@@ -2419,7 +2425,9 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         if total_visits <= 0:
             return Response({'detail': 'Количество занятий должно быть больше 0'}, status=status.HTTP_400_BAD_REQUEST)
 
-        end_date = parse_date(request.data.get('end_date') or '')
+        end_date = drf_serializers.DateField().run_validation(request.data['end_date']) if request.data.get('end_date') else None
+        if end_date and end_date < start_date:
+            raise drf_serializers.ValidationError({'end_date': 'Дата окончания не может быть раньше даты начала.'})
         if not end_date and service:
             membership = (
                 GroupMembership.objects.select_related('group')
@@ -2829,8 +2837,6 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         transaction_item.client = payment.master_class.participants.first()
         transaction_item.branch = payment.master_class.branch
         transaction_item.manager = payment.master_class.manager
-        transaction_item.payment_method = method
-        transaction_item.payment_method_name = method.name if method else ''
         transaction_item.paid_at = _paid_at_from_date(payment.payment_date)
         transaction_item.source = 'master_class'
         transaction_item.comment = _master_class_payment_comment(payment.master_class, payment.payment_type, payment.comment)
@@ -2847,11 +2853,12 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             'comment',
             'updated_at',
         ))
-        if payment_parts is None and ('payment_method' in payment_data or 'amount' in payment_data):
-            existing_parts = list(transaction_item.payment_parts.all())
-            if len(existing_parts) == 1:
-                payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': payment.amount}]
-        sync_finance_payment_parts(transaction_item, payment_parts, legacy_payment_method=method)
+        update_finance_payment_parts(transaction_item, payment_parts, payment_method=method,
+                                     method_changed='payment_method' in payment_data)
+
+    def _locked_payment_master_class(self):
+        visible = self.get_object()
+        return get_object_or_404(MasterClass.objects.select_for_update().prefetch_related('participants'), pk=visible.pk)
 
     @action(detail=True, methods=['get', 'post'], url_path='payments')
     def payments(self, request, pk=None):
@@ -2861,8 +2868,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             return Response(MasterClassPaymentSerializer(payments, many=True, context=self.get_serializer_context()).data)
 
         with transaction.atomic():
-            master_class = MasterClass.objects.select_for_update().prefetch_related('participants').get(pk=pk)
-            self.check_object_permissions(request, master_class)
+            master_class = self._locked_payment_master_class()
             serializer = MasterClassPaymentSerializer(data=request.data, context=self.get_serializer_context())
             serializer.is_valid(raise_exception=True)
             payment_data = dict(serializer.validated_data)
@@ -2873,8 +2879,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
     @action(detail=True, methods=['patch', 'delete'], url_path=r'payments/(?P<payment_id>[^/.]+)')
     def payment_detail(self, request, pk=None, payment_id=None):
         with transaction.atomic():
-            master_class = MasterClass.objects.select_for_update().prefetch_related('participants').get(pk=pk)
-            self.check_object_permissions(request, master_class)
+            master_class = self._locked_payment_master_class()
             payment = get_object_or_404(MasterClassPayment.objects.select_for_update(of=('self',)).select_related(
                 'master_class',
                 'finance_transaction__payment_method',
@@ -3189,20 +3194,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             return None
         if certificate.finance_transaction_id:
             finance_transaction = certificate.finance_transaction
-            finance_transaction.amount = certificate.sale_price
-            finance_transaction.subtotal_amount = certificate.face_value
-            finance_transaction.discount_amount = certificate.face_value - certificate.sale_price
-            finance_transaction.discount_name = f'?????? ??????????? {certificate.sale_discount_percent}%'
-            finance_transaction.client = certificate.purchaser_client
-            finance_transaction.branch = certificate.purchaser_client.branch if certificate.purchaser_client else None
-            finance_transaction.manager = certificate.purchaser_client.manager if certificate.purchaser_client else None
-            finance_transaction.source = 'certificate'
-            finance_transaction.comment = f'Продажа сертификата {certificate.serial_code or certificate.code}'
-            finance_transaction.paid_at = _paid_at_from_date(certificate.issued_at)
-            finance_transaction.save(update_fields=(
-                'amount', 'subtotal_amount', 'discount_amount', 'discount_name',
-                'client', 'branch', 'manager', 'source', 'comment', 'paid_at', 'updated_at',
-            ))
+            return update_finance_payment_parts(finance_transaction, payment_parts)
         else:
             finance_transaction = _create_income_transaction(
                 client=certificate.purchaser_client,
@@ -3287,9 +3279,11 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             self._log_instance(AuditLog.Action.CERTIFICATE_UPDATE, certificate, '??????? ??????????', _certificate_audit(certificate))
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def redeem(self, request, pk=None):
-        certificate = refresh_certificate_status(self.get_object())
-        amount = _money(request.data.get('amount'))
+        visible = self.get_object()
+        certificate = refresh_certificate_status(get_object_or_404(GiftCertificate.objects.select_for_update(), pk=visible.pk))
+        amount = drf_serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01')).run_validation(request.data.get('amount'))
         if certificate.status not in {GiftCertificate.Status.ACTIVE, GiftCertificate.Status.PARTIALLY_USED}:
             raise drf_serializers.ValidationError({'status': '?????????? ?????? ???????????? ? ??????? ???????.'})
         if amount <= 0:
@@ -4203,8 +4197,6 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                     finance_transaction.client = sale.client
                     finance_transaction.branch = sale.branch
                     finance_transaction.manager = sale.client.manager if sale.client else (self.request.user if has_role(self.request.user, MANAGER) else None)
-                    finance_transaction.payment_method = sale.payment_method
-                    finance_transaction.payment_method_name = sale.payment_method.name if sale.payment_method else finance_transaction.payment_method_name
                     finance_transaction.paid_at = _paid_at_from_date(sale.sale_date)
                     finance_transaction.source = self._sale_source(sale)
                     finance_transaction.comment = self._sale_comment(sale)
@@ -4225,16 +4217,8 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                         'updated_at',
                     ))
                     payment_parts = getattr(sale, 'selected_payment_parts', None)
-                    if payment_parts is None and finance_transaction.payment_parts.exists():
-                        existing_parts = list(finance_transaction.payment_parts.all())
-                        if len(existing_parts) == 1:
-                            payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': sale.payment_amount}]
-                        else:
-                            payment_parts = [
-                                {'payment_method': part.payment_method_id, 'amount': part.amount}
-                                for part in existing_parts
-                            ]
-                    sync_finance_payment_parts(finance_transaction, payment_parts, legacy_payment_method=sale.payment_method)
+                    update_finance_payment_parts(finance_transaction, payment_parts, payment_method=sale.payment_method,
+                                                 method_changed='payment_method' in serializer.validated_data)
                 else:
                     finance_transaction = _create_income_transaction(
                         client=sale.client,
@@ -4432,9 +4416,11 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         return Response(PayrollStatementSerializer(statements, many=True).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'], url_path='recalculate')
+    @transaction.atomic
     def recalculate(self, request, pk=None):
         self._ensure_payroll_access(request)
         statement = self.get_object()
+        statement = get_object_or_404(PayrollStatement.objects.select_for_update(), pk=statement.pk)
         if statement.status != PayrollStatement.Status.DRAFT:
             return Response({'detail': 'Пересчитать можно только черновик.'}, status=status.HTTP_400_BAD_REQUEST)
         apply_payroll_calculation(statement)
@@ -4443,9 +4429,13 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         return Response(self.get_serializer(statement).data)
 
     @action(detail=True, methods=['post'], url_path='approve')
+    @transaction.atomic
     def approve(self, request, pk=None):
         self._ensure_payroll_access(request)
         statement = self.get_object()
+        statement = get_object_or_404(PayrollStatement.objects.select_for_update(), pk=statement.pk)
+        if statement.status != PayrollStatement.Status.DRAFT:
+            return Response({'detail': 'Утвердить можно только черновик.'}, status=status.HTTP_400_BAD_REQUEST)
         statement.status = PayrollStatement.Status.APPROVED
         statement.approved_by = request.user
         statement.approved_at = timezone.now()
@@ -4454,12 +4444,19 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         return Response(self.get_serializer(statement).data)
 
     @action(detail=True, methods=['post'], url_path='mark-paid')
+    @transaction.atomic
     def mark_paid(self, request, pk=None):
         self._ensure_payroll_access(request)
         statement = self.get_object()
+        statement = get_object_or_404(PayrollStatement.objects.select_for_update(), pk=statement.pk)
+        if statement.status == PayrollStatement.Status.PAID and statement.finance_transaction_id:
+            return Response(self.get_serializer(statement).data)
         if statement.status not in (PayrollStatement.Status.APPROVED, PayrollStatement.Status.PAID):
             return Response({'detail': 'Выплатить можно только утверждённую зарплату.'}, status=status.HTTP_400_BAD_REQUEST)
-        payment_method = _resolve_payment_method(request.data.get('payment_method'), required=statement.total_amount > 0 and request.data.get('payment_parts') is None)
+        try:
+            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=statement.total_amount > 0 and request.data.get('payment_parts') is None)
+        except ValueError as error:
+            raise drf_serializers.ValidationError({'payment_method': str(error)})
         payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=statement.total_amount, legacy_payment_method=payment_method)
         if not statement.finance_transaction_id:
             transaction_item = FinanceTransaction.objects.create(
@@ -4483,7 +4480,13 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         return Response(self.get_serializer(statement).data)
 
     def perform_update(self, serializer):
-        statement = serializer.save()
+        with transaction.atomic():
+            serializer.instance = get_object_or_404(PayrollStatement.objects.select_for_update(), pk=serializer.instance.pk)
+            if serializer.instance.status != PayrollStatement.Status.DRAFT:
+                raise drf_serializers.ValidationError({'detail': 'Изменять можно только черновик зарплаты.'})
+            statement = serializer.save()
+            apply_payroll_calculation(statement)
+            statement.save()
         self._log_instance(AuditLog.Action.PAYROLL_ADJUST, statement, 'Изменена корректировка зарплаты', self._audit_changes())
 
 
@@ -4609,6 +4612,25 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         if getattr(serializer.instance, 'master_class_payment_entry', None):
             raise drf_serializers.ValidationError({'detail': 'Оплаты мастер-класса редактируются в карточке МК.'})
+        if self._has_payment_owner(serializer.instance):
+            financial_fields = {'amount', 'transaction_type', 'payment_method', 'payment_parts', 'client',
+                                'subscription', 'branch', 'source', 'paid_at', 'discount',
+                                'discount_name', 'discount_amount', 'subtotal_amount'}
+            changed = any(
+                value != getattr(serializer.instance, field)
+                for field, value in serializer.validated_data.items()
+                if field in financial_fields and field != 'payment_parts'
+            )
+            parts = serializer.validated_data.get('_payment_parts')
+            if parts is not None:
+                proposed = sorted((part['payment_method'].pk, part['amount']) for part in parts)
+                existing = sorted((part.payment_method_id, part.amount) for part in serializer.instance.payment_parts.all())
+                changed = changed or proposed != existing
+            if changed:
+                raise drf_serializers.ValidationError({'detail': 'Связанная оплата редактируется в карточке продажи, абонемента, пробника или зарплаты.'})
+            # A full edit form may echo financial fields; keep their historical snapshots untouched.
+            for field in financial_fields | {'_payment_parts'}:
+                serializer.validated_data.pop(field, None)
         old_manager = serializer.instance.manager_id
         instance = serializer.save()
         action_value = AuditLog.Action.FINANCE_MANAGER_UPDATE if old_manager != instance.manager_id else AuditLog.Action.UPDATE
@@ -4618,6 +4640,20 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         if getattr(instance, 'master_class_payment_entry', None):
             raise drf_serializers.ValidationError({'detail': 'Оплаты мастер-класса удаляются в карточке МК.'})
         super().perform_destroy(instance)
+
+    def _has_payment_owner(self, instance):
+        return any(getattr(instance, name, None) is not None for name in (
+            'subscription_payment', 'trial_payment', 'addon_sale', 'master_class_payment',
+            'master_class_payment_entry', 'certificate_batch', 'payroll_statement',
+        )) or instance.certificates.exists()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if getattr(instance, 'master_class_payment_entry', None):
+            return super().destroy(request, *args, **kwargs)
+        if self._has_payment_owner(instance):
+            return Response({'detail': 'Операция связана с оплаченной записью. Измените оплату в её карточке.'}, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
 
     def _cash_scope(self, queryset, branch):
         if branch and branch != 'all':

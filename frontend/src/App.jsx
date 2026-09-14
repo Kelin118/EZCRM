@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import api from './api/axios.js';
+import { BUSINESS_TIME_ZONE } from './utils/dateTime.js';
 import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from './auth.js';
 import AppLayout from './components/layout/AppLayout.jsx';
 import Button from './components/ui/Button.jsx';
@@ -122,7 +123,7 @@ function UnprocessedTrialsModal() {
             >
               <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                 <span className="font-bold text-slate-900">{trial.client_name || `Пробник #${trial.id}`}</span>
-                <span className="text-xs font-semibold text-slate-500">{trial.scheduled_at ? new Date(trial.scheduled_at).toLocaleString('ru-RU') : 'Дата не указана'}</span>
+                <span className="text-xs font-semibold text-slate-500">{trial.scheduled_at ? new Date(trial.scheduled_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : 'Дата не указана'}</span>
               </div>
               <p className="mt-1 text-xs font-semibold text-slate-500">{[trial.branch_name, trial.manager_name, trial.teacher_name].filter(Boolean).join(' · ') || 'Ответственные не указаны'}</p>
               {trial.notes && <p className="mt-2 line-clamp-2 text-xs text-slate-600">{trial.notes}</p>}

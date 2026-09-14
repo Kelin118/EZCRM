@@ -8,10 +8,10 @@ import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import Table from '../components/ui/Table.jsx';
-import { formatDateTimeLocal, normalizeDateForInput, normalizeTimeForApi, normalizeTimeForInput, serializeDateTimeLocal } from '../utils/dateTime.js';
+import { BUSINESS_TIME_ZONE, formatDateTimeLocal, normalizeDateForInput, normalizeTimeForApi, normalizeTimeForInput, serializeDateTimeLocal } from '../utils/dateTime.js';
 
 export const money = (value) => `${Number(value || 0).toLocaleString('ru-RU')} ₸`;
-export const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
+export const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—');
 export const dateOnly = (value) => {
   const dateValue = normalizeDateForInput(value);
   if (!dateValue) return '—';
@@ -138,11 +138,14 @@ export function normalizeItemForForm(item = {}) {
   return Object.fromEntries(Object.entries(item || {}).map(([key, value]) => [key, normalizeFormValue(key, value)]));
 }
 
-export function normalizePayload(payload) {
+export function normalizePayload(payload, original = null) {
   const normalized = {};
+  const initialForm = original ? normalizeItemForForm(original) : null;
 
   Object.entries(payload).forEach(([key, value]) => {
     if (readOnlyFields.has(key)) return;
+    if (initialForm && Object.hasOwn(initialForm, key)
+      && JSON.stringify(normalizeFormValue(key, value)) === JSON.stringify(initialForm[key])) return;
 
     if (value === '' && nullableFields.has(key)) {
       normalized[key] = null;

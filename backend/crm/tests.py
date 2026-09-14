@@ -4314,9 +4314,10 @@ class MasterClassSubjectApiTests(APITestCase):
         self.assertIsNone(detail.data['subject'])
         self.assertEqual(detail.data['title'], 'Старый МК')
 
-        blocked = self.client.patch(f'/api/master-classes/{legacy.id}/', {'price': '6000.00'}, format='json')
-        self.assertEqual(blocked.status_code, 400)
-        self.assertIn('subject', blocked.data)
+        patched = self.client.patch(f'/api/master-classes/{legacy.id}/', {'price': '6000.00'}, format='json')
+        self.assertEqual(patched.status_code, 200, patched.data)
+        self.assertIsNone(patched.data['subject'])
+        self.assertEqual(patched.data['title'], 'Старый МК')
 
 
 class MasterClassFinanceSyncTests(APITestCase):

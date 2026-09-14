@@ -6,22 +6,16 @@ import { getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import { Filters, Input, PageHeader } from './pageUtils.jsx';
 import { downloadBlobFile, formatExportFilename, handleExportError } from './exportUtils.jsx';
-import { normalizeDateForInput } from '../utils/dateTime.js';
-
-function isoDate(date) {
-  return normalizeDateForInput(date);
-}
+import { addCalendarDays, businessMonthRange, todayLocalDate } from '../utils/dateTime.js';
 
 function period(days) {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(to.getDate() - days + 1);
-  return { date_from: isoDate(from), date_to: isoDate(to) };
+  const today = todayLocalDate();
+  return { date_from: addCalendarDays(today, 1 - days), date_to: today };
 }
 
 function thisMonth() {
-  const now = new Date();
-  return { date_from: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), date_to: isoDate(now) };
+  const today = todayLocalDate();
+  return { date_from: businessMonthRange(today).date_from, date_to: today };
 }
 
 const exportsList = [

@@ -5,13 +5,14 @@ import Button from '../components/ui/Button.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { Badge, Filters, Input, PageHeader, SelectField, showApiError, Table } from './pageUtils.jsx';
 import { useEmployeeOptions } from './lookupUtils.jsx';
+import { addCalendarDays, BUSINESS_TIME_ZONE, businessMonthRange, todayLocalDate } from '../utils/dateTime.js';
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
-const monthStartIso = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-const monthEndIso = () => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().slice(0, 10);
-const addDaysIso = (days) => { const date = new Date(); date.setDate(date.getDate() + days); return date.toISOString().slice(0, 10); };
+const todayIso = todayLocalDate;
+const monthStartIso = () => businessMonthRange().date_from;
+const monthEndIso = () => businessMonthRange().date_to;
+const addDaysIso = (days) => addCalendarDays(todayIso(), days);
 const minutes = (value) => `${Math.floor(Number(value || 0) / 60)} ч ${Number(value || 0) % 60} мин`;
-const time = (value) => value ? new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—';
+const time = (value) => value ? new Date(value).toLocaleTimeString('ru-RU', { timeZone: BUSINESS_TIME_ZONE, hour: '2-digit', minute: '2-digit' }) : '—';
 
 export default function EmployeeWorklogPage() {
   const [filters, setFilters] = useState({ date_from: monthStartIso(), date_to: monthEndIso(), branch: 'all', employee: '', source: 'all' });

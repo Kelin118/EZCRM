@@ -12,9 +12,9 @@ import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
-import { formatDateTimeLocal } from '../utils/dateTime.js';
+import { BUSINESS_TIME_ZONE, todayLocalDate, formatDateTimeLocal } from '../utils/dateTime.js';
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayLocalDate();
 
 const masterClassStages = [
   { value: 'lead', label: 'Лид' },
@@ -63,13 +63,13 @@ const stageLabel = (value) => masterClassStages.find((stage) => stage.value === 
 const paymentTypeLabels = { prepayment: 'Предоплата', additional: 'Доплата', legacy: 'Старая оплата' };
 const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Частично', paid: 'Оплачено', overpaid: 'Переплата' };
 const paymentStatusBadge = (value) => ({ unpaid: 'cancelled', partial: 'booked', paid: 'paid', overpaid: 'outside' }[value] || value);
-const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '—');
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—');
 const eventDateTime = (value) => {
   if (!value) return { date: '—', time: '' };
   const date = new Date(value);
   return {
-    date: date.toLocaleDateString('ru-RU'),
-    time: date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+    date: date.toLocaleDateString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }),
+    time: date.toLocaleTimeString('ru-RU', { timeZone: BUSINESS_TIME_ZONE, hour: '2-digit', minute: '2-digit' }),
   };
 };
 const dash = (value) => value || '—';

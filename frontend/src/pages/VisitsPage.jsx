@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
+import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser, hasAnyRole, ROLES } from '../auth.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
@@ -77,7 +78,7 @@ const addDays = (value, count) => {
   date.setDate(date.getDate() + count);
   return isoDate(date);
 };
-const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '-');
 const timeRange = (lesson) => `${lesson.start_time?.slice(0, 5) || '--:--'}-${lesson.end_time?.slice(0, 5) || '--:--'}`;
 const statusLabel = (value) => visitStatusOptions.find((item) => item.value === value)?.label || value || '-';
 

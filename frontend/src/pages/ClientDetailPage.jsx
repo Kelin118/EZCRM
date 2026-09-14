@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
+import { todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import { canCreateTasks, canManageSubscriptions, canManageVisits, getStoredUser, hasAnyRole, isAdmin, ROLES } from '../auth.js';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import Badge from '../components/ui/Badge.jsx';
@@ -22,7 +23,7 @@ const tabs = [
   { key: 'tasks', label: 'Задачи', roles: [ROLES.ADMIN, ROLES.MANAGER, ROLES.TEACHER] },
 ];
 const masterClassTitle = (item = {}) => item.subject_name || item.title || '';
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayLocalDate();
 const paymentTypeLabels = { prepayment: 'Предоплата', additional: 'Доплата', legacy: 'Ранее внесена' };
 const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Частично', paid: 'Оплачено', overpaid: 'Переплата' };
 
@@ -236,7 +237,7 @@ function renderTab(activeTab, data, actions = {}) {
   }
   if (activeTab === 'trials') {
     return <Table data={data.trials} columns={[
-      { key: 'scheduled_at', header: 'Дата', render: (row) => row.scheduled_at ? new Date(row.scheduled_at).toLocaleString('ru-RU') : '—' },
+      { key: 'scheduled_at', header: 'Дата', render: (row) => row.scheduled_at ? new Date(row.scheduled_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
       { key: 'status', header: 'Этап', render: (row) => <Badge value={row.stage ?? row.status} /> },
       { key: 'price', header: 'Сумма', render: (row) => money(row.price) },
       { key: 'bought_subscription', header: 'Купил', render: (row) => row.bought_subscription ? 'Да' : 'Нет' },
@@ -245,7 +246,7 @@ function renderTab(activeTab, data, actions = {}) {
   if (activeTab === 'masterClasses') {
     return <Table data={data.masterClasses} columns={[
       { key: 'subject_name', header: 'Название', render: (row) => masterClassTitle(row) || '—' },
-      { key: 'starts_at', header: 'Дата', render: (row) => row.starts_at ? new Date(row.starts_at).toLocaleString('ru-RU') : '—' },
+      { key: 'starts_at', header: 'Дата', render: (row) => row.starts_at ? new Date(row.starts_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
       { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage} /> },
       { key: 'payment_amount', header: 'Оплачено', render: (row) => money(row.payment_amount) },
     ]} />;
@@ -260,7 +261,7 @@ function renderTab(activeTab, data, actions = {}) {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="font-bold text-slate-900">{masterClassTitle(item)}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-500">{item.starts_at ? new Date(item.starts_at).toLocaleString('ru-RU') : 'Дата не указана'} · {item.branch_name || 'Филиал не указан'}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">{item.starts_at ? new Date(item.starts_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : 'Дата не указана'} · {item.branch_name || 'Филиал не указан'}</p>
                 </div>
                 <div className="grid gap-1 text-sm font-semibold text-slate-700 sm:text-right">
                   <span>К оплате: {money(item.amount_due ?? item.price)}</span>
@@ -291,7 +292,7 @@ function renderTab(activeTab, data, actions = {}) {
             <Table data={financeRest} columns={[
               { key: 'source', header: 'Источник' },
               { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
-              { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—' },
+              { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
               { key: 'comment', header: 'Комментарий' },
             ]} />
           </section>
@@ -301,7 +302,7 @@ function renderTab(activeTab, data, actions = {}) {
   }
   if (activeTab === 'visits') {
     return <Table data={data.visits} columns={[
-      { key: 'visited_at', header: 'Дата', render: (row) => row.visited_at ? new Date(row.visited_at).toLocaleString('ru-RU') : '—' },
+      { key: 'visited_at', header: 'Дата', render: (row) => row.visited_at ? new Date(row.visited_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
       { key: 'subscription', header: 'Абонемент', render: (row) => row.subscription_title || '—' },
       { key: 'teacher', header: 'Учитель', render: (row) => row.teacher_name || '—' },
       { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{visitStatusOptions.find((item) => item.value === row.status)?.label || row.status}</Badge> },
@@ -313,13 +314,13 @@ function renderTab(activeTab, data, actions = {}) {
       { key: 'transaction_type', header: 'Тип', render: (row) => <Badge value={row.type ?? row.transaction_type} /> },
       { key: 'source', header: 'Источник' },
       { key: 'amount', header: 'Сумма', render: (row) => money(row.amount) },
-      { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU') : '—' },
+      { key: 'paid_at', header: 'Дата', render: (row) => row.paid_at ? new Date(row.paid_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
       { key: 'comment', header: 'Описание' },
     ]} />;
   }
   return <Table data={data.tasks} columns={[
     { key: 'title', header: 'Задача' },
     { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status} /> },
-    { key: 'due_at', header: 'Срок', render: (row) => row.due_at ? new Date(row.due_at).toLocaleString('ru-RU') : '—' },
+    { key: 'due_at', header: 'Срок', render: (row) => row.due_at ? new Date(row.due_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
   ]} />;
 }

@@ -13,7 +13,7 @@ import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, S
 import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
-import { todayLocalDate } from '../utils/dateTime.js';
+import { BUSINESS_TIME_ZONE, todayLocalDate } from '../utils/dateTime.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
 
@@ -41,7 +41,7 @@ const baseFields = [
 ];
 
 const stageLabel = (value) => trialStages.find((stage) => stage.value === value)?.label || value || '-';
-const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : '-');
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '-');
 const dash = (value) => value || '-';
 const isBoughtStage = (value) => boughtStages.has(value);
 

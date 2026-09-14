@@ -4,6 +4,7 @@ import { CheckCircle2, GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import { BUSINESS_TIME_ZONE, formatDateTimeLocal, todayLocalDate } from '../utils/dateTime.js';
 import { canCreateTasks, canDeleteTask, getStoredUser, hasRole, ROLES } from '../auth.js';
 import { Actions, Badge, Button, CrudModal, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
@@ -36,7 +37,7 @@ const baseFields = [
   { name: 'description', label: 'Описание', type: 'textarea' },
 ];
 
-const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU') : 'Без срока');
+const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : 'Без срока');
 const dash = (value) => value || '—';
 const isDone = (task) => ['done', 'completed'].includes(task.status);
 const isNew = (task) => ['new', 'pending', 'todo'].includes(task.status);
@@ -45,11 +46,11 @@ function localDate(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-CA');
+  return formatDateTimeLocal(date).slice(0, 10);
 }
 
 function todayDate() {
-  return new Date().toLocaleDateString('en-CA');
+  return todayLocalDate();
 }
 
 function dateTimeAtStart(dateValue) {

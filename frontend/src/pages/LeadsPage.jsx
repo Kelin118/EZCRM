@@ -2,6 +2,7 @@ import { Inbox, MessageCircle } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import { formatDateTimeLocal, serializeDateTimeLocal } from '../utils/dateTime.js';
 import { getStoredUser, hasRole, ROLES } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
@@ -27,9 +28,7 @@ const sourceOptions = [
 ];
 
 const nowDateTimeLocal = () => {
-  const date = new Date();
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-  return date.toISOString().slice(0, 16);
+  return formatDateTimeLocal(new Date());
 };
 
 const kanbanStatuses = statusOptions.filter((item) => item.value);
@@ -175,7 +174,7 @@ export default function LeadsPage() {
         contact_phone: manualForm.contact_phone,
         branch: manualForm.branch || null,
         manager: manualForm.manager || null,
-        first_message_at: manualForm.first_message_at ? new Date(manualForm.first_message_at).toISOString() : null,
+        first_message_at: serializeDateTimeLocal(manualForm.first_message_at),
         first_message: manualForm.first_message,
         create_client: manualForm.create_client,
         existing_client: manualForm.existing_client || null,

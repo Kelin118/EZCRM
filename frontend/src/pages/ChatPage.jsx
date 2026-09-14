@@ -2,6 +2,7 @@ import { Send } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
+import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
 import { PageHeader } from './pageUtils.jsx';
@@ -43,7 +44,7 @@ export default function ChatPage() {
             <article key={message.id} className="max-w-3xl rounded-xl bg-slate-50 px-4 py-3">
               <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                 <span className="font-semibold text-brand">{message.sender_name || `Пользователь #${message.sender}`}</span>
-                <span>{new Date(message.created_at).toLocaleString('ru-RU')}</span>
+                <span>{new Date(message.created_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE })}</span>
               </div>
               <p className="text-sm text-slate-800">{message.text}</p>
             </article>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import { todayLocalDate } from '../utils/dateTime.js';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
@@ -8,7 +9,7 @@ import { Filters, Input, PageHeader, SelectField, showApiError, Table } from './
 import { useEmployeeOptions } from './lookupUtils.jsx';
 
 const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayLocalDate();
 const empty = { employee: '', branch: '', weekday: 0, weekdays: [0], start_time: '16:00', end_time: '21:00', is_working_day: true, valid_from: todayIso(), valid_until: '' };
 
 export default function EmployeeSchedulePage() {

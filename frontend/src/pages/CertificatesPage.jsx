@@ -3,6 +3,7 @@ import { Download, Eye, Gift, MessageCircle, Plus, RotateCcw, Send, Trash2 } fro
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
+import { todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import CertificateCard from '../components/certificates/CertificateCard.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -46,7 +47,7 @@ const emptyCertificate = {
   recipient_name: '',
   recipient_phone: '',
   face_value: '',
-  issued_at: new Date().toISOString().slice(0, 10),
+  issued_at: todayLocalDate(),
   payment_parts: [],
 };
 
@@ -151,7 +152,7 @@ export default function CertificatesPage() {
       ...emptyCertificate,
       template: template ? String(template.id) : '',
       face_value: template?.amount_type === 'fixed' ? template.fixed_amount : template?.min_amount || '',
-      issued_at: new Date().toISOString().slice(0, 10),
+      issued_at: todayLocalDate(),
       payment_parts: [],
     });
     setWizardStep(template ? 2 : 1);
@@ -285,7 +286,7 @@ export default function CertificatesPage() {
     { key: 'face_value', header: 'Номинал', render: (row) => money(row.face_value) },
     { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
     { key: 'visits_count', header: 'Посещений', render: (row) => row.visits_count || 0 },
-    { key: 'last_visit', header: 'Последнее посещение', render: (row) => row.last_visit ? new Date(row.last_visit).toLocaleString('ru-RU') : '—' },
+    { key: 'last_visit', header: 'Последнее посещение', render: (row) => row.last_visit ? new Date(row.last_visit).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
     { key: 'valid_until', header: 'Действует до' },
     { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{row.status_display || row.status}</Badge> },
     { key: 'actions', header: '', render: (row) => (
@@ -488,7 +489,7 @@ export default function CertificatesPage() {
 	            </div>
             <div className="rounded-2xl border border-slate-100">
               <Table data={selectedCertificate.redemptions || []} columns={[
-	                { key: 'redeemed_at', header: 'Дата', render: (row) => row.redeemed_at ? new Date(row.redeemed_at).toLocaleString('ru-RU') : '—' },
+	                { key: 'redeemed_at', header: 'Дата', render: (row) => row.redeemed_at ? new Date(row.redeemed_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
 	                { key: 'visitor_name', header: 'Посетитель' },
 	                { key: 'visitor_phone', header: 'Телефон' },
 	                { key: 'service_name', header: 'Услуга' },

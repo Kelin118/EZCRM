@@ -80,3 +80,23 @@ def apply_discount_snapshot(instance, result):
     instance.discount_value = result.get('discount_value') or Decimal('0.00')
     instance.discount_amount = result.get('discount_amount') or Decimal('0.00')
     return instance
+
+
+def calculate_sale_discount(subtotal, discount=None, *, instance=None, branch=None, calculation_date=None):
+    if instance is None or getattr(discount, 'pk', None) != instance.discount_id:
+        return calculate_discount(subtotal, discount, branch=branch, calculation_date=calculation_date)
+    subtotal = money(subtotal)
+    value = instance.discount_value
+    if instance.discount_type == Discount.Type.PERCENTAGE:
+        amount = money(subtotal * value / Decimal('100'))
+    elif instance.discount_type == Discount.Type.FIXED:
+        amount = money(value)
+    else:
+        amount = instance.discount_amount
+    amount = min(amount, subtotal)
+    return {
+        'subtotal': subtotal, 'discount': discount,
+        'discount_name': instance.discount_name, 'discount_type': instance.discount_type,
+        'discount_value': value, 'discount_amount': amount,
+        'total_price': max(subtotal - amount, Decimal('0.00')),
+    }

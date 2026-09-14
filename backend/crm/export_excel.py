@@ -1,4 +1,7 @@
 from io import BytesIO
+from datetime import datetime
+
+from django.utils import timezone
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -25,6 +28,8 @@ def _date(value):
 def _datetime(value):
     if not value:
         return ''
+    if isinstance(value, datetime) and timezone.is_aware(value):
+        value = timezone.localtime(value)
     return value.strftime('%Y-%m-%d %H:%M') if hasattr(value, 'strftime') else value
 
 

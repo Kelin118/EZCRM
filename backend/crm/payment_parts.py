@@ -1,4 +1,4 @@
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.db import transaction as db_transaction
 from rest_framework import serializers
@@ -11,7 +11,13 @@ MIXED_PAYMENT_NAME = 'Смешанная оплата'
 
 
 def money(value):
-    return Decimal(str(value or 0)).quantize(MONEY, rounding=ROUND_HALF_UP)
+    try:
+        result = Decimal(str(value or 0)).quantize(MONEY, rounding=ROUND_HALF_UP)
+        if not result.is_finite():
+            raise InvalidOperation
+        return result
+    except (InvalidOperation, ValueError, TypeError):
+        raise serializers.ValidationError({'payment_parts': 'Укажите корректную конечную сумму оплаты.'})
 
 
 def payment_parts_representation(transaction):
@@ -23,7 +29,7 @@ def payment_parts_representation(transaction):
             'is_cash': bool(part.payment_method and part.payment_method.is_cash),
             'amount': part.amount,
         }
-        for part in transaction.payment_parts.select_related('payment_method').all()
+        for part in transaction.payment_parts.all()
     ]
 
 
@@ -109,3 +115,16 @@ def sync_finance_payment_parts(transaction, payment_parts=None, *, legacy_paymen
             transaction.payment_method_name = ''
         transaction.save(update_fields=('payment_method', 'payment_method_name', 'updated_at'))
     return transaction
+
+
+def update_finance_payment_parts(transaction, payment_parts=None, *, payment_method=None, method_changed=False):
+    if payment_parts is None and not method_changed:
+        existing = list(transaction.payment_parts.all())
+        if existing and sum((part.amount for part in existing), Decimal('0')) == transaction.amount:
+            return transaction
+        if len(existing) == 1:
+            payment_parts = [{'payment_method': existing[0].payment_method_id, 'amount': transaction.amount}]
+        elif existing:
+            payment_parts = [{'payment_method': part.payment_method_id, 'amount': part.amount} for part in existing]
+        payment_method = transaction.payment_method
+    return sync_finance_payment_parts(transaction, payment_parts, legacy_payment_method=payment_method)

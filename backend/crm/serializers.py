@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Max
 from django.db.models.functions import Lower, Trim
 
@@ -63,8 +64,8 @@ from .models import (
     Trial,
     Visit,
 )
-from .payment_parts import payment_parts_representation, sync_finance_payment_parts, validate_payment_parts
-from .discounts import calculate_discount, validate_discount_for_sale
+from .payment_parts import payment_parts_representation, sync_finance_payment_parts, update_finance_payment_parts, validate_payment_parts
+from .discounts import calculate_discount, calculate_sale_discount, validate_discount_for_sale
 from .employee_worklog import get_employee_schedule_context
 from .client_duplicates import default_duplicate_info
 from .subscription_addons import addons_total, sync_subscription_addons, total_price, validate_addons_payload, validate_retail_sale_items_payload
@@ -448,6 +449,24 @@ class LessonSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = Lesson
         fields = '__all__'
 
+    def validate(self, attrs):
+        start = attrs.get('start_time', getattr(self.instance, 'start_time', None))
+        end = attrs.get('end_time', getattr(self.instance, 'end_time', None))
+        if start and end and start >= end:
+            raise serializers.ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
+        group = attrs.get('group', getattr(self.instance, 'group', None))
+        slot = attrs.get('schedule_slot', getattr(self.instance, 'schedule_slot', None))
+        room = attrs.get('room', getattr(self.instance, 'room', None))
+        branch = attrs.get('branch', getattr(self.instance, 'branch', None))
+        branch_ids = {item.branch_id for item in (group, slot, room) if item and item.branch_id}
+        if branch:
+            branch_ids.add(branch.id)
+        if len(branch_ids) > 1:
+            raise serializers.ValidationError({'branch': 'Группа, расписание и кабинет должны относиться к одному филиалу.'})
+        if slot and group and slot.group_id != group.pk:
+            raise serializers.ValidationError({'schedule_slot': 'Слот расписания относится к другой группе.'})
+        return attrs
+
     def get_group_name(self, obj):
         return obj.group.name if obj.group else ''
 
@@ -588,14 +607,7 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         addons = attrs.get('items')
-        if addons is None and self.instance:
-            addons = [
-                {'catalog_item': item.catalog_item, 'quantity': item.quantity}
-                for item in self.instance.items.all()
-                if item.catalog_item_id
-            ]
-
-        total = sum(
+        total = self.get_subtotal(self.instance) if addons is None and self.instance else sum(
             (item['catalog_item'].price * Decimal(item['quantity']) for item in (addons or [])),
             Decimal('0'),
         )
@@ -606,7 +618,7 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
         elif client or total > 0:
             raise serializers.ValidationError({'branch': 'Укажите филиал.'})
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
-        calculation = calculate_discount(total, discount, branch=branch, calculation_date=attrs.get('sale_date'))
+        calculation = calculate_sale_discount(total, discount, instance=self.instance, branch=branch, calculation_date=attrs.get('sale_date'))
         attrs['discount_name'] = calculation['discount_name']
         attrs['discount_type'] = calculation['discount_type']
         attrs['discount_value'] = calculation['discount_value']
@@ -614,7 +626,9 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
         attrs['total_price'] = calculation['total_price']
 
         initial_data = getattr(self, 'initial_data', {})
-        if 'payment_amount' not in initial_data or initial_data.get('payment_amount') in (None, ''):
+        recalculate_paid_sale = bool(self.instance and self.instance.payment_amount == self.instance.total_price
+                                     and ('items' in attrs or 'discount' in attrs))
+        if (self.instance is None or recalculate_paid_sale) and ('payment_amount' not in initial_data or initial_data.get('payment_amount') in (None, '')):
             attrs['payment_amount'] = calculation['total_price']
 
         payment_amount = attrs.get('payment_amount', self.instance.payment_amount if self.instance else Decimal('0'))
@@ -622,7 +636,8 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
             raise serializers.ValidationError({'payment_amount': 'Сумма оплаты не может быть отрицательной.'})
         payment_method = attrs.get('payment_method', self.instance.payment_method if self.instance else None)
         payment_parts = initial_data.get('payment_parts')
-        if payment_amount and payment_amount > 0 and not payment_method and payment_parts is None:
+        has_existing_parts = bool(self.instance and self.instance.finance_transaction_id and self.instance.finance_transaction.payment_parts.exists())
+        if payment_amount and payment_amount > 0 and not payment_method and payment_parts is None and not has_existing_parts:
             raise serializers.ValidationError({'payment_method': 'Выберите способ оплаты.'})
         if payment_parts is not None:
             attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=payment_amount)
@@ -701,6 +716,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         model = Subscription
         fields = '__all__'
         extra_kwargs = {'title': {'required': False}, 'start_date': {'required': False}}
+        read_only_fields = ('finance_transaction', 'discount_name', 'discount_type', 'discount_value', 'discount_amount')
 
     def get_client_name(self, obj):
         return str(obj.client)
@@ -765,10 +781,10 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
                 attrs['total_visits'] = service.lessons_count
             if service.lessons_count:
                 if self.instance is None:
-                    attrs['remaining_visits'] = service.lessons_count
+                    attrs['remaining_visits'] = attrs.get('total_visits', service.lessons_count)
                 elif service_changed and ('remaining_visits' not in initial_data or initial_data.get('remaining_visits') in (None, '')):
                     used_lessons = subscription_used_lessons(self.instance)
-                    attrs['remaining_visits'] = max(service.lessons_count - used_lessons, 0)
+                    attrs['remaining_visits'] = max(attrs.get('total_visits', service.lessons_count) - used_lessons, 0)
 
             if self.instance is None and not attrs.get('start_date'):
                 attrs['start_date'] = timezone.localdate()
@@ -789,15 +805,10 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
                     attrs['end_date'] = calculated_end_date
         elif self.instance is None and not attrs.get('start_date'):
             raise serializers.ValidationError({'start_date': 'Укажите дату начала.'})
-        effective_addons = addons
-        if effective_addons is None and self.instance:
-            effective_addons = [
-                {'catalog_item': item.catalog_item, 'quantity': item.quantity}
-                for item in self.instance.subscription_addons.all()
-                if item.catalog_item_id
-            ]
         effective_price = attrs.get('price', self.instance.price if self.instance else Decimal('0'))
-        addons_sum = sum((item['catalog_item'].price * item['quantity'] for item in (effective_addons or [])), Decimal('0'))
+        snapshots = {item.catalog_item_id: item.unit_price for item in self.instance.subscription_addons.all()} if self.instance else {}
+        addons_sum = addons_total(self.instance) if addons is None and self.instance else sum(
+            (snapshots.get(item['catalog_item'].id, item['catalog_item'].price) * item['quantity'] for item in (addons or [])), Decimal('0'))
         client = attrs.get('client', self.instance.client if self.instance else None)
         branch = resolve_optional_branch(attrs, self.instance, client=client)
         if not client:
@@ -805,7 +816,7 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         if branch:
             attrs['branch'] = branch
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
-        calculation = calculate_discount(Decimal(effective_price or 0) + addons_sum, discount, branch=branch, calculation_date=attrs.get('purchase_date'))
+        calculation = calculate_sale_discount(Decimal(effective_price or 0) + addons_sum, discount, instance=self.instance, branch=branch, calculation_date=attrs.get('purchase_date'))
         attrs['discount_name'] = calculation['discount_name']
         attrs['discount_type'] = calculation['discount_type']
         attrs['discount_value'] = calculation['discount_value']
@@ -821,7 +832,8 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         payment_method = attrs.get('payment_method', None)
         if self.instance and self.instance.finance_transaction_id and not payment_method:
             payment_method = self.instance.finance_transaction.payment_method
-        if paid_amount and paid_amount > 0 and payment_parts is None and not payment_method:
+        has_existing_parts = bool(self.instance and self.instance.finance_transaction_id and self.instance.finance_transaction.payment_parts.exists())
+        if paid_amount and paid_amount > 0 and payment_parts is None and not payment_method and not has_existing_parts:
             raise serializers.ValidationError({'payment_parts': 'Укажите распределение оплаты или способ оплаты.'})
         if payment_parts is not None:
             attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=paid_amount)
@@ -880,6 +892,14 @@ class VisitSerializer(BranchNameMixin, serializers.ModelSerializer):
     class Meta:
         model = Visit
         fields = '__all__'
+        read_only_fields = ('lesson_deducted',)
+
+    def validate(self, attrs):
+        client = attrs.get('client', getattr(self.instance, 'client', None))
+        subscription = attrs.get('subscription', getattr(self.instance, 'subscription', None))
+        if subscription and client and subscription.client_id != client.pk:
+            raise serializers.ValidationError({'subscription': 'Абонемент принадлежит другому клиенту.'})
+        return attrs
 
     def get_client_name(self, obj):
         return str(obj.client)
@@ -911,7 +931,7 @@ class VisitSerializer(BranchNameMixin, serializers.ModelSerializer):
         return ' · '.join(filter(None, parts)) or str(obj.lesson)
 
     def get_date(self, obj):
-        return obj.visited_at.date() if obj.visited_at else None
+        return timezone.localdate(obj.visited_at) if obj.visited_at else None
 
 
 class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
@@ -971,7 +991,8 @@ class TrialSerializer(BranchNameMixin, serializers.ModelSerializer):
             method = attrs.get('payment_method')
             if self.instance and self.instance.finance_transaction_id and not method:
                 method = self.instance.finance_transaction.payment_method
-            if initial_data.get('payment_parts') is None and not method:
+            has_existing_parts = bool(self.instance and self.instance.finance_transaction_id and self.instance.finance_transaction.payment_parts.exists())
+            if initial_data.get('payment_parts') is None and not method and not has_existing_parts:
                 raise serializers.ValidationError({'payment_parts': 'Укажите распределение оплаты или способ оплаты.'})
         return attrs
 
@@ -1212,7 +1233,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
                 raise serializers.ValidationError({'duration_minutes': 'Для дополнительного выхода укажите длительность МК.'})
 
     def _primary_client(self, obj):
-        return obj.participants.first()
+        return min(obj.participants.all(), key=lambda client: client.pk, default=None)
 
     def _payments_for_representation(self, obj):
         payments = list(obj.payments.all())
@@ -1327,7 +1348,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         branch = attrs.get('branch', self.instance.branch if self.instance else None)
         client = attrs.get('client', self.instance.participants.first() if self.instance else None)
         subject = attrs.get('subject', self.instance.subject if self.instance else None)
-        if subject:
+        if subject and (self.instance is None or ('subject' in attrs and subject.pk != self.instance.subject_id)):
             attrs['title'] = subject.name
         if self.instance is None:
             if not subject:
@@ -1339,12 +1360,12 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             resolve_required_branch(attrs, self.instance, client=client)
             resolve_responsible_manager(attrs, self.instance, client=client, request=self.context.get('request'))
             branch = attrs.get('branch')
-        elif not subject:
+        elif not subject and 'subject' in initial_data:
             raise serializers.ValidationError({'subject': 'Выберите предмет МК.'})
-        elif not branch:
+        elif not branch and ('branch' in initial_data or 'client' in initial_data):
             branch = resolve_required_branch(attrs, self.instance, client=client)
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
-        calculation = calculate_discount(price, discount, branch=branch, calculation_date=attrs.get('payment_date'))
+        calculation = calculate_sale_discount(price, discount, instance=self.instance, branch=branch, calculation_date=attrs.get('payment_date'))
         attrs['discount_name'] = calculation['discount_name']
         attrs['discount_type'] = calculation['discount_type']
         attrs['discount_value'] = calculation['discount_value']
@@ -1353,7 +1374,9 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         if self.instance is None and initial_payment not in (None, ''):
             if not isinstance(initial_payment, dict):
                 raise serializers.ValidationError({'initial_payment': 'Передайте параметры предоплаты объектом.'})
-            amount = Decimal(str(initial_payment.get('amount') or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            payment_serializer = MasterClassPaymentSerializer(data=initial_payment, context=self.context)
+            payment_serializer.is_valid(raise_exception=True)
+            amount = payment_serializer.validated_data['amount']
             if amount <= 0:
                 raise serializers.ValidationError({'initial_payment': {'amount': 'Сумма оплаты должна быть больше нуля.'}})
             if amount > calculation['total_price']:
@@ -1362,16 +1385,15 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
                     'remaining_amount': str(calculation['total_price']),
                 })
             raw_parts = initial_payment.get('payment_parts')
-            raw_method = initial_payment.get('payment_method')
-            method = PaymentMethod.objects.filter(pk=raw_method, is_active=True).first() if raw_method not in (None, '') else None
+            method = payment_serializer.validated_data.get('payment_method')
             if raw_parts is None and not method:
                 raise serializers.ValidationError({'initial_payment': {'payment_method': 'Выберите способ оплаты.'}})
             attrs['_initial_payment'] = {
-                'payment_type': initial_payment.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
+                'payment_type': payment_serializer.validated_data.get('payment_type') or MasterClassPayment.PaymentType.PREPAYMENT,
                 'amount': amount,
-                'payment_date': initial_payment.get('payment_date') or timezone.localdate(),
+                'payment_date': payment_serializer.validated_data.get('payment_date') or timezone.localdate(),
                 'payment_method': method,
-                'payment_parts': validate_payment_parts(raw_parts, total_amount=amount) if raw_parts is not None else None,
+                'payment_parts': payment_serializer.validated_data.get('_payment_parts'),
                 'comment': initial_payment.get('comment') or '',
             }
             attrs['payment_amount'] = Decimal('0.00')
@@ -1605,6 +1627,15 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
         template = attrs.get('template', self.instance.template if self.instance else None)
         face_value = attrs.get('face_value', self.instance.face_value if self.instance else None)
         initial_data = getattr(self, 'initial_data', {})
+        if self.instance:
+            for field in ('template', 'face_value', 'issued_at', 'status'):
+                if field in attrs and attrs[field] != getattr(self.instance, field):
+                    raise serializers.ValidationError({field: 'Условия выпущенного сертификата изменять нельзя. Используйте действия сертификата.'})
+            payment_parts = initial_data.get('payment_parts')
+            if payment_parts is not None:
+                amount = self.instance.finance_transaction.amount if self.instance.finance_transaction_id else self.instance.sale_price
+                attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=amount)
+            return attrs
         if self.instance is None:
             if not template:
                 raise serializers.ValidationError({'template': '???????? ??????.'})
@@ -2046,6 +2077,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
             attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=amount)
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         payment_parts = validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
@@ -2062,6 +2094,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         sync_finance_payment_parts(instance, payment_parts, legacy_payment_method=payment_method)
         return instance
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         payment_parts = validated_data.pop('_payment_parts', None)
         validated_data.pop('payment_parts', None)
@@ -2072,16 +2105,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         instance = super().update(instance, validated_data)
         if should_sync_parts:
             legacy_method = validated_data.get('payment_method', instance.payment_method)
-            if payment_parts is None and instance.payment_parts.exists() and 'payment_method' not in validated_data:
-                existing_parts = list(instance.payment_parts.all())
-                if len(existing_parts) == 1 and 'amount' in validated_data:
-                    payment_parts = [{'payment_method': existing_parts[0].payment_method_id, 'amount': instance.amount}]
-                else:
-                    payment_parts = [
-                        {'payment_method': part.payment_method_id, 'amount': part.amount}
-                        for part in existing_parts
-                    ]
-            sync_finance_payment_parts(instance, payment_parts, legacy_payment_method=legacy_method)
+            update_finance_payment_parts(instance, payment_parts, payment_method=legacy_method, method_changed='payment_method' in validated_data)
         return instance
 
 

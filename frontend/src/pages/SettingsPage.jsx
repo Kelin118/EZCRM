@@ -2,6 +2,7 @@ import { BadgePercent, Ban, Building2, CheckCircle2, CreditCard, Edit, MessageSq
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
+import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import { canDeleteSettings, canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
@@ -809,7 +810,7 @@ export default function SettingsPage() {
                 <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.phone_number || '—'}</td>
                 <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.branch_name || '—'}</td>
                 <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.default_manager_name || '—'}</td>
-                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU') : '—'}</td>
+                <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.last_webhook_at ? new Date(item.last_webhook_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—'}</td>
                 <td className="border-b border-slate-100 px-4 py-3">
                   <div className="grid gap-1">
                     <StatusBadge active={item.is_active} />

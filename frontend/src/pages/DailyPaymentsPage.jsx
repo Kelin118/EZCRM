@@ -5,13 +5,12 @@ import api from '../api/axios.js';
 import Button from '../components/ui/Button.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { Filters, Input, money, PageHeader, SelectField, showApiError } from './pageUtils.jsx';
+import { addCalendarDays, todayLocalDate } from '../utils/dateTime.js';
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = todayLocalDate;
 
 function shiftDate(value, days) {
-  const date = new Date(`${value || todayIso()}T00:00:00`);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return addCalendarDays(value || todayIso(), days);
 }
 
 function humanDate(value) {

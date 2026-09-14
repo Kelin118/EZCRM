@@ -7,6 +7,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000
 const api = axios.create({
   baseURL: API_BASE_URL.endsWith('/') ? API_BASE_URL : `${API_BASE_URL}/`,
 });
+let refreshPromise = null;
 
 function clearAuthAndRedirect() {
   clearStoredAuth();
@@ -30,16 +31,27 @@ api.interceptors.response.use(
     const originalRequest = error.config;
     const refresh = localStorage.getItem(REFRESH_TOKEN_KEY);
 
-    if (error.response?.status === 401 && refresh && !originalRequest._retry) {
+    if (error.response?.status === 401 && refresh && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
       try {
-        const { data } = await axios.post(`${api.defaults.baseURL}token/refresh/`, { refresh });
-        localStorage.setItem(ACCESS_TOKEN_KEY, data.access);
+        let access = localStorage.getItem(ACCESS_TOKEN_KEY);
+        if (!access || originalRequest.headers?.Authorization === `Bearer ${access}`) {
+          if (!refreshPromise) {
+            refreshPromise = axios.post(`${api.defaults.baseURL}token/refresh/`, { refresh })
+              .then(({ data }) => {
+                localStorage.setItem(ACCESS_TOKEN_KEY, data.access);
+                return data.access;
+              })
+              .finally(() => { refreshPromise = null; });
+          }
+          access = await refreshPromise;
+        }
         originalRequest.headers = originalRequest.headers || {};
-        originalRequest.headers.Authorization = `Bearer ${data.access}`;
+        originalRequest.headers.Authorization = `Bearer ${access}`;
         return api(originalRequest);
-      } catch {
-        clearAuthAndRedirect();
+      } catch (refreshError) {
+        if (refreshError.response?.status === 401) clearAuthAndRedirect();
+        return Promise.reject(refreshError);
       }
     }
 

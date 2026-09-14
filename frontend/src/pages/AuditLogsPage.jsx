@@ -2,6 +2,7 @@ import { ChevronDown, ChevronUp, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import api from '../api/axios.js';
+import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import Badge from '../components/ui/Badge.jsx';
 import Input from '../components/ui/Input.jsx';
 import Table from '../components/ui/Table.jsx';
@@ -78,7 +79,7 @@ export default function AuditLogsPage() {
       <Table
         data={logs}
         columns={[
-          { key: 'created_at', header: 'Дата', render: (row) => (row.created_at ? new Date(row.created_at).toLocaleString('ru-RU') : '-') },
+          { key: 'created_at', header: 'Дата', render: (row) => (row.created_at ? new Date(row.created_at).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '-') },
           { key: 'user_display', header: 'Пользователь' },
           {
             key: 'action',

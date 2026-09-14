@@ -64,7 +64,7 @@ from .models import (
 from .group_schedule import schedule_display, subscription_expected_end_date, subscription_remaining_lessons
 from .discounts import calculate_discount
 from .subscription_dates import calculate_subscription_end_date
-from .views import _client_active_subscription
+from .views import _client_active_subscription, _sync_master_class_payment_summary
 from .meta_api import MetaApiError
 from .export_excel import export_finance, export_summary_report
 from .phone import normalize_kz_phone
@@ -4456,6 +4456,74 @@ class MasterClassSubjectApiTests(APITestCase):
         self.assertIsNone(patched.data['subject'])
         self.assertEqual(patched.data['title'], 'Старый МК')
 
+    def test_legacy_master_class_edit_and_subject_attach(self):
+        subject = self.create_subject('Новый предмет МК').data
+        legacy = MasterClass.objects.create(
+            title='Старый исторический МК',
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            price='5000.00',
+            description='old',
+        )
+        legacy.participants.add(self.student)
+
+        patch = self.client.patch(
+            f'/api/master-classes/{legacy.id}/',
+            {
+                'subject': None,
+                'stage': MasterClass.Stage.ATTENDED,
+                'manager': self.admin.id,
+                'starts_at': (timezone.now() + timedelta(days=1)).isoformat(),
+                'price': '6500.00',
+                'description': 'edited',
+            },
+            format='json',
+        )
+
+        self.assertEqual(patch.status_code, 200, patch.data)
+        self.assertIsNone(patch.data['subject'])
+        self.assertEqual(patch.data['title'], 'Старый исторический МК')
+        self.assertEqual(patch.data['stage'], MasterClass.Stage.ATTENDED)
+        self.assertEqual(patch.data['manager'], self.admin.id)
+        self.assertEqual(Decimal(patch.data['price']), Decimal('6500.00'))
+        self.assertEqual(patch.data['description'], 'edited')
+
+        attach = self.client.patch(f"/api/master-classes/{legacy.id}/", {'subject': subject['id']}, format='json')
+        self.assertEqual(attach.status_code, 200, attach.data)
+        self.assertEqual(attach.data['subject'], subject['id'])
+        self.assertEqual(attach.data['subject_name'], 'Новый предмет МК')
+        self.assertEqual(attach.data['title'], 'Новый предмет МК')
+
+    def test_inactive_subject_history_can_be_saved_but_not_newly_assigned(self):
+        historical = MasterClassSubject.objects.create(name='Исторический предмет', is_active=False)
+        another_inactive = MasterClassSubject.objects.create(name='Закрытый предмет', is_active=False)
+        master_class = MasterClass.objects.create(
+            subject=historical,
+            title=historical.name,
+            branch=self.branch,
+            manager=self.manager,
+            starts_at=timezone.now(),
+            price='5000.00',
+        )
+        master_class.participants.add(self.student)
+
+        metadata = self.client.patch(
+            f'/api/master-classes/{master_class.id}/',
+            {'subject': historical.id, 'description': 'history ok'},
+            format='json',
+        )
+        rejected = self.client.patch(
+            f'/api/master-classes/{master_class.id}/',
+            {'subject': another_inactive.id},
+            format='json',
+        )
+
+        self.assertEqual(metadata.status_code, 200, metadata.data)
+        self.assertEqual(metadata.data['subject'], historical.id)
+        self.assertEqual(metadata.data['description'], 'history ok')
+        self.assertEqual(rejected.status_code, 400)
+
 
 class MasterClassSubjectFilterTests(APITestCase):
     def setUp(self):
@@ -4585,6 +4653,39 @@ class MasterClassFinanceSyncTests(APITestCase):
         response = self.client.post(f'/api/master-classes/{master_class.id}/payments/', payload, format='json')
         self.assertEqual(response.status_code, 201, response.data)
         return MasterClassPayment.objects.get(pk=response.data['id'])
+
+    def create_legacy_payment(self, master_class, amount='5000.00', payment_date='2026-07-20', method=None, with_part=False):
+        transaction = FinanceTransaction.objects.create(
+            branch=master_class.branch,
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=amount,
+            subtotal_amount=amount,
+            source='master_class',
+            client=master_class.participants.first(),
+            manager=master_class.manager,
+            payment_method=method,
+            payment_method_name=method.name if method else '',
+            paid_at=timezone.make_aware(datetime.combine(date.fromisoformat(payment_date), time.min)),
+            comment=f'Legacy master class payment: {master_class.title}',
+        )
+        if with_part and method:
+            FinancePaymentPart.objects.create(
+                transaction=transaction,
+                payment_method=method,
+                payment_method_name=method.name,
+                amount=amount,
+            )
+        payment = MasterClassPayment.objects.create(
+            master_class=master_class,
+            payment_type=MasterClassPayment.PaymentType.LEGACY,
+            amount=amount,
+            payment_date=payment_date,
+            accepted_by=self.admin,
+            finance_transaction=transaction,
+            comment='legacy',
+        )
+        _sync_master_class_payment_summary(master_class)
+        return payment
 
     def assert_master_class_payment_summary(self, master_class, *, paid_total, remaining_amount, compatibility_amount, transaction_id):
         master_class.refresh_from_db()
@@ -4931,6 +5032,141 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(foreign.status_code, 404)
         self.assertTrue(MasterClassPayment.objects.filter(pk=foreign_payment.id).exists())
+
+    def test_legacy_payment_without_method_parts_allows_metadata_patch(self):
+        master_class = self.create_master_class()
+        payment = self.create_legacy_payment(master_class, amount='5000.00')
+        transaction_id = payment.finance_transaction_id
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/payments/{payment.id}/',
+            {'comment': 'metadata only', 'payment_date': '2026-07-22'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payment.refresh_from_db()
+        transaction = FinanceTransaction.objects.get(pk=transaction_id)
+        self.assertEqual(payment.payment_type, MasterClassPayment.PaymentType.LEGACY)
+        self.assertEqual(payment.amount, Decimal('5000.00'))
+        self.assertEqual(payment.comment, 'metadata only')
+        self.assertEqual(transaction.amount, Decimal('5000.00'))
+        self.assertIsNone(transaction.payment_method)
+        self.assertEqual(transaction.payment_method_name, '')
+        self.assertEqual(transaction.payment_parts.count(), 0)
+
+    def test_legacy_payment_without_method_requires_parts_for_amount_change(self):
+        master_class = self.create_master_class()
+        payment = self.create_legacy_payment(master_class, amount='5000.00')
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/payments/{payment.id}/',
+            {'amount': '4000.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payment.refresh_from_db()
+        self.assertEqual(payment.amount, Decimal('5000.00'))
+
+    def test_legacy_payment_without_method_can_be_normalized_with_payment_parts(self):
+        master_class = self.create_master_class()
+        payment = self.create_legacy_payment(master_class, amount='5000.00')
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/payments/{payment.id}/',
+            {'payment_parts': [{'payment_method': self.cash.id, 'amount': '5000.00'}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payment.refresh_from_db()
+        transaction = payment.finance_transaction
+        self.assertEqual(transaction.payment_method, self.cash)
+        self.assertEqual(transaction.payment_method_name, self.cash.name)
+        self.assertEqual(transaction.payment_parts.count(), 1)
+        self.assertEqual(transaction.payment_parts.get().amount, Decimal('5000.00'))
+
+    def test_legacy_payment_amount_edit_updates_payment_finance_part_and_summary(self):
+        master_class = self.create_master_class()
+        payment = self.create_legacy_payment(master_class, amount='5000.00', method=self.cash, with_part=True)
+
+        response = self.client.patch(
+            f'/api/master-classes/{master_class.id}/payments/{payment.id}/',
+            {
+                'amount': '4000.00',
+                'payment_parts': [{'payment_method': self.cash.id, 'amount': '4000.00'}],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payment.refresh_from_db()
+        transaction = payment.finance_transaction
+        self.assertEqual(payment.amount, Decimal('4000.00'))
+        self.assertEqual(transaction.amount, Decimal('4000.00'))
+        self.assertEqual(transaction.subtotal_amount, Decimal('4000.00'))
+        self.assertEqual(transaction.payment_parts.get().amount, Decimal('4000.00'))
+        self.assert_master_class_payment_summary(
+            master_class,
+            paid_total='4000.00',
+            remaining_amount='8000.00',
+            compatibility_amount='4000.00',
+            transaction_id=transaction.id,
+        )
+
+    def test_delete_legacy_payment_deletes_finance_recalculates_summary_and_audits(self):
+        master_class = self.create_master_class()
+        payment = self.create_legacy_payment(master_class, amount='5000.00')
+        transaction_id = payment.finance_transaction_id
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/payments/{payment.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MasterClassPayment.objects.filter(pk=payment.id).exists())
+        self.assertFalse(FinanceTransaction.objects.filter(pk=transaction_id).exists())
+        self.assert_master_class_payment_summary(
+            master_class,
+            paid_total='0.00',
+            remaining_amount='12000.00',
+            compatibility_amount='0.00',
+            transaction_id=None,
+        )
+        log = AuditLog.objects.filter(entity_type='MasterClass', action=AuditLog.Action.PAYMENT).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.changes['payment_id'], payment.id)
+        self.assertEqual(log.changes['payment_type'], MasterClassPayment.PaymentType.LEGACY)
+        self.assertEqual(log.changes['finance_transaction_id'], transaction_id)
+
+    def test_delete_legacy_master_class_deletes_own_finance_and_keeps_unrelated(self):
+        master_class = self.create_master_class()
+        master_class.staff_assignments.create(employee=self.manager, role=MasterClassStaffAssignment.Role.LEAD)
+        first = self.create_legacy_payment(master_class, amount='5000.00', payment_date='2026-07-20')
+        second = self.create_legacy_payment(master_class, amount='3000.00', payment_date='2026-07-21')
+        unrelated = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount='9000.00',
+            source='manual',
+            payment_method=self.cash,
+            payment_method_name=self.cash.name,
+        )
+        master_class.finance_transaction = first.finance_transaction
+        master_class.save(update_fields=('finance_transaction', 'updated_at'))
+        master_class_id = master_class.id
+
+        response = self.client.delete(f'/api/master-classes/{master_class.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MasterClass.objects.filter(pk=master_class_id).exists())
+        self.assertFalse(MasterClassPayment.objects.filter(pk__in=(first.id, second.id)).exists())
+        self.assertFalse(FinanceTransaction.objects.filter(pk__in=(first.finance_transaction_id, second.finance_transaction_id)).exists())
+        self.assertTrue(FinanceTransaction.objects.filter(pk=unrelated.id).exists())
+        log = AuditLog.objects.filter(entity_type='MasterClass', action=AuditLog.Action.DELETE).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.entity_id, str(master_class_id))
+        self.assertEqual(log.changes['master_class_id'], master_class_id)
+        self.assertEqual(log.changes['payments_count'], 2)
+        self.assertEqual(log.changes['paid_total'], '8000.00')
 
 
 class FinanceJournalAndPaymentMethodTests(APITestCase):

@@ -478,7 +478,20 @@ export default function MasterClassesPage() {
       dispatchError('Сумма оплаты должна быть больше нуля.');
       return;
     }
-    if (paymentPartsTotal(paymentForm.payment_parts) !== amount) {
+    const originalPayment = paymentModal.payment;
+    const originalParts = paymentPartsFromApi(originalPayment || {});
+    const isExistingLegacyWithoutParts = Boolean(
+      originalPayment?.id
+      && originalPayment.payment_type === 'legacy'
+      && originalParts.length === 0
+      && !originalPayment.payment_method
+      && !originalPayment.payment_method_name
+    );
+    const partsPayload = paymentPartsPayload(paymentForm.payment_parts);
+    const amountChanged = originalPayment?.id && Number(originalPayment.amount || 0) !== amount;
+    const shouldSendParts = partsPayload.length > 0 || !isExistingLegacyWithoutParts;
+    const shouldValidateParts = shouldSendParts || amountChanged;
+    if (shouldValidateParts && paymentPartsTotal(paymentForm.payment_parts) !== amount) {
       dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
       return;
     }
@@ -488,9 +501,11 @@ export default function MasterClassesPage() {
         payment_type: paymentForm.payment_type || 'additional',
         amount: paymentForm.amount,
         payment_date: paymentForm.payment_date || todayIso(),
-        payment_parts: paymentPartsPayload(paymentForm.payment_parts),
         comment: paymentForm.comment || '',
       };
+      if (shouldSendParts) {
+        payload.payment_parts = partsPayload;
+      }
       if (paymentModal.payment?.id) {
         await api.patch(`master-classes/${form.id}/payments/${paymentModal.payment.id}/`, payload);
       } else {
@@ -507,7 +522,7 @@ export default function MasterClassesPage() {
 
   const deletePayment = async (payment) => {
     if (deletingPaymentId) return;
-    if (!window.confirm('Удалить оплату мастер-класса?')) return;
+    if (!window.confirm('Удалить оплату мастер-класса? Связанная финансовая операция будет удалена, а остаток по МК пересчитается.')) return;
     setDeletingPaymentId(payment.id);
     try {
       await api.delete(`master-classes/${form.id}/payments/${payment.id}/`);
@@ -516,6 +531,20 @@ export default function MasterClassesPage() {
       showApiError(error);
     } finally {
       setDeletingPaymentId(null);
+    }
+  };
+
+  const deleteMasterClass = async (row) => {
+    const paymentsCount = Array.isArray(row.payments) ? row.payments.length : 0;
+    const message = paymentsCount > 0
+      ? `Удалить мастер-класс и ${paymentsCount} оплат? Связанные финансовые операции этого МК будут удалены.`
+      : 'Удалить мастер-класс?';
+    if (!window.confirm(message)) return;
+    try {
+      await api.delete(`master-classes/${row.id}/`);
+      await crud.reload();
+    } catch (error) {
+      showApiError(error);
     }
   };
 
@@ -821,7 +850,8 @@ export default function MasterClassesPage() {
       dispatchError('Для дополнительного выхода укажите длительность МК.');
       return;
     }
-    if (!form.subject) {
+    const canKeepLegacySubject = Boolean(form.id && !form.subject && !form.subject_name && form.title);
+    if (!form.subject && !canKeepLegacySubject) {
       dispatchError('Выберите предмет МК.');
       return;
     }
@@ -1008,7 +1038,7 @@ export default function MasterClassesPage() {
           { key: 'paid_total', header: 'Оплачено', render: (row) => money(row.paid_total ?? row.payment_amount) },
           { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
           { key: 'payment_status', header: 'Статус оплаты', render: (row) => <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
-          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
+          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => deleteMasterClass(row)} /> },
         ]} />
       )}
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />

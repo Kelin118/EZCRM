@@ -399,6 +399,24 @@ def _sync_master_class_payment_summary(master_class):
     master_class.finance_transaction = latest_transaction
 
 
+def _delete_unowned_finance_transactions(finance_ids):
+    if not finance_ids:
+        return
+    queryset = FinanceTransaction.objects.filter(pk__in=finance_ids)
+    for relation in (
+        'subscription_payment',
+        'trial_payment',
+        'addon_sale',
+        'certificate_batch',
+        'payroll_statement',
+        'master_class_payment',
+        'master_class_payment_entry',
+    ):
+        queryset = queryset.filter(**{f'{relation}__isnull': True})
+    orphan_ids = list(queryset.filter(certificates__isnull=True).values_list('pk', flat=True).distinct())
+    FinanceTransaction.objects.filter(pk__in=orphan_ids).delete()
+
+
 def _master_class_paid_total_excluding(master_class, exclude_payment_id=None):
     queryset = MasterClassPayment.objects.filter(master_class=master_class)
     if exclude_payment_id:
@@ -2698,6 +2716,39 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             for assignment in master_class.staff_assignments.select_related('employee').order_by('role', 'employee_id')
         ]
 
+    def _payment_audit_snapshot(self, payment):
+        finance_transaction = payment.finance_transaction
+        return {
+            'payment_id': payment.id,
+            'payment_type': payment.payment_type,
+            'amount': str(payment.amount),
+            'payment_date': str(payment.payment_date),
+            'payment_parts': payment_parts_audit(finance_transaction),
+            'finance_transaction_id': finance_transaction.id,
+        }
+
+    def _master_class_delete_audit_snapshot(self, master_class):
+        payments = list(
+            master_class.payments.select_related('finance_transaction').prefetch_related(
+                'finance_transaction__payment_parts__payment_method',
+            )
+        )
+        client = master_class.participants.first()
+        return {
+            'master_class_id': master_class.id,
+            'subject': master_class.subject_id,
+            'title': master_class.title,
+            'client': client.id if client else None,
+            'client_name': str(client) if client else '',
+            'branch': master_class.branch_id,
+            'manager': master_class.manager_id,
+            'starts_at': master_class.starts_at.isoformat() if master_class.starts_at else None,
+            'price': str(master_class.price),
+            'paid_total': str(master_class.paid_total),
+            'payments_count': len(payments),
+            'payments': [self._payment_audit_snapshot(payment) for payment in payments],
+        }
+
     def _find_duplicate(self, *, client, starts_at, title, exclude_id=None):
         if not client or not starts_at or not title:
             return None
@@ -2847,6 +2898,12 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         transaction_item = payment.finance_transaction
         method = payment_data.get('payment_method', transaction_item.payment_method)
         payment_parts = payment_data.get('_payment_parts', None)
+        should_sync_parts = (
+            payment_parts is not None
+            or 'payment_method' in payment_data
+            or transaction_item.payment_method_id
+            or transaction_item.payment_parts.exists()
+        )
         transaction_item.amount = payment.amount
         transaction_item.subtotal_amount = payment.amount
         transaction_item.client = payment.master_class.participants.first()
@@ -2868,8 +2925,9 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             'comment',
             'updated_at',
         ))
-        update_finance_payment_parts(transaction_item, payment_parts, payment_method=method,
-                                     method_changed='payment_method' in payment_data)
+        if should_sync_parts:
+            update_finance_payment_parts(transaction_item, payment_parts, payment_method=method,
+                                         method_changed='payment_method' in payment_data)
 
     def _locked_payment_master_class(self):
         visible = self.get_object()
@@ -2903,14 +2961,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 if not is_admin(request.user):
                     self.permission_denied(request, message='Удалять оплаты МК может только администратор.')
                 finance_transaction = payment.finance_transaction
-                snapshot = {
-                    'payment_id': payment.id,
-                    'finance_transaction_id': finance_transaction.id,
-                    'amount': str(payment.amount),
-                    'payment_type': payment.payment_type,
-                    'payment_date': str(payment.payment_date),
-                    'payment_parts': payment_parts_audit(finance_transaction),
-                }
+                snapshot = self._payment_audit_snapshot(payment)
                 finance_transaction.delete()
                 master_class.refresh_from_db()
                 _sync_master_class_payment_summary(master_class)
@@ -2961,6 +3012,44 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         if before_staff != after_staff:
             changes['staff_assignments'] = {'before': before_staff, 'after': after_staff}
         self._log_instance(AuditLog.Action.UPDATE, master_class, 'Изменён МК', changes)
+
+    def destroy(self, request, *args, **kwargs):
+        visible = self.get_object()
+        with transaction.atomic():
+            master_class = get_object_or_404(
+                MasterClass.objects.select_for_update(of=('self',)).select_related(
+                    'branch',
+                    'subject',
+                    'manager',
+                    'teacher',
+                    'finance_transaction',
+                ).prefetch_related(
+                    'participants',
+                    'payments__finance_transaction__payment_parts__payment_method',
+                ),
+                pk=visible.pk,
+            )
+            finance_ids = set(
+                master_class.payments.exclude(finance_transaction_id__isnull=True)
+                .values_list('finance_transaction_id', flat=True)
+            )
+            if master_class.finance_transaction_id:
+                finance_ids.add(master_class.finance_transaction_id)
+            entity_id = master_class.pk
+            entity_name = str(master_class)
+            snapshot = self._master_class_delete_audit_snapshot(master_class)
+            master_class.delete()
+            _delete_unowned_finance_transactions(finance_ids)
+            log_action(
+                request,
+                AuditLog.Action.DELETE,
+                self._audit_entity_type(),
+                entity_id=entity_id,
+                entity_name=entity_name,
+                description='Удалён МК',
+                changes=snapshot,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class TaskViewSet(BaseAuthenticatedViewSet):

@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.db.models.functions import Lower, Trim
 
 from .group_schedule import (
@@ -1118,9 +1118,18 @@ class MasterClassPaymentSerializer(serializers.ModelSerializer):
         amount = attrs.get('amount', self.instance.amount if self.instance else Decimal('0'))
         if amount <= 0:
             raise serializers.ValidationError({'amount': 'Сумма оплаты должна быть больше нуля.'})
-        payment_parts = getattr(self, 'initial_data', {}).get('payment_parts')
+        initial_data = getattr(self, 'initial_data', {})
+        payment_parts = initial_data.get('payment_parts')
         if payment_parts is not None:
             attrs['_payment_parts'] = validate_payment_parts(payment_parts, total_amount=amount)
+        elif self.instance:
+            transaction_item = self.instance.finance_transaction
+            amount_changed = 'amount' in attrs and amount != self.instance.amount
+            method_provided = 'payment_method' in initial_data and initial_data.get('payment_method') not in (None, '')
+            has_existing_parts = transaction_item.payment_parts.exists()
+            has_existing_method = bool(transaction_item.payment_method_id)
+            if amount_changed and not method_provided and not has_existing_parts and not has_existing_method:
+                raise serializers.ValidationError({'payment_parts': 'Укажите разбивку оплаты для изменения суммы.'})
         return attrs
 
 
@@ -1152,8 +1161,15 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         read_only_fields = ('payment_amount', 'payment_date', 'finance_transaction')
         extra_kwargs = {'title': {'required': False}}
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if isinstance(self.instance, MasterClass) and self.instance.subject_id:
+            self.fields['subject'].queryset = MasterClassSubject.objects.filter(
+                Q(is_active=True) | Q(pk=self.instance.subject_id)
+            )
+
     def validate_subject(self, value):
-        if value and not value.is_active:
+        if value and not value.is_active and not (self.instance and self.instance.subject_id == value.id):
             raise serializers.ValidationError('Выберите активный предмет МК.')
         return value
 
@@ -1361,7 +1377,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
             resolve_required_branch(attrs, self.instance, client=client)
             resolve_responsible_manager(attrs, self.instance, client=client, request=self.context.get('request'))
             branch = attrs.get('branch')
-        elif not subject and 'subject' in initial_data:
+        elif not subject and 'subject' in initial_data and not (self.instance.subject_id is None and self.instance.title):
             raise serializers.ValidationError({'subject': 'Выберите предмет МК.'})
         elif not branch and ('branch' in initial_data or 'client' in initial_data):
             branch = resolve_required_branch(attrs, self.instance, client=client)

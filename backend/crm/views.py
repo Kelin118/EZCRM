@@ -68,7 +68,9 @@ from .models import (
     ChatMessage,
     Client,
     Discount,
+    EmployeePayrollAdvance,
     EmployeePayrollProfile,
+    EmployeePayrollRule,
     EmployeeWorkSchedule,
     FinanceTransaction,
     FinanceTransactionAttachment,
@@ -86,6 +88,7 @@ from .models import (
     MessagingContact,
     MetaWebhookEvent,
     PaymentMethod,
+    PayrollAdvanceAllocation,
     PayrollStatement,
     Room,
     ScheduleSlot,
@@ -143,7 +146,9 @@ from .serializers import (
     ChatMessageSerializer,
     ClientSerializer,
     DiscountSerializer,
+    EmployeePayrollAdvanceSerializer,
     EmployeePayrollProfileSerializer,
+    EmployeePayrollRuleSerializer,
     EmployeeWorkScheduleSerializer,
     FinanceTransactionAttachmentSerializer,
     FinanceTransactionSerializer,
@@ -4423,7 +4428,7 @@ class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):
 
 class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, PayrollPermission)
-    queryset = EmployeePayrollProfile.objects.select_related('employee').all()
+    queryset = EmployeePayrollProfile.objects.select_related('employee').prefetch_related('rules').all()
     serializer_class = EmployeePayrollProfileSerializer
     audit_entity_type = 'EmployeePayrollProfile'
 
@@ -4441,6 +4446,169 @@ class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
     def perform_update(self, serializer):
         instance = serializer.save()
         self._log_instance(AuditLog.Action.PAYROLL_PROFILE_UPDATE, instance, 'Изменены ставки сотрудника', self._audit_changes())
+
+    @action(detail=False, methods=['post'], url_path='configure-rules')
+    @transaction.atomic
+    def configure_rules(self, request):
+        employee_id = request.data.get('employee')
+        valid_from = parse_date(request.data.get('valid_from') or '') or timezone.localdate()
+        rules_payload = request.data.get('rules') or []
+        if not employee_id:
+            return Response({'employee': 'Выберите сотрудника.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(rules_payload, list):
+            return Response({'rules': 'Правила начислений должны быть списком.'}, status=status.HTTP_400_BAD_REQUEST)
+        employee = get_object_or_404(User, pk=employee_id, is_active=True)
+        profile, _ = EmployeePayrollProfile.objects.select_for_update().get_or_create(employee=employee)
+
+        new_rules = []
+        for item in rules_payload:
+            serializer = EmployeePayrollRuleSerializer(data={**item, 'profile': profile.id, 'valid_from': valid_from})
+            serializer.is_valid(raise_exception=True)
+            new_rules.append(serializer.validated_data)
+
+        previous_rules = list(profile.rules.select_for_update().filter(is_active=True, valid_until__isnull=True))
+        close_until = valid_from - timedelta(days=1)
+        for rule in previous_rules:
+            if rule.valid_from >= valid_from:
+                rule.is_active = False
+                rule.valid_until = rule.valid_from
+                rule.save(update_fields=('is_active', 'valid_until', 'updated_at'))
+            else:
+                rule.valid_until = close_until
+                rule.save(update_fields=('valid_until', 'updated_at'))
+
+        created = []
+        for attrs in new_rules:
+            created.append(EmployeePayrollRule.objects.create(**attrs))
+        log_action(
+            request,
+            AuditLog.Action.PAYROLL_PROFILE_UPDATE,
+            'EmployeePayrollProfile',
+            entity_id=profile.id,
+            description='Изменены правила начисления зарплаты',
+            changes={
+                'employee': employee.id,
+                'valid_from': str(valid_from),
+                'closed_rules': [rule.id for rule in previous_rules],
+                'created_rules': [rule.id for rule in created],
+            },
+        )
+        return Response(EmployeePayrollProfileSerializer(profile).data)
+
+
+class EmployeePayrollRuleViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, PayrollPermission)
+    queryset = EmployeePayrollRule.objects.select_related('profile__employee').all()
+    serializer_class = EmployeePayrollRuleSerializer
+    audit_entity_type = 'EmployeePayrollRule'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        employee = self.request.query_params.get('employee')
+        profile = self.request.query_params.get('profile')
+        active = self.request.query_params.get('is_active')
+        if employee:
+            queryset = queryset.filter(profile__employee_id=employee)
+        if profile:
+            queryset = queryset.filter(profile_id=profile)
+        if active in ('true', 'false'):
+            queryset = queryset.filter(is_active=active == 'true')
+        return queryset
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.PAYROLL_PROFILE_UPDATE, instance, 'Создано правило начисления зарплаты', self._audit_changes())
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._log_instance(AuditLog.Action.PAYROLL_PROFILE_UPDATE, instance, 'Изменено правило начисления зарплаты', self._audit_changes())
+
+
+class EmployeePayrollAdvanceViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, PayrollPermission)
+    queryset = EmployeePayrollAdvance.objects.select_related('employee', 'branch', 'finance_transaction', 'created_by').prefetch_related('finance_transaction__payment_parts__payment_method', 'allocations__statement').all()
+    serializer_class = EmployeePayrollAdvanceSerializer
+    audit_entity_type = 'EmployeePayrollAdvance'
+
+    def get_queryset(self):
+        queryset = _filter_branch(super().get_queryset(), self.request)
+        employee = self.request.query_params.get('employee')
+        if employee:
+            queryset = queryset.filter(employee_id=employee)
+        return queryset.order_by('-advance_date', '-created_at')
+
+    def _approved_allocations_exist(self, advance):
+        return advance.allocations.filter(statement__status__in=(PayrollStatement.Status.APPROVED, PayrollStatement.Status.PAID)).exists()
+
+    def _delete_draft_allocations(self, advance):
+        draft_statements = PayrollStatement.objects.filter(advance_allocations__advance=advance, status=PayrollStatement.Status.DRAFT).distinct()
+        PayrollAdvanceAllocation.objects.filter(advance=advance, statement__status=PayrollStatement.Status.DRAFT).delete()
+        for statement in draft_statements.select_for_update():
+            apply_payroll_calculation(statement)
+            statement.save()
+
+    def perform_create(self, serializer):
+        payment_parts_payload = self.request.data.get('payment_parts')
+        try:
+            payment_method = _resolve_payment_method(self.request.data.get('payment_method'), required=payment_parts_payload is None)
+        except ValueError as error:
+            raise drf_serializers.ValidationError({'payment_method': str(error)})
+        payment_parts = validate_payment_parts(payment_parts_payload, total_amount=serializer.validated_data['amount'], legacy_payment_method=payment_method)
+        with transaction.atomic():
+            advance = serializer.save(created_by=self.request.user)
+            transaction_item = FinanceTransaction.objects.create(
+                transaction_type=FinanceTransaction.Type.EXPENSE,
+                source='salary_advance',
+                amount=advance.amount,
+                subtotal_amount=advance.amount,
+                branch=advance.branch,
+                created_by=self.request.user,
+                paid_at=_paid_at_from_date(advance.advance_date),
+                comment=f'Аванс: {advance.employee}',
+            )
+            sync_finance_payment_parts(transaction_item, payment_parts)
+            advance.finance_transaction = transaction_item
+            advance.save(update_fields=('finance_transaction', 'updated_at'))
+        self._log_instance(AuditLog.Action.PAYROLL_ADJUST, advance, 'Выдан аванс сотруднику', self._audit_changes())
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            advance = get_object_or_404(EmployeePayrollAdvance.objects.select_for_update(), pk=serializer.instance.pk)
+            if self._approved_allocations_exist(advance):
+                raise drf_serializers.ValidationError({'detail': 'Аванс уже учтён в утверждённой зарплате.'})
+            serializer.instance = advance
+            payment_parts_payload = self.request.data.get('payment_parts')
+            try:
+                payment_method = _resolve_payment_method(self.request.data.get('payment_method'), required=False)
+            except ValueError as error:
+                raise drf_serializers.ValidationError({'payment_method': str(error)})
+            updated = serializer.save()
+            if updated.finance_transaction_id:
+                transaction_item = updated.finance_transaction
+                transaction_item.amount = updated.amount
+                transaction_item.subtotal_amount = updated.amount
+                transaction_item.branch = updated.branch
+                transaction_item.paid_at = _paid_at_from_date(updated.advance_date)
+                transaction_item.comment = f'Аванс: {updated.employee}' + (f'. {updated.comment}' if updated.comment else '')
+                transaction_item.save(update_fields=('amount', 'subtotal_amount', 'branch', 'paid_at', 'comment', 'updated_at'))
+                if payment_parts_payload is not None or payment_method:
+                    sync_finance_payment_parts(transaction_item, payment_parts_payload, legacy_payment_method=payment_method)
+                else:
+                    update_finance_payment_parts(transaction_item)
+            self._delete_draft_allocations(updated)
+        self._log_instance(AuditLog.Action.PAYROLL_ADJUST, updated, 'Изменён аванс сотрудника', self._audit_changes())
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            advance = get_object_or_404(EmployeePayrollAdvance.objects.select_for_update(), pk=instance.pk)
+            if self._approved_allocations_exist(advance):
+                raise drf_serializers.ValidationError({'detail': 'Аванс уже учтён в утверждённой зарплате.'})
+            transaction_id = advance.finance_transaction_id
+            self._delete_draft_allocations(advance)
+            advance.delete()
+            if transaction_id:
+                FinanceTransaction.objects.filter(pk=transaction_id).delete()
+        log_action(self.request, AuditLog.Action.PAYROLL_ADJUST, 'EmployeePayrollAdvance', entity_id=instance.pk, description='Удалён аванс сотрудника')
 
 
 class EmployeeWorklogView(APIView):
@@ -4465,7 +4633,7 @@ class EmployeeWorklogView(APIView):
 
 class PayrollStatementViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, PayrollPermission)
-    queryset = PayrollStatement.objects.select_related('employee', 'branch', 'created_by', 'approved_by', 'finance_transaction').all()
+    queryset = PayrollStatement.objects.select_related('employee', 'branch', 'created_by', 'approved_by', 'finance_transaction').prefetch_related('advance_allocations__advance').all()
     serializer_class = PayrollStatementSerializer
     audit_entity_type = 'PayrollStatement'
 
@@ -4509,13 +4677,16 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         employees = User.objects.filter(is_active=True)
         if employee_id:
             employees = employees.filter(id=employee_id)
-        statements = generate_payroll_statements(
-            employees=employees,
-            date_from=date_from,
-            date_to=date_to,
-            branch=branch,
-            created_by=request.user,
-        )
+        try:
+            statements = generate_payroll_statements(
+                employees=employees,
+                date_from=date_from,
+                date_to=date_to,
+                branch=branch,
+                created_by=request.user,
+            )
+        except ValueError as error:
+            return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
         log_action(request, AuditLog.Action.PAYROLL_GENERATE, 'PayrollStatement', description='Сформирован расчёт зарплаты', changes={'date_from': str(date_from), 'date_to': str(date_to)})
         return Response(PayrollStatementSerializer(statements, many=True).data, status=status.HTTP_201_CREATED)
 
@@ -4540,10 +4711,11 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
         statement = get_object_or_404(PayrollStatement.objects.select_for_update(), pk=statement.pk)
         if statement.status != PayrollStatement.Status.DRAFT:
             return Response({'detail': 'Утвердить можно только черновик.'}, status=status.HTTP_400_BAD_REQUEST)
+        apply_payroll_calculation(statement)
         statement.status = PayrollStatement.Status.APPROVED
         statement.approved_by = request.user
         statement.approved_at = timezone.now()
-        statement.save(update_fields=('status', 'approved_by', 'approved_at', 'updated_at'))
+        statement.save()
         self._log_instance(AuditLog.Action.PAYROLL_APPROVE, statement, 'Зарплата утверждена', self._audit_changes())
         return Response(self.get_serializer(statement).data)
 
@@ -4557,17 +4729,18 @@ class PayrollStatementViewSet(BaseAuthenticatedViewSet):
             return Response(self.get_serializer(statement).data)
         if statement.status not in (PayrollStatement.Status.APPROVED, PayrollStatement.Status.PAID):
             return Response({'detail': 'Выплатить можно только утверждённую зарплату.'}, status=status.HTTP_400_BAD_REQUEST)
+        amount_to_pay = statement.amount_to_pay or statement.total_amount
         try:
-            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=statement.total_amount > 0 and request.data.get('payment_parts') is None)
+            payment_method = _resolve_payment_method(request.data.get('payment_method'), required=amount_to_pay > 0 and request.data.get('payment_parts') is None)
         except ValueError as error:
             raise drf_serializers.ValidationError({'payment_method': str(error)})
-        payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=statement.total_amount, legacy_payment_method=payment_method)
-        if not statement.finance_transaction_id:
+        payment_parts = validate_payment_parts(request.data.get('payment_parts'), total_amount=amount_to_pay, legacy_payment_method=payment_method)
+        if amount_to_pay > 0 and not statement.finance_transaction_id:
             transaction_item = FinanceTransaction.objects.create(
                 transaction_type=FinanceTransaction.Type.EXPENSE,
                 source='salary',
-                amount=statement.total_amount,
-                subtotal_amount=statement.total_amount,
+                amount=amount_to_pay,
+                subtotal_amount=amount_to_pay,
                 branch=statement.branch,
                 manager=None,
                 client=None,
@@ -4607,6 +4780,8 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
         'trial_payment',
         'subscription_payment',
         'certificate_batch',
+        'payroll_advance',
+        'payroll_advance__employee',
         'master_class_payment',
         'master_class_payment__teacher',
         'master_class_payment_entry',

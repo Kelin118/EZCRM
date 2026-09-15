@@ -28,7 +28,7 @@ const sourceOptions = [
   { value: 'certificate', label: 'Сертификат' },
   { value: 'camp', label: '\u041b\u0430\u0433\u0435\u0440\u044c' },
   { value: 'product', label: '\u0422\u043e\u0432\u0430\u0440' }, { value: 'retail', label: '\u0422\u043e\u0432\u0430\u0440\u044b \u0438 \u0443\u0441\u043b\u0443\u0433\u0438' },
-  { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' },
+  { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' }, { value: 'salary_advance', label: 'Аванс' },
   { value: 'rent', label: 'Аренда' }, { value: 'other', label: 'Другое' },
 ];
 const sourceLabel = (value) => sourceOptions.find((item) => item.value === value)?.label || value || 'Другое';
@@ -389,7 +389,7 @@ export default function FinancePage() {
         { key: 'client', header: 'Клиент', render: (row) => row.client_name || 'Не указан' },
         { key: 'source', header: 'Назначение', render: (row) => (
           <div>
-            <p>{row.source === 'master_class' && row.master_class_title ? `МК · ${row.master_class_title}` : sourceLabel(row.source)}</p>
+            <p>{row.source === 'master_class' && row.master_class_title ? `МК · ${row.master_class_title}` : row.source === 'salary_advance' && row.payroll_advance_employee_name ? `Аванс · ${row.payroll_advance_employee_name}` : sourceLabel(row.source)}</p>
             {row.master_class_payment_type && <p className="mt-1 text-xs font-bold text-brand">{row.master_class_payment_type_display || row.master_class_payment_type}</p>}
             {row.master_class_is_extra_work && <p className="mt-1"><Badge value="outside">Вне времени МК</Badge></p>}
             {row.master_class_staff?.length ? <p className="text-xs text-slate-500">Мастера: {masterClassStaffNames(row).join(', ')}</p> : (row.master_class_teacher_name && <p className="text-xs text-slate-500">Мастер: {row.master_class_teacher_name}</p>)}

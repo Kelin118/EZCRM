@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import connection
+from django.db.models import Sum
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -13,7 +14,10 @@ from .models import (
     Branch,
     Client,
     EmployeePayrollProfile,
+    EmployeePayrollAdvance,
+    EmployeePayrollRule,
     EmployeeWorkSchedule,
+    FinancePaymentPart,
     FinanceTransaction,
     Lesson,
     MasterClass,
@@ -22,6 +26,7 @@ from .models import (
     MasterClassSubject,
     PaymentMethod,
     PayrollStatement,
+    PayrollAdvanceAllocation,
     StudyGroup,
 )
 from .serializers import MasterClassSerializer
@@ -416,6 +421,202 @@ class PayrollWorklogApiTests(APITestCase):
         self.assertEqual(set(by_employee), {self.teacher.id, self.assistant.id})
         self.assertEqual(Decimal(by_employee[self.assistant.id]['extra_master_class_bonus']), Decimal('2000.00'))
         self.assertEqual(Decimal(by_employee[self.teacher.id]['extra_master_class_bonus']), Decimal('0.00'))
+
+    def replace_rules(self, employee, rules):
+        profile, _ = EmployeePayrollProfile.objects.get_or_create(employee=employee)
+        profile.rules.all().delete()
+        created = []
+        for rule in rules:
+            created.append(EmployeePayrollRule.objects.create(profile=profile, valid_from=rule.pop('valid_from', date(2026, 8, 1)), **rule))
+        return created
+
+    def sale(self, *, employee=None, created_by=None, amount='100000.00', subtotal=None, source='subscription', paid_at=None, branch=None, parts=False):
+        transaction = FinanceTransaction.objects.create(
+            transaction_type=FinanceTransaction.Type.INCOME,
+            amount=Decimal(amount),
+            subtotal_amount=Decimal(subtotal or amount),
+            discount_amount=(Decimal(subtotal) - Decimal(amount)) if subtotal else Decimal('0.00'),
+            source=source,
+            manager=employee or self.manager,
+            created_by=created_by or self.accountant,
+            branch=branch or self.branch,
+            paid_at=paid_at or aware_dt(2026, 8, 17, 12),
+        )
+        if parts:
+            FinancePaymentPart.objects.create(transaction=transaction, payment_method=self.cash, payment_method_name=self.cash.name, amount=Decimal(amount) / 2)
+            card = PaymentMethod.objects.create(name=f'Payroll card {transaction.id}', code=f'payroll_card_{transaction.id}')
+            FinancePaymentPart.objects.create(transaction=transaction, payment_method=card, payment_method_name=card.name, amount=Decimal(amount) / 2)
+        return transaction
+
+    def generate_statement(self, employee=None, *, date_from='2026-08-17', date_to='2026-08-17', branch=None):
+        self.client.force_authenticate(self.accountant)
+        payload = {'date_from': date_from, 'date_to': date_to, 'employee': (employee or self.teacher).id}
+        if branch is not None:
+            payload['branch'] = branch
+        response = self.client.post('/api/payroll/generate/', payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        return PayrollStatement.objects.get(pk=response.data[0]['id'])
+
+    def test_composable_monthly_outside_and_sales_rules(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('200000.00')},
+            {'rule_type': EmployeePayrollRule.RuleType.OUTSIDE_HOURLY, 'amount': Decimal('1500.00')},
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('5.00000'), 'sales_sources': ['subscription', 'master_class']},
+        ])
+        self.create_mc(aware_dt(2026, 8, 17, 1), duration=600)
+        self.sale(employee=self.teacher, amount='800000.00', source='subscription')
+
+        statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.base_amount, Decimal('200000.00'))
+        self.assertEqual(statement.outside_amount, Decimal('15000.00'))
+        self.assertEqual(statement.sales_basis_amount, Decimal('800000.00'))
+        self.assertEqual(statement.sales_commission_amount, Decimal('40000.00'))
+        self.assertEqual(statement.gross_amount, Decimal('255000.00'))
+        self.assertEqual(statement.amount_to_pay, Decimal('255000.00'))
+
+    def test_hourly_and_commission_rules_combine(self):
+        for weekday in (1, 2, 3):
+            EmployeeWorkSchedule.objects.create(employee=self.teacher, branch=self.branch, weekday=weekday, start_time=time(16), end_time=time(21), valid_from=date(2026, 8, 1))
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.REGULAR_HOURLY, 'amount': Decimal('2000.00')},
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('10.00000'), 'sales_sources': ['subscription']},
+        ])
+        group = StudyGroup.objects.create(name='Payroll hourly', teacher=self.teacher, branch=self.branch)
+        for day in (17, 18, 19, 20):
+            Lesson.objects.create(group=group, teacher=self.teacher, branch=self.branch, lesson_date=date(2026, 8, day), start_time=time(16), end_time=time(21))
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription')
+
+        statement = self.generate_statement(self.teacher, date_from='2026-08-17', date_to='2026-08-20')
+
+        self.assertEqual(statement.regular_minutes, 1200)
+        self.assertEqual(statement.regular_amount, Decimal('40000.00'))
+        self.assertEqual(statement.sales_commission_amount, Decimal('10000.00'))
+        self.assertEqual(statement.gross_amount, Decimal('50000.00'))
+
+    def test_sales_sources_attribution_mixed_payment_and_discount_basis(self):
+        creator = self.other_teacher
+        self.replace_rules(self.teacher, [
+            {
+                'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+                'percent': Decimal('5.00000'),
+                'sales_sources': ['subscription', 'master_class'],
+                'sales_attribution': EmployeePayrollRule.SalesAttribution.RESPONSIBLE_MANAGER,
+            },
+        ])
+        self.sale(employee=self.teacher, created_by=creator, amount='80000.00', subtotal='100000.00', source='subscription', parts=True)
+        self.sale(employee=self.teacher, amount='50000.00', source='master_class')
+        self.sale(employee=self.teacher, amount='30000.00', source='product')
+        self.sale(employee=self.manager, created_by=self.teacher, amount='40000.00', source='subscription')
+
+        statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.sales_transactions_count, 2)
+        self.assertEqual(statement.sales_basis_amount, Decimal('130000.00'))
+        self.assertEqual(statement.sales_commission_amount, Decimal('6500.00'))
+
+        self.replace_rules(self.teacher, [
+            {
+                'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+                'percent': Decimal('10.00000'),
+                'sales_sources': ['subscription'],
+                'sales_attribution': EmployeePayrollRule.SalesAttribution.CREATED_BY,
+            },
+        ])
+        statement.delete()
+        created_by_statement = self.generate_statement(self.teacher)
+        self.assertEqual(created_by_statement.sales_basis_amount, Decimal('40000.00'))
+        self.assertEqual(created_by_statement.sales_commission_amount, Decimal('4000.00'))
+
+    def test_advance_reduces_final_salary_finance_expense(self):
+        self.replace_rules(self.teacher, [{'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('300000.00')}])
+        self.client.force_authenticate(self.accountant)
+        advance = self.client.post('/api/payroll-advances/', {
+            'employee': self.teacher.id,
+            'branch': self.branch.id,
+            'amount': '50000.00',
+            'advance_date': '2026-08-10',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '50000.00'}],
+        }, format='json')
+        statement = self.generate_statement(self.teacher, date_from='2026-08-01', date_to='2026-08-31', branch=self.branch.id)
+        self.client.post(f'/api/payroll/{statement.id}/approve/')
+        paid = self.client.post(f'/api/payroll/{statement.id}/mark-paid/', {
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '250000.00'}],
+        }, format='json')
+
+        self.assertEqual(advance.status_code, 201, advance.data)
+        statement.refresh_from_db()
+        self.assertEqual(statement.gross_amount, Decimal('300000.00'))
+        self.assertEqual(statement.advance_amount, Decimal('50000.00'))
+        self.assertEqual(statement.amount_to_pay, Decimal('250000.00'))
+        self.assertEqual(paid.status_code, 200, paid.data)
+        self.assertEqual(FinanceTransaction.objects.filter(source='salary_advance').aggregate(total=Sum('amount'))['total'], Decimal('50000.00'))
+        self.assertEqual(FinanceTransaction.objects.filter(source='salary').aggregate(total=Sum('amount'))['total'], Decimal('250000.00'))
+
+    def test_advance_carryover_and_zero_final_payment(self):
+        self.replace_rules(self.teacher, [{'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('60000.00')}])
+        self.client.force_authenticate(self.accountant)
+        advance = self.client.post('/api/payroll-advances/', {
+            'employee': self.teacher.id,
+            'amount': '100000.00',
+            'advance_date': '2026-08-01',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '100000.00'}],
+        }, format='json')
+        first = self.generate_statement(self.teacher, date_from='2026-08-01', date_to='2026-08-31')
+        self.client.post(f'/api/payroll/{first.id}/approve/')
+        first_paid = self.client.post(f'/api/payroll/{first.id}/mark-paid/', {}, format='json')
+
+        self.replace_rules(self.teacher, [{'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('100000.00'), 'valid_from': date(2026, 9, 1)}])
+        second = self.generate_statement(self.teacher, date_from='2026-09-01', date_to='2026-09-30')
+
+        self.assertEqual(advance.status_code, 201, advance.data)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.advance_amount, Decimal('60000.00'))
+        self.assertEqual(first.amount_to_pay, Decimal('0.00'))
+        self.assertEqual(first_paid.status_code, 200, first_paid.data)
+        self.assertFalse(FinanceTransaction.objects.filter(source='salary').exists())
+        self.assertEqual(second.advance_amount, Decimal('40000.00'))
+        self.assertEqual(second.amount_to_pay, Decimal('60000.00'))
+        self.assertEqual(EmployeePayrollAdvance.objects.get().allocations.aggregate(total=Sum('amount'))['total'], Decimal('100000.00'))
+
+    def test_approved_statement_keeps_historical_rule_snapshot(self):
+        self.replace_rules(self.teacher, [{
+            'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+            'percent': Decimal('5.00000'),
+            'sales_sources': ['subscription'],
+            'valid_from': date(2026, 9, 1),
+        }])
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription', paid_at=aware_dt(2026, 9, 10, 12))
+        september = self.generate_statement(self.teacher, date_from='2026-09-01', date_to='2026-09-30')
+        self.client.post(f'/api/payroll/{september.id}/approve/')
+        self.replace_rules(self.teacher, [{
+            'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+            'percent': Decimal('10.00000'),
+            'sales_sources': ['subscription'],
+            'valid_from': date(2026, 10, 1),
+        }])
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription', paid_at=aware_dt(2026, 10, 10, 12))
+        october = self.generate_statement(self.teacher, date_from='2026-10-01', date_to='2026-10-31')
+
+        september.refresh_from_db()
+        self.assertEqual(september.sales_commission_amount, Decimal('5000.00'))
+        self.assertEqual(september.payroll_rules_snapshot[0]['percent'], '5.00000')
+        self.assertEqual(october.sales_commission_amount, Decimal('10000.00'))
+
+    def test_payroll_generate_rejects_overlapping_period(self):
+        self.replace_rules(self.teacher, [{'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('100000.00')}])
+        self.generate_statement(self.teacher, date_from='2026-09-01', date_to='2026-09-30')
+        self.client.force_authenticate(self.accountant)
+
+        response = self.client.post('/api/payroll/generate/', {
+            'date_from': '2026-09-15',
+            'date_to': '2026-10-15',
+            'employee': self.teacher.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('пересекающийся период', response.data['detail'])
 
     def test_teacher_cannot_see_payroll(self):
         self.client.force_authenticate(self.teacher)

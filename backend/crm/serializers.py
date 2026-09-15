@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Max, Q, Sum
 from django.db.models.functions import Lower, Trim
 
 from .group_schedule import (
@@ -51,8 +51,11 @@ from .models import (
     MessagingContact,
     MetaWebhookEvent,
     EmployeePayrollProfile,
+    EmployeePayrollAdvance,
+    EmployeePayrollRule,
     EmployeeWorkSchedule,
     PaymentMethod,
+    PayrollAdvanceAllocation,
     PayrollStatement,
     Room,
     ScheduleSlot,
@@ -1930,6 +1933,7 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
     master_class_time_outside_regular_hours = serializers.SerializerMethodField()
     master_class_outside_regular_hours = serializers.SerializerMethodField()
     master_class_outside_reason = serializers.SerializerMethodField()
+    payroll_advance_employee_name = serializers.SerializerMethodField()
     payment_parts = serializers.JSONField(required=False)
     attachments_count = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
@@ -2122,6 +2126,12 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
             return 'После рабочего времени'
         return ''
 
+    def get_payroll_advance_employee_name(self, obj):
+        advance = self._related(obj, 'payroll_advance')
+        if not advance or not advance.employee:
+            return ''
+        return advance.employee.get_full_name() or advance.employee.username
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['payment_parts'] = payment_parts_representation(instance)
@@ -2235,6 +2245,7 @@ class EmployeeWorkScheduleSerializer(BranchNameMixin, serializers.ModelSerialize
 
 class EmployeePayrollProfileSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
+    rules = serializers.SerializerMethodField()
 
     class Meta:
         model = EmployeePayrollProfile
@@ -2244,12 +2255,107 @@ class EmployeePayrollProfileSerializer(serializers.ModelSerializer):
     def get_employee_name(self, obj):
         return (obj.employee.get_full_name() or obj.employee.username) if obj.employee else ''
 
+    def get_rules(self, obj):
+        return EmployeePayrollRuleSerializer(obj.rules.all(), many=True).data
+
+
+class EmployeePayrollRuleSerializer(serializers.ModelSerializer):
+    employee = serializers.IntegerField(source='profile.employee_id', read_only=True)
+    employee_name = serializers.SerializerMethodField()
+    rule_type_display = serializers.CharField(source='get_rule_type_display', read_only=True)
+    sales_attribution_display = serializers.CharField(source='get_sales_attribution_display', read_only=True)
+
+    class Meta:
+        model = EmployeePayrollRule
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_employee_name(self, obj):
+        employee = obj.profile.employee if obj.profile_id else None
+        return (employee.get_full_name() or employee.username) if employee else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        rule_type = attrs.get('rule_type', self.instance.rule_type if self.instance else None)
+        amount = attrs.get('amount', self.instance.amount if self.instance else None)
+        percent = attrs.get('percent', self.instance.percent if self.instance else None)
+        valid_from = attrs.get('valid_from', self.instance.valid_from if self.instance else None)
+        valid_until = attrs.get('valid_until', self.instance.valid_until if self.instance else None)
+        sources = attrs.get('sales_sources', self.instance.sales_sources if self.instance else [])
+        if valid_until and valid_from and valid_until < valid_from:
+            raise serializers.ValidationError({'valid_until': 'Дата окончания должна быть позже даты начала.'})
+        if rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT:
+            if percent is None:
+                raise serializers.ValidationError({'percent': 'Укажите процент продаж.'})
+            if percent < 0 or percent > 100:
+                raise serializers.ValidationError({'percent': 'Процент должен быть от 0 до 100.'})
+            invalid = [source for source in (sources or []) if source not in EmployeePayrollRule.SALES_SOURCES]
+            if invalid:
+                raise serializers.ValidationError({'sales_sources': 'Выберите допустимые источники продаж.'})
+        else:
+            if amount is None:
+                raise serializers.ValidationError({'amount': 'Укажите ставку начисления.'})
+            if amount < 0:
+                raise serializers.ValidationError({'amount': 'Ставка не может быть отрицательной.'})
+        return attrs
+
+
+class PayrollAdvanceAllocationSerializer(serializers.ModelSerializer):
+    advance_date = serializers.DateField(source='advance.advance_date', read_only=True)
+    advance_comment = serializers.CharField(source='advance.comment', read_only=True)
+
+    class Meta:
+        model = PayrollAdvanceAllocation
+        fields = ('id', 'statement', 'advance', 'amount', 'advance_date', 'advance_comment')
+        read_only_fields = fields
+
+
+class EmployeePayrollAdvanceSerializer(BranchNameMixin, serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    allocated_amount = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
+    payment_parts = serializers.SerializerMethodField()
+    payment_method = serializers.PrimaryKeyRelatedField(queryset=PaymentMethod.objects.filter(is_active=True), write_only=True, required=False, allow_null=True)
+
+    class Meta:
+        model = EmployeePayrollAdvance
+        fields = '__all__'
+        read_only_fields = ('finance_transaction', 'created_by', 'created_at', 'updated_at')
+
+    def get_employee_name(self, obj):
+        return obj.employee.get_full_name() or obj.employee.username if obj.employee else ''
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.get_full_name() or obj.created_by.username if obj.created_by else ''
+
+    def get_allocated_amount(self, obj):
+        return obj.allocations.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+    def get_remaining_amount(self, obj):
+        allocated = self.get_allocated_amount(obj)
+        return max(obj.amount - allocated, Decimal('0.00'))
+
+    def get_payment_parts(self, obj):
+        if not obj.finance_transaction_id:
+            return []
+        return payment_parts_representation(obj.finance_transaction)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        amount = attrs.get('amount', self.instance.amount if self.instance else None)
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError({'amount': 'Сумма аванса должна быть больше нуля.'})
+        return attrs
+
 
 class PayrollStatementSerializer(BranchNameMixin, serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    amount_to_pay = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    advance_allocations = PayrollAdvanceAllocationSerializer(many=True, read_only=True)
 
     class Meta:
         model = PayrollStatement
@@ -2271,7 +2377,15 @@ class PayrollStatementSerializer(BranchNameMixin, serializers.ModelSerializer):
             'regular_amount',
             'outside_amount',
             'master_class_bonus_amount',
+            'sales_basis_amount',
+            'sales_commission_amount',
+            'sales_transactions_count',
+            'gross_amount',
+            'advance_amount',
+            'amount_to_pay',
             'total_amount',
+            'payroll_rules_snapshot',
+            'calculation_breakdown',
             'status',
             'finance_transaction',
             'created_by',

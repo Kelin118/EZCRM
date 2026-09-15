@@ -896,6 +896,54 @@ class EmployeePayrollProfile(TimeStampedModel):
         return f'Payroll profile: {self.employee}'
 
 
+class EmployeePayrollRule(TimeStampedModel):
+    class RuleType(models.TextChoices):
+        MONTHLY_SALARY = 'monthly_salary', 'Оклад'
+        REGULAR_HOURLY = 'regular_hourly', 'Почасовая ставка'
+        OUTSIDE_HOURLY = 'outside_hourly', 'Работа вне графика'
+        OUTSIDE_MASTER_CLASS_BONUS = 'outside_master_class_bonus', 'Доплата за МК вне графика'
+        SALES_PERCENT = 'sales_percent', 'Процент от продаж'
+
+    class SalesAttribution(models.TextChoices):
+        RESPONSIBLE_MANAGER = 'responsible_manager', 'Ответственный менеджер'
+        CREATED_BY = 'created_by', 'Создатель операции'
+
+    SALES_SOURCES = (
+        'subscription',
+        'trial',
+        'master_class',
+        'addon',
+        'product',
+        'retail',
+        'camp',
+        'certificate',
+    )
+
+    profile = models.ForeignKey(EmployeePayrollProfile, on_delete=models.CASCADE, related_name='rules')
+    rule_type = models.CharField(max_length=40, choices=RuleType.choices)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    percent = models.DecimalField(max_digits=10, decimal_places=5, null=True, blank=True)
+    sales_sources = models.JSONField(default=list, blank=True)
+    sales_attribution = models.CharField(
+        max_length=40,
+        choices=SalesAttribution.choices,
+        default=SalesAttribution.RESPONSIBLE_MANAGER,
+    )
+    valid_from = models.DateField(default=timezone.localdate)
+    valid_until = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ('profile__employee__first_name', 'profile__employee__username', 'rule_type', '-valid_from', 'id')
+        constraints = (
+            models.CheckConstraint(condition=models.Q(amount__isnull=True) | models.Q(amount__gte=0), name='payroll_rule_amount_non_negative'),
+            models.CheckConstraint(condition=models.Q(percent__isnull=True) | (models.Q(percent__gte=0) & models.Q(percent__lte=100)), name='payroll_rule_percent_between_0_100'),
+        )
+
+    def __str__(self):
+        return f'{self.profile.employee} · {self.get_rule_type_display()}'
+
+
 class PayrollStatement(TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = 'draft', 'Draft'
@@ -918,9 +966,17 @@ class PayrollStatement(TimeStampedModel):
     regular_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     outside_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     master_class_bonus_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sales_basis_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sales_commission_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sales_transactions_count = models.PositiveIntegerField(default=0)
     manual_adjustment = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     manual_adjustment_comment = models.TextField(blank=True)
+    gross_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    advance_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    amount_to_pay = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    payroll_rules_snapshot = models.JSONField(default=list, blank=True)
+    calculation_breakdown = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     finance_transaction = models.OneToOneField(FinanceTransaction, on_delete=models.SET_NULL, null=True, blank=True, related_name='payroll_statement')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_payroll_statements')
@@ -936,6 +992,54 @@ class PayrollStatement(TimeStampedModel):
 
     def __str__(self):
         return f'{self.employee} · {self.date_from}–{self.date_to}'
+
+
+class EmployeePayrollAdvance(TimeStampedModel):
+    employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='payroll_advances')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='payroll_advances')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    advance_date = models.DateField(default=timezone.localdate)
+    comment = models.TextField(blank=True)
+    finance_transaction = models.OneToOneField(
+        FinanceTransaction,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payroll_advance',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_payroll_advances',
+    )
+    cancelled = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ('advance_date', 'created_at', 'id')
+        constraints = (
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='payroll_advance_amount_positive'),
+        )
+
+    def __str__(self):
+        return f'Аванс: {self.employee} · {self.amount}'
+
+
+class PayrollAdvanceAllocation(TimeStampedModel):
+    statement = models.ForeignKey(PayrollStatement, on_delete=models.CASCADE, related_name='advance_allocations')
+    advance = models.ForeignKey(EmployeePayrollAdvance, on_delete=models.PROTECT, related_name='allocations')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ('advance__advance_date', 'advance_id')
+        constraints = (
+            models.UniqueConstraint(fields=('statement', 'advance'), name='unique_payroll_advance_allocation'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='payroll_advance_allocation_amount_positive'),
+        )
+
+    def __str__(self):
+        return f'{self.statement_id} · {self.advance_id} · {self.amount}'
 
 
 class CertificateTemplate(TimeStampedModel):

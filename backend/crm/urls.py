@@ -18,6 +18,8 @@ from .views import (
     DailyPaymentsReportView,
     DiscountViewSet,
     EmployeePayrollProfileViewSet,
+    EmployeePayrollAdvanceViewSet,
+    EmployeePayrollRuleViewSet,
     EmployeeWorklogView,
     EmployeeWorkScheduleViewSet,
     ExcelImportView,
@@ -78,6 +80,8 @@ router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
 router.register('employee-schedules', EmployeeWorkScheduleViewSet, basename='employee-schedule')
 router.register('employee-payroll-profiles', EmployeePayrollProfileViewSet, basename='employee-payroll-profile')
+router.register('employee-payroll-rules', EmployeePayrollRuleViewSet, basename='employee-payroll-rule')
+router.register('payroll-advances', EmployeePayrollAdvanceViewSet, basename='payroll-advance')
 router.register('payroll', PayrollStatementViewSet, basename='payroll')
 router.register('discounts', DiscountViewSet, basename='discount')
 router.register('payment-methods', PaymentMethodViewSet, basename='payment-method')

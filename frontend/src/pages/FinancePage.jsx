@@ -1,4 +1,4 @@
-import { formatDisplayDateTime, formatFinanceDate } from '../utils/dateTime.js';
+import { formatDisplayDateTime, formatFinanceDate, todayLocalDate } from '../utils/dateTime.js';
 import { ShoppingCart } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -11,11 +11,17 @@ import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import usePaymentMethods from '../hooks/usePaymentMethods.js';
 import { subscriptionLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
-import { Actions, Badge, Button, CrudModal, Filters, Input, money, normalizePayload, PageHeader, SelectField, Table, useCrudResource } from './pageUtils.jsx';
+import { Actions, Badge, Button, CrudModal, Filters, Input, money, normalizePayload, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 
 const empty = { transaction_type: 'income', amount: 0, source: 'manual', payment_method: '', client: '', subscription: '', manager: '', paid_at: '', comment: '', branch: '' };
 const emptyFilters = { transaction_type: '', source: '', payment_method: 'all', discount: 'all', manager: 'all', teacher: 'all', extra_master_class: '', client: '', search: '', date_from: '', date_to: '', branch: 'all' };
 const emptyCashForm = { branch: '', amount: '', comment: '' };
+const emptyMasterClassPaymentForm = { payment_type: 'additional', amount: '', payment_date: '', payment_parts: [], comment: '' };
+const masterClassPaymentTypeOptions = [
+  { value: 'prepayment', label: 'Предоплата' },
+  { value: 'additional', label: 'Доплата' },
+  { value: 'legacy', label: 'Старая оплата' },
+];
 const sourceOptions = [
   { value: 'subscription', label: 'Абонемент' }, { value: 'trial', label: 'Пробник' },
   { value: 'master_class', label: 'Мастер-класс' }, { value: 'addon', label: 'Дополнительные услуги' },
@@ -34,6 +40,11 @@ const masterClassExtraStaffNames = (row) => (Array.isArray(row.master_class_staf
   .filter((item) => item.is_extra_work)
   .map((item) => item.employee_name)
   .filter(Boolean);
+const paymentPartsFromApi = (payment = {}) => (Array.isArray(payment.payment_parts) ? payment.payment_parts : [])
+  .map((part) => ({ payment_method: String(part.payment_method), amount: part.amount }));
+
+export const isMasterClassPaymentRow = (row = {}) => Boolean(row.master_class_id && row.master_class_payment_id);
+export const financeRowActionKind = (row = {}) => (isMasterClassPaymentRow(row) ? 'master_class_payment' : 'finance');
 
 function dispatchError(message) {
   window.dispatchEvent(new CustomEvent('api-error', { detail: message }));
@@ -56,6 +67,10 @@ export default function FinancePage() {
   const [receiptFiles, setReceiptFiles] = useState([]);
   const [receiptViewer, setReceiptViewer] = useState({ open: false, transaction: null });
   const [transactionSaving, setTransactionSaving] = useState(false);
+  const [masterClassPaymentModal, setMasterClassPaymentModal] = useState({ open: false, row: null, payment: null });
+  const [masterClassPaymentForm, setMasterClassPaymentForm] = useState(emptyMasterClassPaymentForm);
+  const [masterClassPaymentSaving, setMasterClassPaymentSaving] = useState(false);
+  const [deletingMasterClassPaymentId, setDeletingMasterClassPaymentId] = useState(null);
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
@@ -124,6 +139,43 @@ export default function FinancePage() {
     crud.setEditing({ ...editable, transaction_type: row.transaction_type ?? type, payment_method: row.payment_method ? String(row.payment_method) : '', payment_parts: partsFromTransaction(row) });
     crud.setModalOpen(true);
   };
+  const paymentFormFromRow = (row = {}) => ({
+    payment_type: row.master_class_payment_type || 'additional',
+    amount: row.amount || '',
+    payment_date: row.paid_on || '',
+    payment_parts: paymentPartsFromApi(row),
+    comment: row.comment || '',
+  });
+  const openMasterClassPaymentEdit = async (row) => {
+    if (!isMasterClassPaymentRow(row)) {
+      editTransaction(row);
+      return;
+    }
+    setMasterClassPaymentModal({ open: true, row, payment: null });
+    setMasterClassPaymentForm(paymentFormFromRow(row));
+    try {
+      const { data } = await api.get(`master-classes/${row.master_class_id}/payments/`);
+      const payments = Array.isArray(data) ? data : data.results || [];
+      const payment = payments.find((item) => String(item.id) === String(row.master_class_payment_id));
+      if (payment) {
+        setMasterClassPaymentModal({ open: true, row, payment });
+        setMasterClassPaymentForm({
+          payment_type: payment.payment_type || row.master_class_payment_type || 'additional',
+          amount: payment.amount || row.amount || '',
+          payment_date: payment.payment_date || row.paid_on || todayLocalDate(),
+          payment_parts: paymentPartsFromApi(payment),
+          comment: payment.comment || '',
+        });
+      }
+    } catch (error) {
+      showApiError(error);
+    }
+  };
+  const closeMasterClassPaymentModal = () => {
+    setMasterClassPaymentModal({ open: false, row: null, payment: null });
+    setMasterClassPaymentForm(emptyMasterClassPaymentForm);
+    setMasterClassPaymentSaving(false);
+  };
   const resetFilters = () => crud.setFilters(emptyFilters);
   const refreshFinance = async () => {
     await crud.reload();
@@ -181,6 +233,73 @@ export default function FinancePage() {
       dispatchError(error.response?.data?.detail || 'Не удалось сохранить финансовую операцию.');
     } finally {
       setTransactionSaving(false);
+    }
+  };
+  const saveMasterClassPayment = async () => {
+    const amount = Number(masterClassPaymentForm.amount || 0);
+    if (amount <= 0) {
+      dispatchError('Сумма оплаты должна быть больше нуля.');
+      return;
+    }
+    const row = masterClassPaymentModal.row;
+    if (!isMasterClassPaymentRow(row)) {
+      dispatchError('Не удалось определить оплату мастер-класса.');
+      return;
+    }
+    const originalPayment = masterClassPaymentModal.payment || {};
+    const originalParts = paymentPartsFromApi(originalPayment);
+    const originalPaymentType = originalPayment.payment_type || row.master_class_payment_type;
+    const isExistingLegacyWithoutParts = Boolean(
+      row.master_class_payment_id
+      && originalPaymentType === 'legacy'
+      && originalParts.length === 0
+      && !originalPayment.payment_method
+      && !originalPayment.payment_method_name
+    );
+    const partsPayload = paymentPartsPayload(masterClassPaymentForm.payment_parts);
+    const originalAmount = Number((originalPayment.amount ?? row.amount) || 0);
+    const amountChanged = originalAmount !== amount;
+    const shouldSendParts = partsPayload.length > 0 || !isExistingLegacyWithoutParts;
+    const shouldValidateParts = shouldSendParts || amountChanged;
+    if (shouldValidateParts && paymentPartsTotal(masterClassPaymentForm.payment_parts) !== amount) {
+      dispatchError('Сумма оплат по способам должна совпадать с суммой оплаты.');
+      return;
+    }
+    setMasterClassPaymentSaving(true);
+    try {
+      const payload = {
+        payment_type: masterClassPaymentForm.payment_type || 'additional',
+        amount: masterClassPaymentForm.amount,
+        payment_date: masterClassPaymentForm.payment_date || row.paid_on || todayLocalDate(),
+        comment: masterClassPaymentForm.comment || '',
+      };
+      if (shouldSendParts) {
+        payload.payment_parts = partsPayload;
+      }
+      await api.patch(`master-classes/${row.master_class_id}/payments/${row.master_class_payment_id}/`, payload);
+      closeMasterClassPaymentModal();
+      await refreshFinance();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setMasterClassPaymentSaving(false);
+    }
+  };
+  const deleteMasterClassPayment = async (row) => {
+    if (!isMasterClassPaymentRow(row)) {
+      await crud.remove(row.id);
+      return;
+    }
+    const confirmed = window.confirm(`Удалить оплату МК на ${money(row.amount)}?\n\nСвязанная финансовая операция также будет удалена.\nИтог оплаты мастер-класса будет пересчитан.`);
+    if (!confirmed) return;
+    setDeletingMasterClassPaymentId(row.master_class_payment_id);
+    try {
+      await api.delete(`master-classes/${row.master_class_id}/payments/${row.master_class_payment_id}/`);
+      await refreshFinance();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setDeletingMasterClassPaymentId(null);
     }
   };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
@@ -284,10 +403,46 @@ export default function FinancePage() {
         { key: 'created_by', header: 'Создал', render: (row) => row.created_by_name || 'Не указан' },
         { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || 'Не распределено' },
         { key: 'comment', header: 'Комментарий', render: (row) => row.comment || '—' },
-        { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit && !row.master_class_payment_id} canDelete={canDelete && !row.master_class_payment_id} onEdit={() => editTransaction(row)} onDelete={() => crud.remove(row.id)} /> },
+        { key: 'actions', header: '', render: (row) => {
+          const isMasterClassPayment = financeRowActionKind(row) === 'master_class_payment';
+          return (
+            <Actions
+              canEdit={canEdit}
+              canDelete={canDelete && (!isMasterClassPayment || deletingMasterClassPaymentId !== row.master_class_payment_id)}
+              onEdit={() => (isMasterClassPayment ? openMasterClassPaymentEdit(row) : editTransaction(row))}
+              onDelete={() => (isMasterClassPayment ? deleteMasterClassPayment(row) : crud.remove(row.id))}
+            />
+          );
+        } },
       ]} />
       {!paymentOptions.length && <p className="mt-3 text-sm text-amber-700">Способы оплаты не добавлены. Добавьте их в Настройки → Способы оплаты.</p>}
       <CrudModal title="Финансовая операция" open={crud.modalOpen} onClose={() => crud.setModalOpen(false)} fields={fields} form={form} setForm={setForm} saving={transactionSaving} onSubmit={saveTransaction} />
+      <Modal
+        title="Изменить оплату МК"
+        open={masterClassPaymentModal.open}
+        onClose={closeMasterClassPaymentModal}
+        footer={<><Button variant="secondary" onClick={closeMasterClassPaymentModal}>Отмена</Button><Button onClick={saveMasterClassPayment} disabled={masterClassPaymentSaving}>{masterClassPaymentSaving ? 'Сохраняем...' : 'Сохранить'}</Button></>}
+      >
+        <div className="grid gap-4">
+          <div className="grid gap-4 md:grid-cols-3">
+            <SelectField
+              label="Тип платежа"
+              value={masterClassPaymentForm.payment_type}
+              onChange={(value) => setMasterClassPaymentForm({ ...masterClassPaymentForm, payment_type: value })}
+              options={masterClassPaymentTypeOptions}
+            />
+            <Input label="Сумма" type="number" value={masterClassPaymentForm.amount} onChange={(event) => setMasterClassPaymentForm({ ...masterClassPaymentForm, amount: event.target.value })} />
+            <Input label="Дата оплаты" type="date" value={masterClassPaymentForm.payment_date} onChange={(event) => setMasterClassPaymentForm({ ...masterClassPaymentForm, payment_date: event.target.value })} />
+          </div>
+          <PaymentSplitFields
+            totalAmount={masterClassPaymentForm.amount}
+            value={masterClassPaymentForm.payment_parts}
+            disabled={masterClassPaymentSaving}
+            onChange={(payment_parts) => setMasterClassPaymentForm({ ...masterClassPaymentForm, payment_parts })}
+          />
+          <Input label="Комментарий" value={masterClassPaymentForm.comment} onChange={(event) => setMasterClassPaymentForm({ ...masterClassPaymentForm, comment: event.target.value })} />
+        </div>
+      </Modal>
       <Modal
         title="Чеки"
         open={receiptViewer.open}

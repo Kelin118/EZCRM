@@ -1901,6 +1901,12 @@ class FinanceTransactionAttachmentSerializer(BusinessMediaAssetMixin, serializer
 
 
 class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer):
+    MASTER_CLASS_PAYMENT_TYPE_LABELS = {
+        MasterClassPayment.PaymentType.PREPAYMENT: 'Предоплата',
+        MasterClassPayment.PaymentType.ADDITIONAL: 'Доплата',
+        MasterClassPayment.PaymentType.LEGACY: 'Старая оплата',
+    }
+
     type = serializers.CharField(source='transaction_type', read_only=True)
     client_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
@@ -2012,13 +2018,13 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
         return ', '.join(f'{item.name} ×{item.quantity}' for item in sale.items.all())
 
     def _master_class_payment(self, obj):
-        return getattr(obj, 'master_class_payment_entry', None)
+        return self._related(obj, 'master_class_payment_entry')
 
     def _master_class(self, obj):
         payment = self._master_class_payment(obj)
         if payment:
             return payment.master_class
-        return getattr(obj, 'master_class_payment', None)
+        return self._related(obj, 'master_class_payment')
 
     def get_master_class_payment_id(self, obj):
         payment = self._master_class_payment(obj)
@@ -2030,7 +2036,9 @@ class FinanceTransactionSerializer(BranchNameMixin, serializers.ModelSerializer)
 
     def get_master_class_payment_type_display(self, obj):
         payment = self._master_class_payment(obj)
-        return payment.get_payment_type_display() if payment else ''
+        if not payment:
+            return ''
+        return self.MASTER_CLASS_PAYMENT_TYPE_LABELS.get(payment.payment_type, payment.get_payment_type_display())
 
     def get_master_class_id(self, obj):
         item = self._master_class(obj)

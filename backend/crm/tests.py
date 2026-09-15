@@ -4654,6 +4654,32 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         return MasterClassPayment.objects.get(pk=response.data['id'])
 
+    def test_finance_serializer_exposes_master_class_payment_ids_and_russian_type_labels(self):
+        master_class = self.create_master_class_with_initial_payment(amount='5000.00', price='30000.00')
+        prepayment = MasterClassPayment.objects.get(master_class=master_class)
+        additional = self.add_payment(master_class, amount='7000.00', method=self.card)
+        legacy = self.create_legacy_payment(master_class, amount='3000.00', method=self.cash, with_part=True)
+
+        response = self.client.get('/api/finance/', {'source': 'master_class'})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        by_payment_id = {
+            item['master_class_payment_id']: item
+            for item in response.data
+            if item.get('master_class_payment_id')
+        }
+        self.assertEqual(set(by_payment_id), {prepayment.id, additional.id, legacy.id})
+        expected = {
+            prepayment.id: (MasterClassPayment.PaymentType.PREPAYMENT, 'Предоплата'),
+            additional.id: (MasterClassPayment.PaymentType.ADDITIONAL, 'Доплата'),
+            legacy.id: (MasterClassPayment.PaymentType.LEGACY, 'Старая оплата'),
+        }
+        for payment_id, (payment_type, label) in expected.items():
+            item = by_payment_id[payment_id]
+            self.assertEqual(item['master_class_id'], master_class.id)
+            self.assertEqual(item['master_class_payment_type'], payment_type)
+            self.assertEqual(item['master_class_payment_type_display'], label)
+
     def create_legacy_payment(self, master_class, amount='5000.00', payment_date='2026-07-20', method=None, with_part=False):
         transaction = FinanceTransaction.objects.create(
             branch=master_class.branch,

@@ -108,6 +108,16 @@ test('finance metadata patch omits unchanged money and minute-rounded timestamp'
   assert.equal(normalizePayload({ paid_at: '2026-09-14T16:00' }).paid_at, '2026-09-14T11:00:00.000Z');
 });
 
+test('finance master class payment rows use owner payment actions', async () => {
+  const { financeRowActionKind, isMasterClassPaymentRow } = await loadModule('pages/FinancePage.jsx');
+  const linked = { id: 1, source: 'master_class', master_class_id: 10, master_class_payment_id: 20 };
+
+  assert.equal(isMasterClassPaymentRow(linked), true);
+  assert.equal(financeRowActionKind(linked), 'master_class_payment');
+  assert.equal(isMasterClassPaymentRow({ id: 2, source: 'master_class', master_class_id: 10 }), false);
+  assert.equal(financeRowActionKind({ id: 3, source: 'manual' }), 'finance');
+});
+
 test('finance date formatter uses API precision across workstation timezones', () => {
   for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
     process.env.TZ = zone;

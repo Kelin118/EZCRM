@@ -10,11 +10,12 @@ export function hasHorizontalOverflow(scrollWidth, clientWidth, tolerance = 1) {
   return Number(scrollWidth || 0) > Number(clientWidth || 0) + tolerance;
 }
 
-export function shouldShowStickyScrollbar({ overflow, tableTop, tableBottom, viewportHeight }) {
+export function shouldShowFloatingScrollbar({ overflow, tableTop, tableBottom, viewportHeight }) {
   return Boolean(
     overflow
     && Number(tableTop) < Number(viewportHeight)
     && Number(tableBottom) > Number(viewportHeight)
+    && Number(tableBottom) > 0
   );
 }
 
@@ -25,8 +26,10 @@ export default function Table({ columns, data = [], empty = 'Нет данных
   const rafRef = useRef(null);
   const [scrollState, setScrollState] = useState({
     hasOverflow: false,
-    stickyVisible: false,
+    floatingVisible: false,
     scrollWidth: 0,
+    left: 0,
+    width: 0,
   });
 
   const syncScrollLeft = useCallback((source, target) => {
@@ -44,7 +47,7 @@ export default function Table({ columns, data = [], empty = 'Нет данных
     if (!realScroll) return;
     const rect = realScroll.getBoundingClientRect();
     const overflow = hasHorizontalOverflow(realScroll.scrollWidth, realScroll.clientWidth);
-    const stickyVisible = shouldShowStickyScrollbar({
+    const floatingVisible = shouldShowFloatingScrollbar({
       overflow,
       tableTop: rect.top,
       tableBottom: rect.bottom,
@@ -53,13 +56,17 @@ export default function Table({ columns, data = [], empty = 'Нет данных
     setScrollState((current) => {
       const next = {
         hasOverflow: overflow,
-        stickyVisible,
+        floatingVisible,
         scrollWidth: realScroll.scrollWidth,
+        left: rect.left,
+        width: rect.width,
       };
       if (
         current.hasOverflow === next.hasOverflow
-        && current.stickyVisible === next.stickyVisible
+        && current.floatingVisible === next.floatingVisible
         && current.scrollWidth === next.scrollWidth
+        && current.left === next.left
+        && current.width === next.width
       ) {
         return current;
       }
@@ -99,6 +106,13 @@ export default function Table({ columns, data = [], empty = 'Нет данных
       }
     };
   }, [columns, data, loading, scheduleScrollStateUpdate, updateScrollState]);
+
+  useEffect(() => {
+    const realScroll = realScrollRef.current;
+    const floatingScroll = stickyScrollRef.current;
+    if (!realScroll || !floatingScroll || !scrollState.floatingVisible) return;
+    floatingScroll.scrollLeft = realScroll.scrollLeft;
+  }, [scrollState.floatingVisible]);
 
   return (
     <div className="relative min-w-0 w-full max-w-full">
@@ -149,12 +163,17 @@ export default function Table({ columns, data = [], empty = 'Нет данных
           </tbody>
         </table>
       </div>
-      {scrollState.hasOverflow && (
+      {scrollState.hasOverflow && scrollState.floatingVisible && (
         <div
           ref={stickyScrollRef}
           aria-hidden="true"
           tabIndex={-1}
-          className={`sticky bottom-0 z-20 h-4 overflow-x-auto overflow-y-hidden border-t border-slate-100 bg-white/95 backdrop-blur scrollbar-thin ${scrollState.stickyVisible ? 'block' : 'hidden'}`}
+          className="fixed z-30 h-4 overflow-x-auto overflow-y-hidden border-t border-slate-200 bg-white/95 backdrop-blur scrollbar-thin"
+          style={{
+            left: scrollState.left,
+            width: scrollState.width,
+            bottom: 0,
+          }}
           onScroll={(event) => syncScrollLeft(event.currentTarget, realScrollRef.current)}
         >
           <div style={{ width: scrollState.scrollWidth, height: 1 }} />

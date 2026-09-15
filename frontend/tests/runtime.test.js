@@ -124,6 +124,44 @@ test('finance date formatter uses API precision across workstation timezones', (
   }
 });
 
+test('table sticky scrollbar visibility follows overflow and viewport position', async () => {
+  const { hasHorizontalOverflow, shouldShowStickyScrollbar } = await loadModule('components/ui/Table.jsx');
+
+  assert.equal(hasHorizontalOverflow(1000, 800), true);
+  assert.equal(hasHorizontalOverflow(801, 800), false);
+  assert.equal(hasHorizontalOverflow(800, 800), false);
+  assert.equal(shouldShowStickyScrollbar({
+    overflow: true,
+    tableTop: 120,
+    tableBottom: 1400,
+    viewportHeight: 900,
+  }), true);
+  assert.equal(shouldShowStickyScrollbar({
+    overflow: false,
+    tableTop: 120,
+    tableBottom: 1400,
+    viewportHeight: 900,
+  }), false);
+  assert.equal(shouldShowStickyScrollbar({
+    overflow: true,
+    tableTop: 920,
+    tableBottom: 1400,
+    viewportHeight: 900,
+  }), false);
+  assert.equal(shouldShowStickyScrollbar({
+    overflow: true,
+    tableTop: -1200,
+    tableBottom: -10,
+    viewportHeight: 900,
+  }), false);
+  assert.equal(shouldShowStickyScrollbar({
+    overflow: true,
+    tableTop: -400,
+    tableBottom: 850,
+    viewportHeight: 900,
+  }), false);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

@@ -899,6 +899,8 @@ class EmployeePayrollProfile(TimeStampedModel):
 class EmployeePayrollRule(TimeStampedModel):
     class RuleType(models.TextChoices):
         MONTHLY_SALARY = 'monthly_salary', 'Оклад'
+        SHIFT_RATE = 'shift_rate', 'Оплата за смену'
+        LESSON_RATE = 'lesson_rate', 'Оплата за занятие'
         REGULAR_HOURLY = 'regular_hourly', 'Почасовая ставка'
         OUTSIDE_HOURLY = 'outside_hourly', 'Работа вне графика'
         OUTSIDE_MASTER_CLASS_BONUS = 'outside_master_class_bonus', 'Доплата за МК вне графика'
@@ -961,8 +963,12 @@ class PayrollStatement(TimeStampedModel):
     outside_master_class_bonus_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     regular_minutes = models.PositiveIntegerField(default=0)
     outside_minutes = models.PositiveIntegerField(default=0)
+    shift_count = models.PositiveIntegerField(default=0)
+    lesson_count = models.PositiveIntegerField(default=0)
     outside_master_class_count = models.PositiveIntegerField(default=0)
     base_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    shift_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    lesson_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     regular_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     outside_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     master_class_bonus_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)

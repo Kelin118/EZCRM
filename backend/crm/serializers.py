@@ -2287,8 +2287,10 @@ class EmployeePayrollRuleSerializer(serializers.ModelSerializer):
         if rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT:
             if percent is None:
                 raise serializers.ValidationError({'percent': 'Укажите процент продаж.'})
-            if percent < 0 or percent > 100:
+            if percent <= 0 or percent > 100:
                 raise serializers.ValidationError({'percent': 'Процент должен быть от 0 до 100.'})
+            if not sources:
+                raise serializers.ValidationError({'sales_sources': 'Выберите хотя бы один источник продаж.'})
             invalid = [source for source in (sources or []) if source not in EmployeePayrollRule.SALES_SOURCES]
             if invalid:
                 raise serializers.ValidationError({'sales_sources': 'Выберите допустимые источники продаж.'})
@@ -2372,8 +2374,12 @@ class PayrollStatementSerializer(BranchNameMixin, serializers.ModelSerializer):
             'outside_master_class_bonus_snapshot',
             'regular_minutes',
             'outside_minutes',
+            'shift_count',
+            'lesson_count',
             'outside_master_class_count',
             'base_amount',
+            'shift_amount',
+            'lesson_amount',
             'regular_amount',
             'outside_amount',
             'master_class_bonus_amount',

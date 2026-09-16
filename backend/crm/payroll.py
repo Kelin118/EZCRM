@@ -133,7 +133,6 @@ def _calculate_sales_component(employee, date_from, date_to, branch, rule):
     queryset = _sales_queryset(employee, date_from, date_to, branch, rule)
     by_source = []
     sales_basis = Decimal('0.00')
-    transaction_count = 0
     percent = Decimal(rule.percent or 0)
     for item in queryset.values('source').order_by('source').annotate(total=Sum('amount')):
         source_total = money(item['total'])
@@ -145,9 +144,13 @@ def _calculate_sales_component(employee, date_from, date_to, branch, rule):
             'sales_basis_amount': str(source_total),
             'sales_commission_amount': str(source_commission),
         })
-    transaction_count = queryset.values('id').distinct().count()
+    transaction_amounts = {
+        item['id']: money(item['amount'])
+        for item in queryset.values('id', 'amount').distinct()
+    }
+    transaction_count = len(transaction_amounts)
     commission = money(sales_basis * percent / Decimal('100'))
-    return sales_basis, commission, transaction_count, by_source
+    return sales_basis, commission, transaction_count, by_source, transaction_amounts
 
 
 def _advance_queryset(statement):
@@ -192,6 +195,17 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
     worklog = build_employee_worklog(date_from=date_from, date_to=date_to, employee=employee.id, branch=branch or 'all')
     regular_minutes = worklog['summary']['regular_minutes']
     outside_minutes = worklog['summary']['outside_minutes']
+    valid_worklog_entries = [
+        item
+        for item in worklog['entries']
+        if not item['warning'] and item['duration_minutes'] > 0
+    ]
+    shift_count = len({item['date'] for item in valid_worklog_entries})
+    lesson_count = len({
+        item['source_id']
+        for item in valid_worklog_entries
+        if item['source'] == 'lesson' and item['source_id']
+    })
     outside_mc_count = sum(
         1
         for item in worklog['entries']
@@ -199,15 +213,17 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
     )
 
     base_amount = Decimal('0.00')
+    shift_amount = Decimal('0.00')
+    lesson_amount = Decimal('0.00')
     regular_amount = Decimal('0.00')
     outside_amount = Decimal('0.00')
     bonus_amount = Decimal('0.00')
-    sales_basis_amount = Decimal('0.00')
     sales_commission_amount = Decimal('0.00')
-    sales_transactions_count = 0
+    eligible_sales_transactions = {}
     sales_breakdown = []
     snapshots = []
     components = []
+    sales_rule_number = 0
 
     for rule in applicable_rules(profile, date_from, date_to):
         rate = _rule_rate(rule)
@@ -216,6 +232,14 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
         if rule.rule_type == EmployeePayrollRule.RuleType.MONTHLY_SALARY:
             amount = rate
             base_amount += amount
+        elif rule.rule_type == EmployeePayrollRule.RuleType.SHIFT_RATE:
+            amount = money(Decimal(shift_count) * rate)
+            shift_amount += amount
+            extra = {'shift_count': shift_count}
+        elif rule.rule_type == EmployeePayrollRule.RuleType.LESSON_RATE:
+            amount = money(Decimal(lesson_count) * rate)
+            lesson_amount += amount
+            extra = {'lesson_count': lesson_count}
         elif rule.rule_type == EmployeePayrollRule.RuleType.REGULAR_HOURLY:
             amount = money(Decimal(regular_minutes) / Decimal(60) * rate)
             regular_amount += amount
@@ -229,14 +253,19 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
             bonus_amount += amount
             extra = {'count': outside_mc_count}
         elif rule.rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT:
-            basis, amount, count, by_source = _calculate_sales_component(employee, date_from, date_to, branch, rule)
-            sales_basis_amount += basis
+            sales_rule_number += 1
+            basis, amount, count, by_source, transaction_amounts = _calculate_sales_component(employee, date_from, date_to, branch, rule)
             sales_commission_amount += amount
-            sales_transactions_count += count
+            eligible_sales_transactions.update(transaction_amounts)
             sales_breakdown.extend(by_source)
             extra = {
+                'rule_id': rule.id,
+                'percent': str(rule.percent),
+                'sales_sources': list(rule.sales_sources or []),
+                'sales_attribution': rule.sales_attribution,
                 'sales_basis_amount': str(basis),
                 'sales_transactions_count': count,
+                'sales_commission_amount': str(amount),
                 'sales_breakdown': by_source,
             }
         else:
@@ -245,13 +274,16 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
         snapshots.append(_rule_snapshot(rule, rate=rate, amount=amount, extra=extra))
         components.append({
             'type': rule.rule_type,
-            'label': rule.get_rule_type_display(),
+            'label': f'{rule.get_rule_type_display()} #{sales_rule_number}' if rule.rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT else rule.get_rule_type_display(),
+            'rate': str(rate),
             'amount': str(amount),
             **(extra or {}),
         })
 
     adjustment = money(manual_adjustment)
-    gross = money(base_amount + regular_amount + outside_amount + bonus_amount + sales_commission_amount + adjustment)
+    sales_basis_amount = money(sum(eligible_sales_transactions.values(), Decimal('0.00')))
+    sales_transactions_count = len(eligible_sales_transactions)
+    gross = money(base_amount + shift_amount + lesson_amount + regular_amount + outside_amount + bonus_amount + sales_commission_amount + adjustment)
     advance_applied = Decimal('0.00')
     if statement is not None:
         advance_applied = rebuild_advance_allocations(statement, gross)
@@ -265,8 +297,12 @@ def calculate_payroll(employee, date_from, date_to, branch=None, manual_adjustme
         'outside_master_class_bonus_snapshot': profile.outside_master_class_bonus,
         'regular_minutes': regular_minutes,
         'outside_minutes': outside_minutes,
+        'shift_count': shift_count,
+        'lesson_count': lesson_count,
         'outside_master_class_count': outside_mc_count,
         'base_amount': money(base_amount),
+        'shift_amount': money(shift_amount),
+        'lesson_amount': money(lesson_amount),
         'regular_amount': money(regular_amount),
         'outside_amount': money(outside_amount),
         'master_class_bonus_amount': money(bonus_amount),

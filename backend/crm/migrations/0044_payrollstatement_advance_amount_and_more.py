@@ -68,6 +68,16 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='payrollstatement',
+            name='lesson_amount',
+            field=models.DecimalField(decimal_places=2, default=0, max_digits=12),
+        ),
+        migrations.AddField(
+            model_name='payrollstatement',
+            name='lesson_count',
+            field=models.PositiveIntegerField(default=0),
+        ),
+        migrations.AddField(
+            model_name='payrollstatement',
             name='payroll_rules_snapshot',
             field=models.JSONField(blank=True, default=list),
         ),
@@ -84,6 +94,16 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='payrollstatement',
             name='sales_transactions_count',
+            field=models.PositiveIntegerField(default=0),
+        ),
+        migrations.AddField(
+            model_name='payrollstatement',
+            name='shift_amount',
+            field=models.DecimalField(decimal_places=2, default=0, max_digits=12),
+        ),
+        migrations.AddField(
+            model_name='payrollstatement',
+            name='shift_count',
             field=models.PositiveIntegerField(default=0),
         ),
         migrations.CreateModel(
@@ -111,7 +131,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('rule_type', models.CharField(choices=[('monthly_salary', 'Оклад'), ('regular_hourly', 'Почасовая ставка'), ('outside_hourly', 'Работа вне графика'), ('outside_master_class_bonus', 'Доплата за МК вне графика'), ('sales_percent', 'Процент от продаж')], max_length=40)),
+                ('rule_type', models.CharField(choices=[('monthly_salary', 'Оклад'), ('shift_rate', 'Оплата за смену'), ('lesson_rate', 'Оплата за занятие'), ('regular_hourly', 'Почасовая ставка'), ('outside_hourly', 'Работа вне графика'), ('outside_master_class_bonus', 'Доплата за МК вне графика'), ('sales_percent', 'Процент от продаж')], max_length=40)),
                 ('amount', models.DecimalField(blank=True, decimal_places=2, max_digits=12, null=True)),
                 ('percent', models.DecimalField(blank=True, decimal_places=5, max_digits=10, null=True)),
                 ('sales_sources', models.JSONField(blank=True, default=list)),

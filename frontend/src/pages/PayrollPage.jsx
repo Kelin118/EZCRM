@@ -26,20 +26,37 @@ const salesSources = [
 ];
 const ruleLabels = {
   monthly_salary: 'Оклад',
+  shift_rate: 'Оплата за смену',
+  lesson_rate: 'Оплата за занятие',
   regular_hourly: 'Почасовая ставка',
   outside_hourly: 'Работа вне графика',
   outside_master_class_bonus: 'Доплата за МК вне графика',
   sales_percent: 'Процент от продаж',
 };
-const emptyRuleForm = {
+const salesSourceLabel = (value) => salesSources.find(([source]) => source === value)?.[1] || value;
+const salesRuleClientId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `sales-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+const createSalesPercentRule = (rule = {}) => ({
+  client_id: rule.client_id || (rule.id ? `rule-${rule.id}` : salesRuleClientId()),
+  id: rule.id ?? null,
+  percent: rule.percent || '',
+  sales_sources: rule.sales_sources?.length ? rule.sales_sources : ['subscription'],
+  sales_attribution: rule.sales_attribution || 'responsible_manager',
+});
+const createEmptyRuleForm = () => ({
   employee: '',
   valid_from: todayLocalDate(),
   monthly_salary: { enabled: false, amount: '' },
+  shift_rate: { enabled: false, amount: '' },
+  lesson_rate: { enabled: false, amount: '' },
   regular_hourly: { enabled: false, amount: '' },
   outside_hourly: { enabled: false, amount: '' },
   outside_master_class_bonus: { enabled: false, amount: '' },
-  sales_percent: { enabled: false, percent: '', sales_sources: ['subscription', 'trial', 'master_class'], sales_attribution: 'responsible_manager' },
-};
+  sales_percent_rules: [],
+});
+const emptyRuleForm = createEmptyRuleForm();
 const emptyAdvance = { employee: '', branch: '', amount: '', advance_date: todayLocalDate(), payment_parts: [], comment: '' };
 
 const ruleSummary = (rules = []) => {
@@ -47,20 +64,17 @@ const ruleSummary = (rules = []) => {
   if (!active.length) return 'Не настроено';
   return active.map((rule) => {
     if (rule.rule_type === 'sales_percent') return `${ruleLabels[rule.rule_type]} ${rule.percent}%`;
+    if (rule.rule_type === 'shift_rate') return `${ruleLabels[rule.rule_type]} ${money(rule.amount)} / смену`;
+    if (rule.rule_type === 'lesson_rate') return `${ruleLabels[rule.rule_type]} ${money(rule.amount)} / занятие`;
     return `${ruleLabels[rule.rule_type]} ${money(rule.amount)}`;
   }).join(' · ');
 };
 
 const rulesFormFromEmployee = (employee, rules = []) => {
-  const next = { ...emptyRuleForm, employee: String(employee?.value || employee?.id || ''), valid_from: todayLocalDate() };
+  const next = { ...createEmptyRuleForm(), employee: String(employee?.value || employee?.id || ''), valid_from: todayLocalDate() };
   for (const rule of rules.filter((item) => item.is_active && !item.valid_until)) {
     if (rule.rule_type === 'sales_percent') {
-      next.sales_percent = {
-        enabled: true,
-        percent: rule.percent || '',
-        sales_sources: rule.sales_sources?.length ? rule.sales_sources : ['subscription', 'trial', 'master_class'],
-        sales_attribution: rule.sales_attribution || 'responsible_manager',
-      };
+      next.sales_percent_rules.push(createSalesPercentRule(rule));
     } else if (next[rule.rule_type]) {
       next[rule.rule_type] = { enabled: true, amount: rule.amount || '' };
     }
@@ -70,15 +84,16 @@ const rulesFormFromEmployee = (employee, rules = []) => {
 
 const buildRulesPayload = (form) => {
   const rules = [];
-  for (const type of ['monthly_salary', 'regular_hourly', 'outside_hourly', 'outside_master_class_bonus']) {
+  for (const type of ['monthly_salary', 'shift_rate', 'lesson_rate', 'regular_hourly', 'outside_hourly', 'outside_master_class_bonus']) {
     if (form[type]?.enabled) rules.push({ rule_type: type, amount: form[type].amount });
   }
-  if (form.sales_percent.enabled) {
+  for (const rule of form.sales_percent_rules || []) {
     rules.push({
+      id: rule.id,
       rule_type: 'sales_percent',
-      percent: form.sales_percent.percent,
-      sales_sources: form.sales_percent.sales_sources,
-      sales_attribution: form.sales_percent.sales_attribution,
+      percent: rule.percent,
+      sales_sources: rule.sales_sources,
+      sales_attribution: rule.sales_attribution,
     });
   }
   return rules;
@@ -104,6 +119,18 @@ function MoneyRow({ label, value, accent = false }) {
     </div>
   );
 }
+
+const componentMeta = (component) => {
+  if (component.type === 'shift_rate') return `${money(component.rate)} × ${component.shift_count || 0} смен`;
+  if (component.type === 'lesson_rate') return `${money(component.rate)} × ${component.lesson_count || 0} занятий`;
+  if (component.type === 'regular_hourly' || component.type === 'outside_hourly') return `${money(component.rate)} × ${minutes(component.minutes || 0)}`;
+  if (component.type === 'outside_master_class_bonus') return `${money(component.rate)} × ${component.count || 0} МК`;
+  if (component.type === 'sales_percent') {
+    const sources = (component.sales_sources || []).map(salesSourceLabel).join(', ');
+    return `${component.percent}%${sources ? ` · ${sources}` : ''} · Продажи: ${money(component.sales_basis_amount)} · ${component.sales_transactions_count || 0} оп.`;
+  }
+  return '';
+};
 
 export default function PayrollPage() {
   const [tab, setTab] = useState('calculation');
@@ -206,6 +233,26 @@ export default function PayrollPage() {
   const openRuleModal = (employee) => {
     setRuleForm(rulesFormFromEmployee(employee, rulesByEmployee.get(String(employee.value)) || []));
     setRuleModalOpen(true);
+  };
+  const addSalesPercentRule = () => {
+    setRuleForm((current) => ({
+      ...current,
+      sales_percent_rules: [...(current.sales_percent_rules || []), createSalesPercentRule()],
+    }));
+  };
+  const updateSalesPercentRule = (clientId, patch) => {
+    setRuleForm((current) => ({
+      ...current,
+      sales_percent_rules: (current.sales_percent_rules || []).map((rule) => (
+        rule.client_id === clientId ? { ...rule, ...patch } : rule
+      )),
+    }));
+  };
+  const removeSalesPercentRule = (clientId) => {
+    setRuleForm((current) => ({
+      ...current,
+      sales_percent_rules: (current.sales_percent_rules || []).filter((rule) => rule.client_id !== clientId),
+    }));
   };
   const saveRules = async () => {
     setSavingRules(true);
@@ -366,11 +413,19 @@ export default function PayrollPage() {
               <p className="mt-1 text-slate-500">{details.date_from}–{details.date_to}</p>
               <div className="mt-4 rounded-2xl border border-slate-100 p-4">
                 <p className="mb-2 font-black text-slate-900">Начисления</p>
-                <MoneyRow label="Оклад" value={details.base_amount} />
-                <MoneyRow label={`Почасовая · ${minutes(details.regular_minutes)}`} value={details.regular_amount} />
-                <MoneyRow label={`Работа вне графика · ${minutes(details.outside_minutes)}`} value={details.outside_amount} />
-                <MoneyRow label={`МК вне графика · ${details.outside_master_class_count}`} value={details.master_class_bonus_amount} />
-                <MoneyRow label={`Продажи · ${money(details.sales_basis_amount)} · ${details.sales_transactions_count} оп.`} value={details.sales_commission_amount} />
+                {(details.calculation_breakdown?.components || []).length ? details.calculation_breakdown.components.map((component, index) => (
+                  <MoneyRow key={`${component.type}-${component.rule_id || index}`} label={`${component.label}${componentMeta(component) ? ` · ${componentMeta(component)}` : ''}`} value={component.amount} />
+                )) : (
+                  <>
+                    <MoneyRow label="Оклад" value={details.base_amount} />
+                    <MoneyRow label={`Оплата за смену · ${details.shift_count || 0} смен`} value={details.shift_amount} />
+                    <MoneyRow label={`Оплата за занятие · ${details.lesson_count || 0} занятий`} value={details.lesson_amount} />
+                    <MoneyRow label={`Почасовая · ${minutes(details.regular_minutes)}`} value={details.regular_amount} />
+                    <MoneyRow label={`Работа вне графика · ${minutes(details.outside_minutes)}`} value={details.outside_amount} />
+                    <MoneyRow label={`МК вне графика · ${details.outside_master_class_count}`} value={details.master_class_bonus_amount} />
+                    <MoneyRow label={`Продажи · ${money(details.sales_basis_amount)} · ${details.sales_transactions_count} оп.`} value={details.sales_commission_amount} />
+                  </>
+                )}
                 <MoneyRow label="Ручная корректировка" value={details.manual_adjustment} />
                 <MoneyRow label="Начислено" value={details.gross_amount} accent />
               </div>
@@ -410,6 +465,8 @@ export default function PayrollPage() {
           <Input label="Действует с" type="date" value={ruleForm.valid_from} onChange={(event) => setRuleForm({ ...ruleForm, valid_from: event.target.value })} />
           {[
             ['monthly_salary', 'Оклад', 'Сумма, ₸ / месяц'],
+            ['shift_rate', 'Оплата за смену', '₸ / смену'],
+            ['lesson_rate', 'Оплата за занятие', '₸ / занятие'],
             ['regular_hourly', 'Почасовая ставка', '₸ / час'],
             ['outside_hourly', 'Работа вне графика', '₸ / час'],
             ['outside_master_class_bonus', 'Доплата за МК вне графика', '₸ / МК'],
@@ -423,32 +480,55 @@ export default function PayrollPage() {
             </div>
           ))}
           <div className="rounded-2xl border border-slate-100 p-4">
-            <label className="flex items-center gap-3 font-bold text-slate-900">
-              <input type="checkbox" checked={ruleForm.sales_percent.enabled} onChange={(event) => setRuleForm({ ...ruleForm, sales_percent: { ...ruleForm.sales_percent, enabled: event.target.checked } })} />
-              Процент от продаж
-            </label>
-            {ruleForm.sales_percent.enabled && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="font-bold text-slate-900">Процент от продаж</p>
+              <Button variant="secondary" onClick={addSalesPercentRule}>+ Добавить процент</Button>
+            </div>
+            {(ruleForm.sales_percent_rules || []).length ? (
               <div className="mt-3 grid gap-4">
-                <Input label="Процент, %" type="number" value={ruleForm.sales_percent.percent} onChange={(event) => setRuleForm({ ...ruleForm, sales_percent: { ...ruleForm.sales_percent, percent: event.target.value } })} />
-                <SelectField label="Продажа относится сотруднику по" value={ruleForm.sales_percent.sales_attribution} onChange={(value) => setRuleForm({ ...ruleForm, sales_percent: { ...ruleForm.sales_percent, sales_attribution: value } })} options={[{ value: 'responsible_manager', label: 'Ответственный менеджер' }, { value: 'created_by', label: 'Создатель операции' }]} />
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {salesSources.map(([value, label]) => (
-                    <label key={value} className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={ruleForm.sales_percent.sales_sources.includes(value)}
-                        onChange={(event) => {
-                          const current = new Set(ruleForm.sales_percent.sales_sources);
-                          if (event.target.checked) current.add(value);
-                          else current.delete(value);
-                          setRuleForm({ ...ruleForm, sales_percent: { ...ruleForm.sales_percent, sales_sources: Array.from(current) } });
-                        }}
-                      />
-                      {label}
-                    </label>
-                  ))}
-                </div>
+                {ruleForm.sales_percent_rules.map((rule, index) => {
+                  const duplicateSources = (ruleForm.sales_percent_rules || []).some((other) => (
+                    other.client_id !== rule.client_id && (other.sales_sources || []).some((source) => (rule.sales_sources || []).includes(source))
+                  ));
+                  return (
+                    <div key={rule.client_id} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <p className="font-black text-slate-900">Процент #{index + 1}</p>
+                        <Button variant="danger" onClick={() => removeSalesPercentRule(rule.client_id)}>Удалить правило</Button>
+                      </div>
+                      <div className="grid gap-4">
+                        <Input label="Процент, %" type="number" value={rule.percent} onChange={(event) => updateSalesPercentRule(rule.client_id, { percent: event.target.value })} />
+                        <SelectField label="Продажа относится сотруднику по" value={rule.sales_attribution} onChange={(value) => updateSalesPercentRule(rule.client_id, { sales_attribution: value })} options={[{ value: 'responsible_manager', label: 'Ответственный менеджер' }, { value: 'created_by', label: 'Создатель операции' }]} />
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {salesSources.map(([value, label]) => (
+                            <label key={value} className="flex items-center gap-3 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={(rule.sales_sources || []).includes(value)}
+                                onChange={(event) => {
+                                  const current = new Set(rule.sales_sources || []);
+                                  if (event.target.checked) current.add(value);
+                                  else current.delete(value);
+                                  updateSalesPercentRule(rule.client_id, { sales_sources: Array.from(current) });
+                                }}
+                              />
+                              {label}
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-xs font-semibold text-slate-500">
+                          Источники: {(rule.sales_sources || []).map(salesSourceLabel).join(', ') || 'не выбраны'}
+                        </p>
+                        {duplicateSources && (
+                          <p className="text-xs font-semibold text-amber-700">Есть несколько процентов, которые применяются к одним и тем же продажам.</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+            ) : (
+              <p className="mt-3 text-sm font-semibold text-slate-500">Проценты от продаж не настроены.</p>
             )}
           </div>
         </div>

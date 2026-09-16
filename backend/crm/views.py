@@ -4462,13 +4462,25 @@ class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
 
         new_rules = []
         for item in rules_payload:
+            if not isinstance(item, dict):
+                return Response({'rules': 'Каждое правило начисления должно быть объектом.'}, status=status.HTTP_400_BAD_REQUEST)
             serializer = EmployeePayrollRuleSerializer(data={**item, 'profile': profile.id, 'valid_from': valid_from})
             serializer.is_valid(raise_exception=True)
-            new_rules.append(serializer.validated_data)
+            new_rules.append({'id': item.get('id'), 'attrs': serializer.validated_data})
 
         previous_rules = list(profile.rules.select_for_update().filter(is_active=True, valid_until__isnull=True))
+        previous_by_id = {rule.id: rule for rule in previous_rules}
+        singleton_types = {
+            EmployeePayrollRule.RuleType.MONTHLY_SALARY,
+            EmployeePayrollRule.RuleType.SHIFT_RATE,
+            EmployeePayrollRule.RuleType.LESSON_RATE,
+            EmployeePayrollRule.RuleType.REGULAR_HOURLY,
+            EmployeePayrollRule.RuleType.OUTSIDE_HOURLY,
+            EmployeePayrollRule.RuleType.OUTSIDE_MASTER_CLASS_BONUS,
+        }
         close_until = valid_from - timedelta(days=1)
-        for rule in previous_rules:
+
+        def close_rule(rule):
             if rule.valid_from >= valid_from:
                 rule.is_active = False
                 rule.valid_until = rule.valid_from
@@ -4477,9 +4489,68 @@ class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
                 rule.valid_until = close_until
                 rule.save(update_fields=('valid_until', 'updated_at'))
 
+        def same_rule(rule, attrs):
+            if rule.rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT:
+                return (
+                    rule.percent == attrs.get('percent')
+                    and list(rule.sales_sources or []) == list(attrs.get('sales_sources') or [])
+                    and rule.sales_attribution == attrs.get('sales_attribution')
+                )
+            return rule.amount == attrs.get('amount')
+
+        submitted_sales_ids = set()
+        kept = []
         created = []
-        for attrs in new_rules:
+        singleton_payload_by_type = {}
+        sales_payloads = []
+        for item in new_rules:
+            attrs = item['attrs']
+            if attrs['rule_type'] == EmployeePayrollRule.RuleType.SALES_PERCENT:
+                sales_payloads.append(item)
+            else:
+                singleton_payload_by_type[attrs['rule_type']] = attrs
+
+        for rule_type in singleton_types:
+            existing = [rule for rule in previous_rules if rule.rule_type == rule_type]
+            attrs = singleton_payload_by_type.get(rule_type)
+            if attrs is None:
+                for rule in existing:
+                    close_rule(rule)
+                continue
+            current = existing[0] if existing else None
+            if current and same_rule(current, attrs):
+                kept.append(current)
+                for duplicate in existing[1:]:
+                    close_rule(duplicate)
+                continue
+            for rule in existing:
+                close_rule(rule)
             created.append(EmployeePayrollRule.objects.create(**attrs))
+
+        for item in sales_payloads:
+            attrs = item['attrs']
+            raw_id = item['id']
+            rule_id = None
+            if raw_id not in (None, ''):
+                try:
+                    rule_id = int(raw_id)
+                except (TypeError, ValueError):
+                    return Response({'rules': 'Некорректный id процентного правила.'}, status=status.HTTP_400_BAD_REQUEST)
+            current = previous_by_id.get(rule_id) if rule_id else None
+            if current and current.rule_type != EmployeePayrollRule.RuleType.SALES_PERCENT:
+                return Response({'rules': 'id правила не соответствует проценту от продаж.'}, status=status.HTTP_400_BAD_REQUEST)
+            if current and same_rule(current, attrs):
+                kept.append(current)
+                submitted_sales_ids.add(current.id)
+                continue
+            if current:
+                close_rule(current)
+                submitted_sales_ids.add(current.id)
+            created.append(EmployeePayrollRule.objects.create(**attrs))
+
+        for rule in previous_rules:
+            if rule.rule_type == EmployeePayrollRule.RuleType.SALES_PERCENT and rule.id not in submitted_sales_ids and rule not in kept:
+                close_rule(rule)
         log_action(
             request,
             AuditLog.Action.PAYROLL_PROFILE_UPDATE,
@@ -4489,7 +4560,7 @@ class EmployeePayrollProfileViewSet(BaseAuthenticatedViewSet):
             changes={
                 'employee': employee.id,
                 'valid_from': str(valid_from),
-                'closed_rules': [rule.id for rule in previous_rules],
+                'kept_rules': [rule.id for rule in kept],
                 'created_rules': [rule.id for rule in created],
             },
         )

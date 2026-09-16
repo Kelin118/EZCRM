@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -527,6 +528,213 @@ class PayrollWorklogApiTests(APITestCase):
         created_by_statement = self.generate_statement(self.teacher)
         self.assertEqual(created_by_statement.sales_basis_amount, Decimal('40000.00'))
         self.assertEqual(created_by_statement.sales_commission_amount, Decimal('4000.00'))
+
+    def test_lesson_rate_counts_unique_completed_lessons(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.LESSON_RATE, 'amount': Decimal('3000.00')},
+        ])
+        group = StudyGroup.objects.create(name='Payroll lessons', teacher=self.teacher, branch=self.branch)
+        for hour in (16, 17, 18):
+            Lesson.objects.create(group=group, teacher=self.teacher, branch=self.branch, lesson_date=date(2026, 8, 17), start_time=time(hour), end_time=time(hour + 1))
+
+        statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.lesson_count, 3)
+        self.assertEqual(statement.lesson_amount, Decimal('9000.00'))
+        self.assertEqual(statement.gross_amount, Decimal('9000.00'))
+        lesson_snapshot = statement.payroll_rules_snapshot[0]
+        self.assertEqual(lesson_snapshot['rule_type'], EmployeePayrollRule.RuleType.LESSON_RATE)
+        self.assertEqual(lesson_snapshot['lesson_count'], 3)
+
+    def test_lesson_rate_deduplicates_worklog_lesson_ids(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.LESSON_RATE, 'amount': Decimal('3000.00')},
+        ])
+        entry = {
+            'source': 'lesson',
+            'source_id': 15,
+            'date': '2026-08-17',
+            'warning': '',
+            'duration_minutes': 60,
+            'regular_minutes': 60,
+            'outside_minutes': 0,
+            'outside_regular_master_class_hours': False,
+        }
+        worklog = {
+            'summary': {'regular_minutes': 120, 'outside_minutes': 0},
+            'entries': [entry, {**entry}],
+        }
+
+        with patch('crm.payroll.build_employee_worklog', return_value=worklog):
+            statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.lesson_count, 1)
+        self.assertEqual(statement.lesson_amount, Decimal('3000.00'))
+
+    def test_lesson_rate_ignores_warning_entries(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.LESSON_RATE, 'amount': Decimal('3000.00')},
+        ])
+        worklog = {
+            'summary': {'regular_minutes': 0, 'outside_minutes': 0},
+            'entries': [{
+                'source': 'lesson',
+                'source_id': 15,
+                'date': '2026-08-17',
+                'warning': 'Запланировано',
+                'duration_minutes': 60,
+                'regular_minutes': 0,
+                'outside_minutes': 0,
+                'outside_regular_master_class_hours': False,
+            }],
+        }
+
+        with patch('crm.payroll.build_employee_worklog', return_value=worklog):
+            statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.lesson_count, 0)
+        self.assertEqual(statement.lesson_amount, Decimal('0.00'))
+
+    def test_shift_lesson_and_multiple_sales_rules_are_additive(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.SHIFT_RATE, 'amount': Decimal('10000.00')},
+            {'rule_type': EmployeePayrollRule.RuleType.LESSON_RATE, 'amount': Decimal('3000.00')},
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('5.00000'), 'sales_sources': ['subscription']},
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('10.00000'), 'sales_sources': ['master_class']},
+        ])
+        group = StudyGroup.objects.create(name='Payroll combo', teacher=self.teacher, branch=self.branch)
+        for index in range(8):
+            day = 17 + min(index, 4)
+            Lesson.objects.create(group=group, teacher=self.teacher, branch=self.branch, lesson_date=date(2026, 8, day), start_time=time(16 + (index % 2)), end_time=time(17 + (index % 2)))
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription')
+        self.sale(employee=self.teacher, amount='50000.00', source='master_class')
+
+        statement = self.generate_statement(self.teacher, date_from='2026-08-17', date_to='2026-08-21')
+
+        self.assertEqual(statement.shift_count, 5)
+        self.assertEqual(statement.shift_amount, Decimal('50000.00'))
+        self.assertEqual(statement.lesson_count, 8)
+        self.assertEqual(statement.lesson_amount, Decimal('24000.00'))
+        self.assertEqual(statement.sales_commission_amount, Decimal('10000.00'))
+        self.assertEqual(statement.sales_basis_amount, Decimal('150000.00'))
+        self.assertEqual(statement.sales_transactions_count, 2)
+        self.assertEqual(statement.gross_amount, Decimal('84000.00'))
+
+    def test_overlapping_sales_rules_add_commission_without_double_counting_basis(self):
+        self.replace_rules(self.teacher, [
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('5.00000'), 'sales_sources': ['subscription']},
+            {'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT, 'percent': Decimal('2.00000'), 'sales_sources': ['subscription']},
+        ])
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription')
+
+        statement = self.generate_statement(self.teacher)
+
+        self.assertEqual(statement.sales_basis_amount, Decimal('100000.00'))
+        self.assertEqual(statement.sales_transactions_count, 1)
+        self.assertEqual(statement.sales_commission_amount, Decimal('7000.00'))
+        sales_components = [item for item in statement.calculation_breakdown['components'] if item['type'] == 'sales_percent']
+        self.assertEqual([Decimal(item['amount']) for item in sales_components], [Decimal('5000.00'), Decimal('2000.00')])
+
+    def test_sales_rules_can_use_different_attribution_modes(self):
+        self.replace_rules(self.teacher, [{
+            'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+            'percent': Decimal('5.00000'),
+            'sales_sources': ['subscription'],
+            'sales_attribution': EmployeePayrollRule.SalesAttribution.RESPONSIBLE_MANAGER,
+        }])
+        self.replace_rules(self.other_teacher, [{
+            'rule_type': EmployeePayrollRule.RuleType.SALES_PERCENT,
+            'percent': Decimal('2.00000'),
+            'sales_sources': ['subscription'],
+            'sales_attribution': EmployeePayrollRule.SalesAttribution.CREATED_BY,
+        }])
+        self.sale(employee=self.teacher, created_by=self.other_teacher, amount='100000.00', source='subscription')
+
+        responsible_statement = self.generate_statement(self.teacher)
+        created_by_statement = self.generate_statement(self.other_teacher)
+
+        self.assertEqual(responsible_statement.sales_commission_amount, Decimal('5000.00'))
+        self.assertEqual(created_by_statement.sales_commission_amount, Decimal('2000.00'))
+
+    def test_configure_rules_preserves_updates_and_deletes_individual_sales_rules(self):
+        self.client.force_authenticate(self.accountant)
+        first = self.client.post('/api/employee-payroll-profiles/configure-rules/', {
+            'employee': self.teacher.id,
+            'valid_from': '2026-09-01',
+            'rules': [
+                {'rule_type': 'sales_percent', 'percent': '5', 'sales_sources': ['subscription'], 'sales_attribution': 'responsible_manager'},
+                {'rule_type': 'sales_percent', 'percent': '10', 'sales_sources': ['master_class'], 'sales_attribution': 'responsible_manager'},
+                {'rule_type': 'sales_percent', 'percent': '3', 'sales_sources': ['product', 'addon'], 'sales_attribution': 'responsible_manager'},
+            ],
+        }, format='json')
+        self.assertEqual(first.status_code, 200, first.data)
+        profile = EmployeePayrollProfile.objects.get(employee=self.teacher)
+        original = list(profile.rules.filter(is_active=True, valid_until__isnull=True, rule_type='sales_percent').order_by('id'))
+        self.assertEqual(len(original), 3)
+
+        second = self.client.post('/api/employee-payroll-profiles/configure-rules/', {
+            'employee': self.teacher.id,
+            'valid_from': '2026-09-15',
+            'rules': [
+                {'id': original[0].id, 'rule_type': 'sales_percent', 'percent': '5', 'sales_sources': ['subscription'], 'sales_attribution': 'responsible_manager'},
+                {'id': original[1].id, 'rule_type': 'sales_percent', 'percent': '12', 'sales_sources': ['master_class'], 'sales_attribution': 'responsible_manager'},
+                {'id': original[2].id, 'rule_type': 'sales_percent', 'percent': '3', 'sales_sources': ['product', 'addon'], 'sales_attribution': 'responsible_manager'},
+            ],
+        }, format='json')
+        self.assertEqual(second.status_code, 200, second.data)
+        active = list(profile.rules.filter(is_active=True, valid_until__isnull=True, rule_type='sales_percent').order_by('id'))
+        self.assertEqual(len(active), 3)
+        self.assertIn(original[0].id, [rule.id for rule in active])
+        self.assertIn(original[2].id, [rule.id for rule in active])
+        self.assertNotIn(original[1].id, [rule.id for rule in active])
+        changed = next(rule for rule in active if rule.percent == Decimal('12.00000'))
+
+        third = self.client.post('/api/employee-payroll-profiles/configure-rules/', {
+            'employee': self.teacher.id,
+            'valid_from': '2026-09-20',
+            'rules': [
+                {'id': changed.id, 'rule_type': 'sales_percent', 'percent': '12', 'sales_sources': ['master_class'], 'sales_attribution': 'responsible_manager'},
+                {'id': original[2].id, 'rule_type': 'sales_percent', 'percent': '3', 'sales_sources': ['product', 'addon'], 'sales_attribution': 'responsible_manager'},
+            ],
+        }, format='json')
+        self.assertEqual(third.status_code, 200, third.data)
+        remaining_ids = set(profile.rules.filter(is_active=True, valid_until__isnull=True, rule_type='sales_percent').values_list('id', flat=True))
+        self.assertEqual(remaining_ids, {changed.id, original[2].id})
+
+    def test_historical_statement_keeps_multiple_sales_rule_snapshot(self):
+        self.client.force_authenticate(self.accountant)
+        configured = self.client.post('/api/employee-payroll-profiles/configure-rules/', {
+            'employee': self.teacher.id,
+            'valid_from': '2026-09-01',
+            'rules': [
+                {'rule_type': 'sales_percent', 'percent': '5', 'sales_sources': ['subscription'], 'sales_attribution': 'responsible_manager'},
+                {'rule_type': 'sales_percent', 'percent': '2', 'sales_sources': ['subscription'], 'sales_attribution': 'responsible_manager'},
+            ],
+        }, format='json')
+        self.assertEqual(configured.status_code, 200, configured.data)
+        profile = EmployeePayrollProfile.objects.get(employee=self.teacher)
+        september_rules = list(profile.rules.filter(is_active=True, valid_until__isnull=True, rule_type='sales_percent').order_by('id'))
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription', paid_at=aware_dt(2026, 9, 10, 12))
+        september = self.generate_statement(self.teacher, date_from='2026-09-01', date_to='2026-09-30')
+        self.client.post(f'/api/payroll/{september.id}/approve/')
+
+        updated = self.client.post('/api/employee-payroll-profiles/configure-rules/', {
+            'employee': self.teacher.id,
+            'valid_from': '2026-10-01',
+            'rules': [
+                {'id': september_rules[0].id, 'rule_type': 'sales_percent', 'percent': '7', 'sales_sources': ['subscription'], 'sales_attribution': 'responsible_manager'},
+                {'rule_type': 'sales_percent', 'percent': '10', 'sales_sources': ['master_class'], 'sales_attribution': 'responsible_manager'},
+            ],
+        }, format='json')
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.sale(employee=self.teacher, amount='100000.00', source='subscription', paid_at=aware_dt(2026, 10, 10, 12))
+        self.sale(employee=self.teacher, amount='50000.00', source='master_class', paid_at=aware_dt(2026, 10, 10, 13))
+        october = self.generate_statement(self.teacher, date_from='2026-10-01', date_to='2026-10-31')
+
+        september.refresh_from_db()
+        self.assertEqual(september.sales_commission_amount, Decimal('7000.00'))
+        self.assertEqual([item['percent'] for item in september.payroll_rules_snapshot], ['5.00000', '2.00000'])
+        self.assertEqual(october.sales_commission_amount, Decimal('12000.00'))
 
     def test_advance_reduces_final_salary_finance_expense(self):
         self.replace_rules(self.teacher, [{'rule_type': EmployeePayrollRule.RuleType.MONTHLY_SALARY, 'amount': Decimal('300000.00')}])

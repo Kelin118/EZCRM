@@ -1059,7 +1059,15 @@ export default function SettingsPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 {(catalogModal.item.images || []).map((image) => (
                   <div key={image.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                    <AuthenticatedImage src={image.thumbnail_url || image.url} alt={image.file_name} fileName={image.file_name} className="h-32 w-full rounded-xl object-cover" />
+                    <AuthenticatedImage
+                      src={image.thumbnail_url || image.url}
+                      alt={image.file_name}
+                      fileName={image.file_name}
+                      className="h-32 w-full rounded-xl object-cover"
+                      previewable
+                      hoverPreview
+                      previewTitle={image.file_name}
+                    />
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button variant={image.is_primary ? 'accent' : 'secondary'} disabled={catalogImageSaving || image.is_primary} onClick={() => makePrimaryCatalogImage(image.id)}>
                         {image.is_primary ? 'Основное' : 'Сделать основным'}
@@ -1268,7 +1276,16 @@ function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd
                 <tr key={item.id} className="transition hover:bg-brand/[0.03]">
                   <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">
                     <div className="flex items-center gap-3">
-                      {isProduct && item.primary_image_url && <AuthenticatedImage src={item.primary_image_url} alt="" className="h-11 w-11 rounded-xl object-cover" />}
+                      {isProduct && item.primary_image_url && (
+                        <AuthenticatedImage
+                          src={item.primary_image_url}
+                          alt={item.name}
+                          className="h-11 w-11 rounded-xl object-cover"
+                          previewable
+                          hoverPreview
+                          previewTitle={item.name}
+                        />
+                      )}
                       <span>{item.name}</span>
                     </div>
                   </td>

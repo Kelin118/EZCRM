@@ -6,6 +6,7 @@ import api from '../api/axios.js';
 import { canDeleteDangerous, canManageFinance, getStoredUser } from '../auth.js';
 import AddonSaleModal from '../components/sales/AddonSaleModal.jsx';
 import PaymentSplitFields, { partsFromTransaction, paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
+import AuthenticatedImage from '../components/ui/AuthenticatedImage.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
@@ -125,7 +126,7 @@ export default function FinancePage() {
           )}
           {current.attachments?.length > 0 && (
             <div className="grid gap-2 sm:grid-cols-3">
-              {current.attachments.map((item) => <img key={item.id} src={item.thumbnail_url || item.url} alt={item.file_name} className="h-24 w-full rounded-xl object-cover" />)}
+              {current.attachments.map((item) => <AuthenticatedImage key={item.id} src={item.thumbnail_url || item.url} alt={item.file_name} fileName={item.file_name} className="h-24 w-full rounded-xl object-cover" />)}
             </div>
           )}
         </div>
@@ -451,10 +452,10 @@ export default function FinancePage() {
       >
         <div className="grid gap-3 sm:grid-cols-2">
           {(receiptViewer.transaction?.attachments || []).map((item) => (
-            <a key={item.id} href={item.url} target="_blank" rel="noreferrer" className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-              <img src={item.thumbnail_url || item.url} alt={item.file_name} className="h-56 w-full rounded-xl object-contain bg-white" />
+            <div key={item.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+              <AuthenticatedImage src={item.thumbnail_url || item.url} alt={item.file_name} fileName={item.file_name} className="h-56 w-full rounded-xl object-contain bg-white" openInNewTab />
               <p className="mt-2 truncate text-xs font-semibold text-slate-600">{item.file_name}</p>
-            </a>
+            </div>
           ))}
         </div>
       </Modal>

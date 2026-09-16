@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 import {
@@ -170,6 +171,46 @@ test('table floating scrollbar visibility follows overflow and viewport position
     tableBottom: -100,
     viewportHeight: 900,
   }), false);
+});
+
+test('authenticated image helper loads protected media as blob and revokes object urls', async (t) => {
+  const { fetchAuthenticatedImageObjectUrl, revokeAuthenticatedImageObjectUrl } = await loadModule('components/ui/AuthenticatedImage.jsx');
+  const created = [];
+  const revoked = [];
+  t.mock.method(URL, 'createObjectURL', (blob) => {
+    created.push(blob);
+    return `blob:asset-${created.length}`;
+  });
+  t.mock.method(URL, 'revokeObjectURL', (objectUrl) => {
+    revoked.push(objectUrl);
+  });
+  const blob = new Blob(['image-bytes'], { type: 'image/jpeg' });
+  const requests = [];
+  const apiClient = {
+    async get(src, options) {
+      requests.push({ src, options });
+      return { data: blob };
+    },
+  };
+
+  const objectUrl = await fetchAuthenticatedImageObjectUrl('/api/catalog-items/7/images/3/', apiClient);
+  revokeAuthenticatedImageObjectUrl(objectUrl);
+
+  assert.equal(objectUrl, 'blob:asset-1');
+  assert.deepEqual(requests, [{ src: '/api/catalog-items/7/images/3/', options: { responseType: 'blob' } }]);
+  assert.deepEqual(created, [blob]);
+  assert.deepEqual(revoked, ['blob:asset-1']);
+});
+
+test('protected media previews use authenticated loader instead of native protected img src', async () => {
+  const settingsSource = await readFile(new URL('../src/pages/SettingsPage.jsx', import.meta.url), 'utf8');
+  const financeSource = await readFile(new URL('../src/pages/FinancePage.jsx', import.meta.url), 'utf8');
+
+  assert.match(settingsSource, /AuthenticatedImage/);
+  assert.doesNotMatch(settingsSource, /<img\s+src=\{image\.thumbnail_url \|\| image\.url\}/);
+  assert.doesNotMatch(settingsSource, /<img\s+src=\{item\.primary_image_url\}/);
+  assert.match(financeSource, /AuthenticatedImage/);
+  assert.doesNotMatch(financeSource, /<img\s+[^>]*src=\{item\.thumbnail_url \|\| item\.url\}/);
 });
 
 for (const status of [401, 500]) {

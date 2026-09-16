@@ -182,6 +182,37 @@ const emptyPaymentForm = (amount = '') => ({
   comment: '',
 });
 
+export const createExtraMasterClassFromForm = (form = {}) => ({
+  subject: form.subject || '',
+  starts_at: form.starts_at,
+  duration_minutes: form.duration_minutes,
+  price: form.price,
+  discount: '',
+});
+
+export const calculateExtraMasterClassTotals = (item = {}, discount = null) => ({
+  discountAmount: calculateDiscountAmount(item.price, discount),
+  totalAfterDiscount: calculateDiscountedTotal(item.price, discount),
+});
+
+export const buildMasterClassBulkItems = ({ payload, extraMasterClasses, form, normalize = normalizePayload }) => [
+  payload,
+  ...extraMasterClasses.map((item) => {
+    const itemPayload = normalize({
+      ...payload,
+      subject: item.subject,
+      starts_at: item.starts_at || form.starts_at,
+      duration_minutes: item.duration_minutes || form.duration_minutes,
+      price: item.price || form.price,
+      discount: item.discount || null,
+      initial_payment: undefined,
+    });
+    itemPayload.discount = item.discount || null;
+    delete itemPayload.initial_payment;
+    return itemPayload;
+  }),
+];
+
 function managerScheduleTitle(schedule = managerScheduleFallback) {
   const lines = [];
   if (schedule.schedule_start && schedule.schedule_end) lines.push(`График: ${schedule.schedule_start}–${schedule.schedule_end}`);
@@ -605,21 +636,34 @@ export default function MasterClassesPage() {
               <p className="font-black text-slate-900">Несколько МК в один день</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Клиент, филиал и куратор берутся из основной формы.</p>
             </div>
-            <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => [...items, { subject: form.subject || '', starts_at: form.starts_at, duration_minutes: form.duration_minutes, price: form.price }])}>
+            <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => [...items, createExtraMasterClassFromForm(form)])}>
               Добавить ещё МК
             </Button>
           </div>
-          {extraMasterClasses.map((item, index) => (
-            <div key={index} className="grid gap-3 rounded-2xl bg-white p-3 shadow-sm md:grid-cols-4">
-              <SelectField label="Предмет МК" value={item.subject || ''} onChange={(value) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, subject: value } : row))} options={[{ value: '', label: 'Выберите предмет' }, ...masterClassSubjectOptions]} />
-              <Input label="Дата и время" type="datetime-local" value={item.starts_at} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, starts_at: event.target.value } : row))} />
-              <Input label="Минут" type="number" value={item.duration_minutes} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, duration_minutes: event.target.value } : row))} />
-              <div className="grid gap-2">
-                <Input label="Цена" type="number" value={item.price} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} />
-                <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => items.filter((_, rowIndex) => rowIndex !== index))}>Удалить строку</Button>
+          {extraMasterClasses.map((item, index) => {
+            const rowDiscount = getDiscountById(item.discount);
+            const rowTotals = calculateExtraMasterClassTotals(item, rowDiscount);
+            return (
+              <div key={index} className="grid gap-3 rounded-2xl bg-white p-3 shadow-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="font-black text-slate-900">МК #{index + 2}</p>
+                  <Button variant="secondary" onClick={() => setExtraMasterClasses((items) => items.filter((_, rowIndex) => rowIndex !== index))}>Удалить строку</Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <SelectField label="Предмет МК" value={item.subject || ''} onChange={(value) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, subject: value } : row))} options={[{ value: '', label: 'Выберите предмет' }, ...masterClassSubjectOptions]} />
+                  <Input label="Дата и время" type="datetime-local" value={item.starts_at} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, starts_at: event.target.value } : row))} />
+                  <Input label="Минут" type="number" value={item.duration_minutes} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, duration_minutes: event.target.value } : row))} />
+                  <Input label="Цена" type="number" value={item.price} onChange={(event) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} />
+                  <DiscountSelect value={item.discount || ''} onChange={(value) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, discount: value } : row))} branch={form.branch} />
+                </div>
+                <div className="flex flex-col gap-1 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+                  <span>Цена: {money(item.price)}</span>
+                  <span>Скидка: {money(rowTotals.discountAmount)}</span>
+                  <span className="text-slate-900">Итого: {money(rowTotals.totalAfterDiscount)}</span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </section>
       ),
     },
@@ -917,17 +961,7 @@ export default function MasterClassesPage() {
       }
       if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
       else if (extraMasterClasses.length) {
-        const items = [
-          payload,
-          ...extraMasterClasses.map((item) => normalizePayload({
-            ...payload,
-            subject: item.subject,
-            starts_at: item.starts_at || form.starts_at,
-            duration_minutes: item.duration_minutes || form.duration_minutes,
-            price: item.price || form.price,
-            initial_payment: undefined,
-          })),
-        ];
+        const items = buildMasterClassBulkItems({ payload, extraMasterClasses, form });
         await api.post('master-classes/bulk-create/', {
           client: payload.client,
           branch: payload.branch,

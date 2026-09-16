@@ -119,6 +119,44 @@ test('finance master class payment rows use owner payment actions', async () => 
   assert.equal(financeRowActionKind({ id: 3, source: 'manual' }), 'finance');
 });
 
+test('master class bulk rows keep independent discounts in payload and UI source', async () => {
+  const masterClassesSource = await readFile(new URL('../src/pages/MasterClassesPage.jsx', import.meta.url), 'utf8');
+  const {
+    buildMasterClassBulkItems,
+    calculateExtraMasterClassTotals,
+    createExtraMasterClassFromForm,
+  } = await loadModule('pages/MasterClassesPage.jsx');
+  const form = {
+    subject: '1',
+    starts_at: '2026-09-14T16:00',
+    duration_minutes: 60,
+    price: '20000',
+    discount: '10',
+  };
+  const extra = createExtraMasterClassFromForm(form);
+  assert.equal(extra.discount, '');
+
+  const items = buildMasterClassBulkItems({
+    payload: { client: 1, branch: 2, manager: 3, subject: '1', starts_at: form.starts_at, duration_minutes: 60, price: '20000', discount: '10' },
+    form,
+    extraMasterClasses: [
+      { ...extra, subject: '2', price: '26000', discount: '' },
+      { ...extra, subject: '3', price: '15000', discount: '20' },
+    ],
+    normalize: (payload) => Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined)),
+  });
+
+  assert.equal(items[0].discount, '10');
+  assert.equal(items[1].discount, null);
+  assert.equal(items[2].discount, '20');
+  assert.equal(items[1].subject, '2');
+  assert.equal(items[2].price, '15000');
+  assert.equal(calculateExtraMasterClassTotals({ price: '15000' }, { discount_type: 'percentage', value: '20' }).totalAfterDiscount, 12000);
+  assert.match(masterClassesSource, /<DiscountSelect value=\{item\.discount \|\| ''\}/);
+  assert.match(masterClassesSource, /calculateExtraMasterClassTotals\(item, rowDiscount\)/);
+  assert.doesNotMatch(masterClassesSource, /\.\.\.payload,[\s\S]{0,220}initial_payment: undefined,[\s\S]{0,80}\}\)\)/);
+});
+
 test('finance date formatter uses API precision across workstation timezones', () => {
   for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
     process.env.TZ = zone;
@@ -174,7 +212,7 @@ test('table floating scrollbar visibility follows overflow and viewport position
 });
 
 test('authenticated image helper loads protected media as blob and revokes object urls', async (t) => {
-  const { fetchAuthenticatedImageObjectUrl, revokeAuthenticatedImageObjectUrl } = await loadModule('components/ui/AuthenticatedImage.jsx');
+  const { canUseHoverPreview, fetchAuthenticatedImageObjectUrl, getHoverPreviewPosition, revokeAuthenticatedImageObjectUrl } = await loadModule('components/ui/AuthenticatedImage.jsx');
   const created = [];
   const revoked = [];
   t.mock.method(URL, 'createObjectURL', (blob) => {
@@ -200,17 +238,29 @@ test('authenticated image helper loads protected media as blob and revokes objec
   assert.deepEqual(requests, [{ src: '/api/catalog-items/7/images/3/', options: { responseType: 'blob' } }]);
   assert.deepEqual(created, [blob]);
   assert.deepEqual(revoked, ['blob:asset-1']);
+  assert.equal(canUseHoverPreview({ matchMedia: () => ({ matches: true }) }), true);
+  assert.equal(canUseHoverPreview({ matchMedia: () => ({ matches: false }) }), false);
+  assert.deepEqual(getHoverPreviewPosition({ left: 20, right: 64, top: 40 }, 900, 700), { left: 80, top: 40, width: 360, height: 360 });
+  assert.deepEqual(getHoverPreviewPosition({ left: 820, right: 864, top: 500 }, 900, 700), { left: 444, top: 324, width: 360, height: 360 });
 });
 
-test('protected media previews use authenticated loader instead of native protected img src', async () => {
+test('protected media previews use authenticated loader and product preview props', async () => {
   const settingsSource = await readFile(new URL('../src/pages/SettingsPage.jsx', import.meta.url), 'utf8');
   const financeSource = await readFile(new URL('../src/pages/FinancePage.jsx', import.meta.url), 'utf8');
+  const imageSource = await readFile(new URL('../src/components/ui/AuthenticatedImage.jsx', import.meta.url), 'utf8');
 
   assert.match(settingsSource, /AuthenticatedImage/);
   assert.doesNotMatch(settingsSource, /<img\s+src=\{image\.thumbnail_url \|\| image\.url\}/);
   assert.doesNotMatch(settingsSource, /<img\s+src=\{item\.primary_image_url\}/);
+  assert.match(settingsSource, /src=\{image\.thumbnail_url \|\| image\.url\}[\s\S]*?previewable[\s\S]*?hoverPreview/);
+  assert.match(settingsSource, /src=\{item\.primary_image_url\}[\s\S]*?previewable[\s\S]*?hoverPreview/);
   assert.match(financeSource, /AuthenticatedImage/);
   assert.doesNotMatch(financeSource, /<img\s+[^>]*src=\{item\.thumbnail_url \|\| item\.url\}/);
+  assert.match(financeSource, /openInNewTab/);
+  assert.match(imageSource, /<HoverPreview objectUrl=\{objectUrl\}/);
+  assert.match(imageSource, /<ImageLightbox objectUrl=\{objectUrl\}/);
+  assert.match(imageSource, /document\.addEventListener\('keydown', handleKeyDown\)/);
+  assert.match(imageSource, /if \(!openInNewTab\) return content/);
 });
 
 for (const status of [401, 500]) {

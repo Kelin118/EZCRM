@@ -6385,6 +6385,83 @@ class OperationalBacklogApiTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(MasterClass.objects.count(), 2)
 
+    def test_master_class_bulk_create_uses_independent_item_discounts(self):
+        starts_at = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        subjects = [
+            MasterClassSubject.objects.create(name='МК Математика'),
+            MasterClassSubject.objects.create(name='МК Робототехника'),
+            MasterClassSubject.objects.create(name='МК Python'),
+        ]
+        ten_percent = Discount.objects.create(
+            name='10 процентов',
+            discount_type=Discount.Type.PERCENTAGE,
+            value='10',
+            branch=self.branch,
+        )
+        twenty_percent = Discount.objects.create(
+            name='20 процентов',
+            discount_type=Discount.Type.PERCENTAGE,
+            value='20',
+            branch=self.branch,
+        )
+
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'items': [
+                {'subject': subjects[0].id, 'starts_at': starts_at.isoformat(), 'price': '20000.00', 'discount': ten_percent.id},
+                {'subject': subjects[1].id, 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '26000.00', 'discount': ''},
+                {'subject': subjects[2].id, 'starts_at': (starts_at + timedelta(hours=2)).isoformat(), 'price': '15000.00', 'discount': twenty_percent.id},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        master_classes = list(MasterClass.objects.order_by('starts_at'))
+        self.assertEqual(len(master_classes), 3)
+        self.assertEqual(master_classes[0].discount, ten_percent)
+        self.assertEqual(master_classes[0].discount_name, ten_percent.name)
+        self.assertEqual(master_classes[0].discount_amount, Decimal('2000.00'))
+        self.assertEqual(master_classes[0].amount_due, Decimal('18000.00'))
+        self.assertIsNone(master_classes[1].discount)
+        self.assertEqual(master_classes[1].discount_name, '')
+        self.assertEqual(master_classes[1].discount_amount, Decimal('0.00'))
+        self.assertEqual(master_classes[1].amount_due, Decimal('26000.00'))
+        self.assertEqual(master_classes[2].discount, twenty_percent)
+        self.assertEqual(master_classes[2].discount_name, twenty_percent.name)
+        self.assertEqual(master_classes[2].discount_amount, Decimal('3000.00'))
+        self.assertEqual(master_classes[2].amount_due, Decimal('12000.00'))
+
+    def test_master_class_bulk_create_calculates_same_discount_per_item_price(self):
+        starts_at = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        first = MasterClassSubject.objects.create(name='МК Дизайн')
+        second = MasterClassSubject.objects.create(name='МК Аналитика')
+        discount = Discount.objects.create(
+            name='10 процентов',
+            discount_type=Discount.Type.PERCENTAGE,
+            value='10',
+            branch=self.branch,
+        )
+
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'manager': self.manager.id,
+            'items': [
+                {'subject': first.id, 'starts_at': starts_at.isoformat(), 'price': '20000.00', 'discount': discount.id},
+                {'subject': second.id, 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '30000.00', 'discount': discount.id},
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        master_classes = list(MasterClass.objects.order_by('starts_at'))
+        self.assertEqual(master_classes[0].discount, discount)
+        self.assertEqual(master_classes[0].discount_amount, Decimal('2000.00'))
+        self.assertEqual(master_classes[0].amount_due, Decimal('18000.00'))
+        self.assertEqual(master_classes[1].discount, discount)
+        self.assertEqual(master_classes[1].discount_amount, Decimal('3000.00'))
+        self.assertEqual(master_classes[1].amount_due, Decimal('27000.00'))
+
     def test_client_master_class_payment_window_and_additional_payment(self):
         master_class = MasterClass.objects.create(title='МК Оплата', branch=self.branch, manager=self.manager, starts_at=timezone.now(), price='12000.00')
         master_class.participants.add(self.student)

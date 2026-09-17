@@ -263,6 +263,14 @@ test('protected media previews use authenticated loader and product preview prop
   assert.match(imageSource, /if \(!openInNewTab\) return content/);
 });
 
+test('employee schedule grid requests one effective date and saves through versioning', async () => {
+  const source = await readFile(new URL('../src/pages/EmployeeSchedulePage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /effective_on: scheduleDate/);
+  assert.match(source, /employee-schedules\/set-from-date\//);
+  assert.doesNotMatch(source, /api\.patch\(`employee-schedules/);
+  assert.match(source, /min=\{todayIso\(\)\}/);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

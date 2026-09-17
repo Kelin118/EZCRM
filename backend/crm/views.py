@@ -4365,6 +4365,15 @@ class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):
         employee = self.request.query_params.get('employee')
         if employee:
             queryset = queryset.filter(employee_id=employee)
+        effective_on = self.request.query_params.get('effective_on')
+        if effective_on:
+            try:
+                day = parse_date(effective_on)
+            except ValueError:
+                day = None
+            if day is None:
+                raise drf_serializers.ValidationError({'effective_on': 'Укажите дату в формате ГГГГ-ММ-ДД.'})
+            queryset = queryset.filter(valid_from__lte=day).filter(Q(valid_until__isnull=True) | Q(valid_until__gte=day))
         if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
             queryset = queryset.filter(employee=self.request.user)
         return queryset.order_by('employee__first_name', 'employee__username', 'weekday', '-valid_from')
@@ -4374,8 +4383,94 @@ class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):
         self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_CREATE, instance, 'Создан график сотрудника', self._audit_changes())
 
     def perform_update(self, serializer):
+        instance = serializer.instance
+        if instance.valid_from <= timezone.localdate():
+            protected = {'employee', 'weekday', 'branch', 'start_time', 'end_time', 'is_working_day', 'valid_from', 'valid_until'}
+            if any(getattr(instance, field) != value for field, value in serializer.validated_data.items() if field in protected):
+                raise drf_serializers.ValidationError({'detail': 'Нельзя изменять уже действовавший график. Создайте новую версию с даты.'})
         instance = serializer.save()
         self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE, instance, 'Изменён график сотрудника', self._audit_changes())
+
+    def perform_destroy(self, instance):
+        if instance.valid_from <= timezone.localdate():
+            raise drf_serializers.ValidationError({'detail': 'Нельзя удалить исторический график. Измените график с новой даты.'})
+        super().perform_destroy(instance)
+
+    @action(detail=False, methods=['post'], url_path='set-from-date')
+    @transaction.atomic
+    def set_from_date(self, request):
+        class ChangeSerializer(drf_serializers.Serializer):
+            employee = drf_serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True))
+            weekday = drf_serializers.IntegerField(min_value=0, max_value=6, required=False)
+            weekdays = drf_serializers.ListField(child=drf_serializers.IntegerField(min_value=0, max_value=6), required=False)
+            branch = drf_serializers.PrimaryKeyRelatedField(queryset=Branch.objects.all(), allow_null=True, required=False)
+            start_time = drf_serializers.TimeField()
+            end_time = drf_serializers.TimeField()
+            is_working_day = drf_serializers.BooleanField()
+            effective_from = drf_serializers.DateField()
+
+            def validate(self, attrs):
+                days = attrs.get('weekdays') or ([attrs['weekday']] if 'weekday' in attrs else [])
+                if not days:
+                    raise drf_serializers.ValidationError({'weekdays': 'Выберите хотя бы один день недели.'})
+                if attrs['effective_from'] < timezone.localdate():
+                    raise drf_serializers.ValidationError({'effective_from': 'Дата изменения не может быть в прошлом.'})
+                if attrs['start_time'] >= attrs['end_time']:
+                    raise drf_serializers.ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
+                attrs['weekdays'] = sorted(set(days))
+                return attrs
+
+        serializer = ChangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        employee = values['employee']
+        effective_from = values['effective_from']
+        # Lock the employee even if no schedule row exists yet.
+        User.objects.select_for_update().get(pk=employee.pk)
+        created = []
+        for weekday in values['weekdays']:
+            versions = list(EmployeeWorkSchedule.objects.select_for_update().filter(
+                employee=employee, weekday=weekday,
+            ).order_by('valid_from', 'pk'))
+            current = next((row for row in versions if row.valid_from <= effective_from and
+                            (row.valid_until is None or row.valid_until >= effective_from)), None)
+            following = next((row for row in versions if row.valid_from > effective_from), None)
+            end = current.valid_until if current else None
+            if following:
+                next_end = following.valid_from - timedelta(days=1)
+                end = min(end, next_end) if end else next_end
+            fields = {
+                'branch': values.get('branch', current.branch if current else None),
+                'start_time': values['start_time'],
+                'end_time': values['end_time'],
+                'is_working_day': values['is_working_day'],
+            }
+            previous = None
+            if current and current.valid_from == effective_from:
+                previous = {'start_time': str(current.start_time), 'end_time': str(current.end_time), 'is_working_day': current.is_working_day}
+                for field, value in fields.items():
+                    setattr(current, field, value)
+                current.save()
+                new = current
+            else:
+                if current:
+                    previous = {'start_time': str(current.start_time), 'end_time': str(current.end_time), 'is_working_day': current.is_working_day}
+                    current.valid_until = effective_from - timedelta(days=1)
+                    current.save(update_fields=('valid_until', 'updated_at'))
+                new = EmployeeWorkSchedule.objects.create(
+                    employee=employee, weekday=weekday, valid_from=effective_from, valid_until=end, **fields,
+                )
+            self._log_instance(AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE, new,
+                               f'Изменён график сотрудника с {effective_from:%d.%m.%Y}', {
+                                   'employee': employee.pk, 'weekday': weekday,
+                                   'previous_schedule_id': current.pk if current else None,
+                                   'new_schedule_id': new.pk, 'effective_from': str(effective_from),
+                                   'old': previous,
+                                   'new': {'start_time': str(new.start_time), 'end_time': str(new.end_time), 'is_working_day': new.is_working_day},
+                                   'previous_valid_until': str(current.valid_until) if current else None,
+                               })
+            created.append(new)
+        return Response(self.get_serializer(created, many=True).data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request):

@@ -10,22 +10,33 @@ import { useEmployeeOptions } from './lookupUtils.jsx';
 
 const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const todayIso = () => todayLocalDate();
-const empty = { employee: '', branch: '', weekday: 0, weekdays: [0], start_time: '16:00', end_time: '21:00', is_working_day: true, valid_from: todayIso(), valid_until: '' };
+const empty = { employee: '', branch: '', weekday: 0, weekdays: [0], start_time: '16:00', end_time: '21:00', is_working_day: true, effective_from: todayIso() };
 
 export default function EmployeeSchedulePage() {
   const [items, setItems] = useState([]);
   const [filters, setFilters] = useState({ employee: '', branch: 'all' });
+  const [scheduleDate, setScheduleDate] = useState(todayIso);
+  const [history, setHistory] = useState(null);
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const { branchOptions, branchFilterOptions } = useBranches();
   const { employees, employeeOptions } = useEmployeeOptions(['admin', 'manager', 'teacher', 'accountant']);
 
   const load = async () => {
-    const { data } = await api.get('employee-schedules/', { params: filters });
+    const { data } = await api.get('employee-schedules/', { params: { ...filters, effective_on: scheduleDate } });
     setItems(Array.isArray(data) ? data : data.results || []);
   };
 
-  useEffect(() => { load().catch(showApiError); }, [filters]);
+  useEffect(() => { load().catch(showApiError); }, [filters, scheduleDate]);
+
+  const openHistory = async () => {
+    try {
+      const { data } = await api.get('employee-schedules/', { params: { employee: filters.employee } });
+      setHistory(Array.isArray(data) ? data : data.results || []);
+    } catch (error) {
+      showApiError(error);
+    }
+  };
 
   const rows = useMemo(() => {
     const map = new Map();
@@ -39,17 +50,25 @@ export default function EmployeeSchedulePage() {
   }, [employees, items, filters.employee]);
 
   const openCell = (employee, weekday, item = null) => {
-    setEditing(item ? { ...item, employee: String(item.employee), branch: item.branch ? String(item.branch) : '', weekday, weekdays: [weekday] } : { ...empty, employee: String(employee.id), weekday, weekdays: [weekday] });
+    setEditing(item ? { ...item, employee: String(item.employee), branch: item.branch ? String(item.branch) : '', weekday, weekdays: [weekday], effective_from: scheduleDate >= todayIso() ? scheduleDate : todayIso() } : { ...empty, employee: String(employee.id), weekday, weekdays: [weekday], effective_from: scheduleDate >= todayIso() ? scheduleDate : todayIso() });
   };
 
   const save = async () => {
     setSaving(true);
     try {
-      const payload = { ...editing, branch: editing.branch || null, valid_until: editing.valid_until || null };
-      if (editing.id) await api.patch(`employee-schedules/${editing.id}/`, payload);
-      else await api.post('employee-schedules/bulk-create/', { ...payload, weekdays: editing.weekdays || [editing.weekday] });
+      const payload = {
+        employee: editing.employee,
+        weekdays: editing.weekdays || [editing.weekday],
+        branch: editing.branch || null,
+        start_time: editing.start_time,
+        end_time: editing.end_time,
+        is_working_day: editing.is_working_day,
+        effective_from: editing.effective_from,
+      };
+      await api.post('employee-schedules/set-from-date/', payload);
       setEditing(null);
-      await load();
+      if (scheduleDate === editing.effective_from) await load();
+      else setScheduleDate(editing.effective_from);
     } catch (error) {
       showApiError(error);
     } finally {
@@ -67,10 +86,12 @@ export default function EmployeeSchedulePage() {
 
   return (
     <>
-      <PageHeader title="График сотрудников" actionLabel="Добавить смену" onAction={() => setEditing(empty)} />
+      <PageHeader title="График сотрудников" actionLabel="Добавить смену" onAction={() => setEditing({ ...empty, effective_from: todayIso() })} />
       <Filters>
         <SelectField label="Филиал" value={filters.branch} onChange={(branch) => setFilters({ ...filters, branch })} options={branchFilterOptions} />
         <SelectField label="Сотрудник" value={filters.employee} onChange={(employee) => setFilters({ ...filters, employee })} options={[{ value: '', label: 'Все сотрудники' }, ...employeeOptions]} />
+        <Input label="График на дату" type="date" value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+        <Button variant="secondary" onClick={openHistory}>История графика</Button>
       </Filters>
       <Table
         data={rows.map((row) => ({ id: row.employee.id, ...row }))}
@@ -96,7 +117,7 @@ export default function EmployeeSchedulePage() {
           })),
         ]}
       />
-      <Modal title="Редактировать смену" open={Boolean(editing)} onClose={() => setEditing(null)} footer={<><Button variant="secondary" onClick={() => setEditing(null)}>Отмена</Button><Button onClick={save} disabled={saving}>Сохранить</Button></>}>
+      <Modal title={editing?.id ? 'Изменить график' : 'Добавить график'} open={Boolean(editing)} onClose={() => setEditing(null)} footer={<><Button variant="secondary" onClick={() => setEditing(null)}>Отмена</Button><Button onClick={save} disabled={saving}>Сохранить</Button></>}>
         {editing && (
           <div className="grid gap-4 md:grid-cols-2">
             <SelectField label="Сотрудник" value={editing.employee} onChange={(employee) => setEditing({ ...editing, employee })} options={employeeOptions} />
@@ -117,12 +138,22 @@ export default function EmployeeSchedulePage() {
             )}
             <SelectField label="Филиал" value={editing.branch || ''} onChange={(branch) => setEditing({ ...editing, branch })} options={[{ value: '', label: 'Без филиала' }, ...branchOptions]} />
             <SelectField label="Рабочий день" value={editing.is_working_day ? '1' : '0'} onChange={(value) => setEditing({ ...editing, is_working_day: value === '1' })} options={[{ value: '1', label: 'Да' }, { value: '0', label: 'Нет' }]} />
-            <Input label="Дата действия с" type="date" value={editing.valid_from} onChange={(event) => setEditing({ ...editing, valid_from: event.target.value })} />
-            <Input label="Дата действия до" type="date" value={editing.valid_until || ''} onChange={(event) => setEditing({ ...editing, valid_until: event.target.value })} />
+            <Input label="Изменить график с даты" type="date" min={todayIso()} value={editing.effective_from} onChange={(event) => setEditing({ ...editing, effective_from: event.target.value })} />
             <Input label="Начало" type="time" value={editing.start_time?.slice(0, 5) || ''} onChange={(event) => setEditing({ ...editing, start_time: event.target.value })} />
             <Input label="Конец" type="time" value={editing.end_time?.slice(0, 5) || ''} onChange={(event) => setEditing({ ...editing, end_time: event.target.value })} />
+            <p className="text-sm text-slate-500 md:col-span-2">Прошлые периоды сохранятся. Новый график начнёт действовать с выбранной даты.</p>
           </div>
         )}
+      </Modal>
+      <Modal title="История графика" open={Boolean(history)} onClose={() => setHistory(null)} size="wide">
+        {history && <Table data={history} columns={[
+          { key: 'employee_name', header: 'Сотрудник' },
+          { key: 'weekday', header: 'День', render: (row) => weekdays[row.weekday] },
+          { key: 'hours', header: 'Время', render: (row) => row.is_working_day ? `${row.start_time?.slice(0, 5)}–${row.end_time?.slice(0, 5)}` : 'Выходной' },
+          { key: 'valid_from', header: 'Действовал с' },
+          { key: 'valid_until', header: 'Действовал до', render: (row) => row.valid_until || 'Сейчас' },
+          { key: 'branch_name', header: 'Филиал', render: (row) => row.branch_name || '—' },
+        ]} />}
       </Modal>
     </>
   );

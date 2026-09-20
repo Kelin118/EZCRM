@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 import api from '../api/axios.js';
 import KanbanBoard from '../components/ui/KanbanBoard.jsx';
@@ -62,6 +63,38 @@ const baseFields = [
 const stageLabel = (value) => masterClassStages.find((stage) => stage.value === value)?.label || value || '—';
 const paymentTypeLabels = { prepayment: 'Предоплата', additional: 'Доплата', legacy: 'Старая оплата' };
 const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Частично', paid: 'Оплачено', overpaid: 'Переплата' };
+
+export function paymentCheckFilterParams(value) {
+  if (value === 'issue') return { payment_issue: '1', payment_status: '' };
+  if (['partial', 'paid', 'unpaid'].includes(value)) return { payment_issue: '', payment_status: value };
+  return { payment_issue: '', payment_status: '' };
+}
+
+export function updateEventRangeFilters(filters, field, value) {
+  const next = { ...filters, [field]: value };
+  if (next.event_date_from && next.event_date_to && next.event_date_from > next.event_date_to) {
+    return { filters, error: 'Дата «от» не может быть позже даты «до».' };
+  }
+  return { filters: next, error: '' };
+}
+
+export function paymentCheckLabel(item) {
+  if (item.payment_mismatch_type === 'underpaid') return `Недоплата ${money(item.payment_mismatch_amount)}`;
+  if (item.payment_mismatch_type === 'overpaid') return `Переплата ${money(item.payment_mismatch_amount)}`;
+  if (item.payment_attention_level === 'critical') return item.payment_mismatch_message || 'Требуется проверка оплаты';
+  if (item.payment_status === 'unpaid') return 'Не оплачено';
+  return 'Всё сходится';
+}
+
+function PaymentCheckBadge({ item }) {
+  const level = item.payment_attention_level || 'none';
+  if (level === 'none' && item.payment_status !== 'unpaid') {
+    return <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 size={14} aria-hidden="true" />{paymentCheckLabel(item)}</span>;
+  }
+  if (level === 'none') return <span className="text-sm font-semibold text-slate-500">{paymentCheckLabel(item)}</span>;
+  const tone = level === 'critical' ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-800';
+  return <span className={`inline-flex max-w-64 items-center gap-1.5 whitespace-normal rounded-full border px-2.5 py-1 text-xs font-bold ${tone}`}><AlertTriangle size={14} className="shrink-0" aria-hidden="true" />{paymentCheckLabel(item)}</span>;
+}
 const paymentStatusBadge = (value) => ({ unpaid: 'cancelled', partial: 'booked', paid: 'paid', overpaid: 'outside' }[value] || value);
 const dateTime = (value) => (value ? new Date(value).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—');
 const eventDateTime = (value) => {
@@ -320,6 +353,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Мастер</dt><dd className="text-right font-medium">{leadName}{assistantNames.length ? ` +${assistantNames.length}` : ''}</dd></div>
         <div className="flex justify-between gap-3"><dt className="text-slate-400">Оплачено</dt><dd className="text-right font-semibold text-brand">{money(item.paid_total ?? item.payment_amount)} / {money(item.amount_due ?? item.price)}</dd></div>
       </dl>
+      {item.has_payment_mismatch && <div className="mt-3"><PaymentCheckBadge item={item} /></div>}
       {item.description && <p className="mt-3 line-clamp-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
       {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
     </KanbanCard>
@@ -327,7 +361,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
 }
 
 export default function MasterClassesPage() {
-  const crud = useCrudResource('master-classes/', { search: '', stage: '', subject: 'all', event_date: '', manager: '', teacher: '', extra_work: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('master-classes/', { search: '', event_date_from: '', event_date_to: '', stage: '', subject: 'all', manager: '', teacher: '', extra_work: '', outside_regular_hours: '', payment_date_from: '', payment_date_to: '', payment_issue: '', payment_status: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
@@ -362,6 +396,7 @@ export default function MasterClassesPage() {
   const paidTotal = Number(form.paid_total ?? form.payment_amount ?? 0);
   const remainingAmount = Number(form.remaining_amount ?? Math.max(amountDue - paidTotal, 0));
   const overpaidAmount = Number(form.overpaid_amount ?? Math.max(paidTotal - amountDue, 0));
+  const paymentIssues = Array.isArray(form.payment_issues) ? form.payment_issues : [];
   const changeDiscount = (value) => {
     setForm({ ...form, discount: value });
   };
@@ -805,6 +840,25 @@ export default function MasterClassesPage() {
         const nextInitialDate = current.initial_payment_date || todayIso();
         return (
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+            {current.has_payment_mismatch && (
+              <div className={`mb-4 rounded-xl border p-4 ${current.payment_attention_level === 'critical' ? 'border-red-200 bg-red-50 text-red-900' : 'border-amber-200 bg-amber-50 text-amber-950'}`}>
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={20} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-black">Есть несостыковка в оплате</p>
+                    <div className="mt-2 grid gap-1 text-sm sm:grid-cols-3">
+                      <span>К оплате: <b>{money(amountDue)}</b></span>
+                      <span>Оплачено: <b>{money(paidTotal)}</b></span>
+                      {remainingAmount > 0 && <span>Не хватает: <b>{money(remainingAmount)}</b></span>}
+                    </div>
+                    <ul className="mt-2 grid gap-1">
+                      {paymentIssues.map((issue) => <li key={`${issue.code}-${issue.amount}`}>{issue.message}</li>)}
+                    </ul>
+                    {current.id && canEdit && remainingAmount > 0 && <Button className="mt-3" onClick={() => openPaymentModal()}>Внести остаток</Button>}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="font-black text-slate-900">Оплата мастер-класса</p>
@@ -878,7 +932,18 @@ export default function MasterClassesPage() {
       },
     },
   ].filter(Boolean);
-  const total = crud.items.reduce((sum, item) => sum + Number(item.payment_amount || 0), 0);
+  const total = crud.items.reduce((sum, item) => sum + Number(item.paid_total ?? item.payment_amount ?? 0), 0);
+  const paymentIssueCount = crud.items.filter((item) => item.has_payment_mismatch).length;
+  const paymentCheckValue = crud.filters.payment_issue ? 'issue' : (crud.filters.payment_status || 'all');
+  const setPaymentCheck = (value) => crud.setFilters({ ...crud.filters, ...paymentCheckFilterParams(value) });
+  const setEventRange = (field, value) => {
+    const result = updateEventRangeFilters(crud.filters, field, value);
+    if (result.error) {
+      dispatchError(result.error);
+      return;
+    }
+    crud.setFilters(result.filters);
+  };
 
   const saveMasterClass = async () => {
     setDuplicateError(null);
@@ -1003,13 +1068,16 @@ export default function MasterClassesPage() {
     <>
       <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Оплачено: {money(total)}</span>
+        {paymentIssueCount > 0 && <Button variant="secondary" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={() => setPaymentCheck('issue')}><AlertTriangle size={16} aria-hidden="true" />Расхождений: {paymentIssueCount}</Button>}
         <Button variant="secondary" onClick={() => crud.setFilters({ ...crud.filters, extra_work: 'true' })}>Только вне времени</Button>
         <ViewToggle value={viewMode} onChange={setViewMode} />
       </PageHeader>
       <Filters>
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
+        <Input label="Проведение от" type="date" value={crud.filters.event_date_from} onChange={(event) => setEventRange('event_date_from', event.target.value)} />
+        <Input label="Проведение до" type="date" value={crud.filters.event_date_to} onChange={(event) => setEventRange('event_date_to', event.target.value)} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
-        <Input label="Дата проведения" type="date" value={crud.filters.event_date} onChange={(e) => crud.setFilters({ ...crud.filters, event_date: e.target.value })} />
+        <SelectField label="Проверка оплаты" value={paymentCheckValue} onChange={setPaymentCheck} options={[{ value: 'all', label: 'Все' }, { value: 'issue', label: 'Есть расхождение' }, { value: 'partial', label: 'Недоплата' }, { value: 'paid', label: 'Полностью оплачено' }, { value: 'unpaid', label: 'Не оплачено' }]} />
         <SelectField label="Предмет МК" value={crud.filters.subject || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, subject: value })} options={[{ value: 'all', label: 'Все предметы' }, ...masterClassSubjectFilterOptions, { value: 'unassigned', label: 'Без предмета / старые МК' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
@@ -1037,7 +1105,7 @@ export default function MasterClassesPage() {
           renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
         />
       ) : (
-        <Table data={crud.items} columns={[
+        <Table data={crud.items} rowClassName={(row) => row.payment_attention_level === 'critical' ? 'bg-red-50/60' : (row.payment_attention_level === 'warning' ? 'bg-amber-50/60' : '')} columns={[
           { key: 'client', header: 'Клиент', render: (row) => (
             <div>
               <p className="font-semibold text-slate-900">{clientDisplay(row)}</p>
@@ -1069,9 +1137,10 @@ export default function MasterClassesPage() {
           { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
           { key: 'capacity', header: 'Мест' },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },
-          { key: 'paid_total', header: 'Оплачено', render: (row) => money(row.paid_total ?? row.payment_amount) },
-          { key: 'remaining_amount', header: 'Остаток', render: (row) => money(row.remaining_amount) },
+          { key: 'paid_total', header: 'Оплачено', render: (row) => <span className={row.has_payment_mismatch ? 'font-black text-slate-900 tabular-nums' : 'tabular-nums'}>{money(row.paid_total ?? row.payment_amount)}</span> },
+          { key: 'remaining_amount', header: 'Остаток', render: (row) => <span className={row.has_payment_mismatch ? (row.payment_attention_level === 'critical' ? 'font-black text-red-700 tabular-nums' : 'font-black text-amber-700 tabular-nums') : 'tabular-nums'}>{money(row.remaining_amount)}</span> },
           { key: 'payment_status', header: 'Статус оплаты', render: (row) => <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
+          { key: 'payment_check', header: 'Расхождение', nowrap: false, render: (row) => <PaymentCheckBadge item={row} /> },
           { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => deleteMasterClass(row)} /> },
         ]} />
       )}

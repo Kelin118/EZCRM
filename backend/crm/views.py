@@ -12,8 +12,8 @@ import uuid
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, Q, Sum
-from django.db.models.functions import TruncDate
+from django.db.models import Case, Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value, When
+from django.db.models.functions import Coalesce, Greatest, TruncDate
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -2566,6 +2566,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         'payments__accepted_by',
         'payments__finance_transaction__payment_method',
         'payments__finance_transaction__payment_parts__payment_method',
+        'finance_transaction__payment_parts__payment_method',
     ).all()
     serializer_class = MasterClassSerializer
     audit_entity_type = 'MasterClass'
@@ -2586,6 +2587,13 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         payment_date_to = _date_param(self.request, 'payment_date_to')
         outside_regular_hours_param = self.request.query_params.get('outside_regular_hours')
         extra_work = self.request.query_params.get('extra_work')
+        payment_issue = self.request.query_params.get('payment_issue')
+        payment_status = self.request.query_params.get('payment_status')
+
+        if event_date_from and event_date_to and event_date_from > event_date_to:
+            raise drf_serializers.ValidationError({'event_date_to': 'Дата «от» не может быть позже даты «до».'})
+        if payment_date_from and payment_date_to and payment_date_from > payment_date_to:
+            raise drf_serializers.ValidationError({'payment_date_to': 'Дата оплаты «от» не может быть позже даты «до».'})
 
         if stage:
             queryset = queryset.filter(stage=stage)
@@ -2622,16 +2630,75 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(starts_at__date__gte=event_date_from)
         if event_date_to:
             queryset = queryset.filter(starts_at__date__lte=event_date_to)
-        if payment_date_from:
-            queryset = queryset.filter(payment_date__gte=payment_date_from)
-        if payment_date_to:
-            queryset = queryset.filter(payment_date__lte=payment_date_to)
+        if payment_date_from or payment_date_to:
+            payment_rows = MasterClassPayment.objects.filter(master_class=OuterRef('pk'))
+            matching_payment_rows = payment_rows
+            if payment_date_from:
+                matching_payment_rows = matching_payment_rows.filter(payment_date__gte=payment_date_from)
+            if payment_date_to:
+                matching_payment_rows = matching_payment_rows.filter(payment_date__lte=payment_date_to)
+            queryset = queryset.annotate(
+                _has_payment_rows=Exists(payment_rows),
+                _has_matching_payment=Exists(matching_payment_rows),
+            )
+            legacy_match = Q(_has_payment_rows=False)
+            if payment_date_from:
+                legacy_match &= Q(payment_date__gte=payment_date_from)
+            if payment_date_to:
+                legacy_match &= Q(payment_date__lte=payment_date_to)
+            queryset = queryset.filter(Q(_has_matching_payment=True) | legacy_match)
         if extra_work in ('1', 'true', 'True', 'yes', '0', 'false', 'False', 'no'):
             queryset = queryset.filter(is_extra_work=extra_work in ('1', 'true', 'True', 'yes'))
         if outside_regular_hours_param in ('1', 'true', 'True', 'yes', '0', 'false', 'False', 'no'):
             expected = outside_regular_hours_param in ('1', 'true', 'True', 'yes')
             outside_ids = [item.id for item in queryset if is_master_class_outside_regular_hours(item.starts_at) == expected]
             queryset = queryset.filter(id__in=outside_ids)
+        if payment_issue in ('1', 'true', 'True', 'yes') or payment_status in {'unpaid', 'partial', 'paid', 'overpaid'}:
+            money_field = DecimalField(max_digits=12, decimal_places=2)
+            payment_transaction_mismatch = MasterClassPayment.objects.filter(master_class=OuterRef('pk')).exclude(
+                amount=F('finance_transaction__amount')
+            )
+            payment_parts_mismatch = MasterClassPayment.objects.filter(
+                master_class=OuterRef('pk'), finance_transaction__payment_parts__isnull=False,
+            ).values('pk', 'finance_transaction__amount').annotate(
+                parts_total=Sum('finance_transaction__payment_parts__amount'),
+            ).exclude(parts_total=F('finance_transaction__amount'))
+            legacy_parts_mismatch = FinancePaymentPart.objects.filter(
+                transaction_id=OuterRef('finance_transaction_id'),
+            ).values('transaction_id', 'transaction__amount').annotate(
+                parts_total=Sum('amount'),
+            ).exclude(parts_total=F('transaction__amount'))
+            queryset = queryset.annotate(
+                _payment_count=Count('payments', distinct=True),
+                _payment_sum=Coalesce(Sum('payments__amount'), Value(Decimal('0.00')), output_field=money_field),
+            ).annotate(
+                _effective_paid=Case(
+                    When(_payment_count=0, finance_transaction__isnull=False, then=F('payment_amount')),
+                    default=F('_payment_sum'), output_field=money_field,
+                ),
+                _amount_due=Greatest(F('price') - F('discount_amount'), Value(Decimal('0.00')), output_field=money_field),
+                _transaction_mismatch=Exists(payment_transaction_mismatch),
+                _parts_mismatch=Exists(payment_parts_mismatch),
+                _legacy_parts_mismatch=Exists(legacy_parts_mismatch),
+            )
+            if payment_status == 'unpaid':
+                queryset = queryset.filter(_effective_paid__lte=0)
+            elif payment_status == 'partial':
+                queryset = queryset.filter(_effective_paid__gt=0, _effective_paid__lt=F('_amount_due'))
+            elif payment_status == 'paid':
+                queryset = queryset.filter(_effective_paid__gt=0, _effective_paid=F('_amount_due'))
+            elif payment_status == 'overpaid':
+                queryset = queryset.filter(_effective_paid__gt=F('_amount_due'))
+            if payment_issue in ('1', 'true', 'True', 'yes'):
+                queryset = queryset.filter(
+                    Q(_effective_paid__gt=F('_amount_due'))
+                    | Q(_effective_paid__gt=0, _effective_paid__lt=F('_amount_due'))
+                    | Q(stage__in=('paid', 'bought', 'completed'), _effective_paid__lte=0, _amount_due__gt=0)
+                    | Q(_transaction_mismatch=True)
+                    | Q(_parts_mismatch=True)
+                    | Q(_payment_count=0, finance_transaction__isnull=False) & ~Q(payment_amount=F('finance_transaction__amount'))
+                    | Q(_payment_count=0, _legacy_parts_mismatch=True)
+                )
         return queryset.distinct().order_by('-starts_at')
 
     @action(detail=False, methods=['post'], url_path='pay-preview')

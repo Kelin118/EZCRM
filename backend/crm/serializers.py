@@ -20,6 +20,7 @@ from .group_schedule import (
     subscription_used_lessons,
 )
 from .branch_filters import PSEUDO_BRANCH_NAMES
+from .master_class_payment_issues import master_class_payment_diagnostics
 from .models import (
     AddonSale,
     AddonSaleItem,
@@ -1290,6 +1291,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
         data['remaining_amount'] = str(instance.remaining_amount)
         data['overpaid_amount'] = str(instance.overpaid_amount)
         data['payment_status'] = instance.payment_status
+        data.update(master_class_payment_diagnostics(instance))
         data['payments'] = MasterClassPaymentSerializer(self._payments_for_representation(instance), many=True, context=self.context).data
         assignments = list(instance.staff_assignments.all())
         if assignments:

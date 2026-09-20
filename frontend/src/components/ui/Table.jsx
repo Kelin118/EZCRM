@@ -19,7 +19,7 @@ export function shouldShowFloatingScrollbar({ overflow, tableTop, tableBottom, v
   );
 }
 
-export default function Table({ columns, data = [], empty = 'Нет данных', loading = false }) {
+export default function Table({ columns, data = [], empty = 'Нет данных', loading = false, rowClassName }) {
   const realScrollRef = useRef(null);
   const stickyScrollRef = useRef(null);
   const isSyncingRef = useRef(false);
@@ -151,7 +151,7 @@ export default function Table({ columns, data = [], empty = 'Нет данных
               </tr>
             ) : (
               data.map((row) => (
-                <tr key={row.id} className="group transition-colors duration-150 hover:bg-brand/[0.025]">
+                <tr key={row.id} className={`group transition-colors duration-150 hover:bg-brand/[0.025] ${rowClassName?.(row) || ''}`}>
                   {columns.map((column, index) => (
                     <td key={column.key} className={`max-w-sm border-b border-slate-100 px-4 py-3 align-middle text-slate-700 ${cellAlign(column, index, columns.length)} ${column.nowrap === false ? '' : 'whitespace-nowrap'}`}>
                       {column.render ? column.render(row) : row[column.key] || '—'}

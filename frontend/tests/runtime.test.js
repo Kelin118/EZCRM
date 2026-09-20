@@ -263,6 +263,47 @@ test('protected media previews use authenticated loader and product preview prop
   assert.match(imageSource, /if \(!openInNewTab\) return content/);
 });
 
+test('master class payment mismatches are visible in table, modal, kanban and filters', async () => {
+  const { paymentCheckFilterParams, paymentCheckLabel } = await loadModule('pages/MasterClassesPage.jsx');
+  const source = await readFile(new URL('../src/pages/MasterClassesPage.jsx', import.meta.url), 'utf8');
+  assert.equal(paymentCheckLabel({ payment_status: 'paid', payment_attention_level: 'none' }), 'Всё сходится');
+  assert.equal(paymentCheckLabel({ payment_mismatch_type: 'underpaid', payment_mismatch_amount: '1200.00' }), 'Недоплата 1 200 ₸');
+  assert.equal(paymentCheckLabel({ payment_mismatch_type: 'overpaid', payment_mismatch_amount: '1000.00' }), 'Переплата 1 000 ₸');
+  assert.deepEqual(paymentCheckFilterParams('issue'), { payment_issue: '1', payment_status: '' });
+  assert.deepEqual(paymentCheckFilterParams('paid'), { payment_issue: '', payment_status: 'paid' });
+  assert.match(source, /function PaymentCheckBadge/);
+  assert.match(source, /Расхождение/);
+  assert.match(source, /rowClassName=\{\(row\)/);
+  assert.match(source, /Есть несостыковка в оплате/);
+  assert.match(source, /Внести остаток/);
+  assert.match(source, /item\.has_payment_mismatch && <div className="mt-3">/);
+  assert.match(source, /Расхождений: \{paymentIssueCount\}/);
+  assert.match(source, /payment_issue: '1'/);
+  assert.match(source, /payment_attention_level === 'critical'/);
+  assert.match(source, /Всё сходится/);
+});
+
+test('master class event range is primary and payment range stays independent', async () => {
+  const { updateEventRangeFilters } = await loadModule('pages/MasterClassesPage.jsx');
+  const source = await readFile(new URL('../src/pages/MasterClassesPage.jsx', import.meta.url), 'utf8');
+  const initial = { event_date_from: '', event_date_to: '', payment_date_from: '', payment_date_to: '' };
+  const withStart = updateEventRangeFilters(initial, 'event_date_from', '2026-09-01');
+  const complete = updateEventRangeFilters(withStart.filters, 'event_date_to', '2026-09-15');
+  const invalid = updateEventRangeFilters(complete.filters, 'event_date_from', '2026-09-20');
+  assert.equal(complete.filters.event_date_from, '2026-09-01');
+  assert.equal(complete.filters.event_date_to, '2026-09-15');
+  assert.equal(invalid.error, 'Дата «от» не может быть позже даты «до».');
+  assert.deepEqual(invalid.filters, complete.filters);
+  assert.match(source, /search: '', event_date_from: '', event_date_to: '', stage: ''/);
+  assert.match(source, /label="Проведение от"[\s\S]*?event_date_from/);
+  assert.match(source, /label="Проведение до"[\s\S]*?event_date_to/);
+  assert.match(source, /label="Оплата от"[\s\S]*?payment_date_from/);
+  assert.match(source, /label="Оплата до"[\s\S]*?payment_date_to/);
+  assert.doesNotMatch(source, /label="Дата проведения"/);
+  assert.doesNotMatch(source, /event_date: ''/);
+  assert.match(source, /const params = \{ \.\.\.crud\.filters, outside_regular_hours: 'true'/);
+});
+
 test('employee schedule grid requests one effective date and saves through versioning', async () => {
   const source = await readFile(new URL('../src/pages/EmployeeSchedulePage.jsx', import.meta.url), 'utf8');
   assert.match(source, /effective_on: scheduleDate/);

@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 import {
-  addCalendarDays, businessMonthRange, formatDateTimeLocal, formatDisplayDateTime, formatFinanceDate, normalizeDateForInput, serializeDateTimeLocal, todayLocalDate,
+  addCalendarDays, businessMonthRange, calendarWeekDates, calendarWeekStart, formatDateTimeLocal,
+  formatDisplayDateTime, formatFinanceDate, formatWeekdayDate, formatWeekRange, normalizeDateForInput,
+  serializeDateTimeLocal, todayLocalDate,
 } from '../src/utils/dateTime.js';
 
 const require = createRequire(import.meta.url);
@@ -96,6 +98,19 @@ test('calendar navigation and month bounds do not shift in local timezone', () =
     assert.equal(addCalendarDays('2026-09-01', -1), '2026-08-31');
     assert.deepEqual(businessMonthRange('2026-09-14'), { date_from: '2026-09-01', date_to: '2026-09-30' });
     assert.deepEqual(businessMonthRange('2024-02-14'), { date_from: '2024-02-01', date_to: '2024-02-29' });
+  }
+});
+
+test('employee shift weeks keep exact calendar dates in every workstation timezone', () => {
+  for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
+    process.env.TZ = zone;
+    assert.equal(calendarWeekStart('2026-09-24'), '2026-09-21');
+    assert.deepEqual(calendarWeekDates('2026-09-24'), [
+      '2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27',
+    ]);
+    assert.equal(formatWeekdayDate('2026-09-21'), 'Пн 21.09');
+    assert.equal(formatWeekRange('2026-09-21'), '21–27 сентября 2026');
+    assert.equal(calendarWeekStart('2026-09-28'), '2026-09-28');
   }
 });
 
@@ -304,12 +319,22 @@ test('master class event range is primary and payment range stays independent', 
   assert.match(source, /const params = \{ \.\.\.crud\.filters, outside_regular_hours: 'true'/);
 });
 
-test('employee schedule grid requests one effective date and saves through versioning', async () => {
+test('employee schedule separates exact shifts from versioned templates', async () => {
   const source = await readFile(new URL('../src/pages/EmployeeSchedulePage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /useState\('shifts'\)/);
+  assert.match(source, /\['shifts', 'Смены'\]/);
+  assert.match(source, /\['templates', 'Шаблоны'\]/);
+  assert.match(source, /employee-shifts\/resolved\//);
+  assert.match(source, /date_from: weekDates\[0\], date_to: weekDates\[6\]/);
+  assert.match(source, /employee-shifts\/set-for-date\//);
+  assert.match(source, /api\.delete\(`employee-shifts\/\$\{resettingShift\.shift_id\}\//);
+  assert.match(source, /Вернуть по шаблону/);
+  assert.match(source, /formatWeekdayDate\(date\)/);
+  assert.match(source, /openShiftCell\(item\)/);
   assert.match(source, /effective_on: scheduleDate/);
   assert.match(source, /employee-schedules\/set-from-date\//);
-  assert.doesNotMatch(source, /api\.patch\(`employee-schedules/);
-  assert.match(source, /min=\{todayIso\(\)\}/);
+  const shiftSave = source.slice(source.indexOf('const saveShift'), source.indexOf('const resetToTemplate'));
+  assert.doesNotMatch(shiftSave, /employee-schedules\/set-from-date\//);
 });
 
 for (const status of [401, 500]) {

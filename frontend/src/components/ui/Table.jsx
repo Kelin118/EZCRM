@@ -125,7 +125,7 @@ export default function Table({ columns, data = [], empty = 'Нет данных
           <thead className="sticky top-0 z-10 bg-slate-50/95 text-xs text-slate-500 backdrop-blur">
             <tr>
               {columns.map((column, index) => (
-                <th key={column.key} className={`whitespace-nowrap border-b border-slate-100 px-4 py-3 font-semibold ${cellAlign(column, index, columns.length)}`}>
+                <th key={column.key} className={`whitespace-nowrap border-b border-slate-100 px-4 py-3 font-semibold ${cellAlign(column, index, columns.length)} ${column.headerClassName || ''}`}>
                   {column.header}
                 </th>
               ))}
@@ -153,7 +153,7 @@ export default function Table({ columns, data = [], empty = 'Нет данных
               data.map((row) => (
                 <tr key={row.id} className={`group transition-colors duration-150 hover:bg-brand/[0.025] ${rowClassName?.(row) || ''}`}>
                   {columns.map((column, index) => (
-                    <td key={column.key} className={`max-w-sm border-b border-slate-100 px-4 py-3 align-middle text-slate-700 ${cellAlign(column, index, columns.length)} ${column.nowrap === false ? '' : 'whitespace-nowrap'}`}>
+                    <td key={column.key} className={`max-w-sm border-b border-slate-100 px-4 py-3 align-middle text-slate-700 ${cellAlign(column, index, columns.length)} ${column.nowrap === false ? '' : 'whitespace-nowrap'} ${column.cellClassName || ''}`}>
                       {column.render ? column.render(row) : row[column.key] || '—'}
                     </td>
                   ))}

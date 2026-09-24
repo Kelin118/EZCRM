@@ -54,6 +54,7 @@ from .models import (
     EmployeePayrollProfile,
     EmployeePayrollAdvance,
     EmployeePayrollRule,
+    EmployeeShift,
     EmployeeWorkSchedule,
     PaymentMethod,
     PayrollAdvanceAllocation,
@@ -2242,6 +2243,39 @@ class EmployeeWorkScheduleSerializer(BranchNameMixin, serializers.ModelSerialize
                 right_end = item.valid_until or date.max
                 if valid_from <= right_end and item.valid_from <= left_end:
                     raise serializers.ValidationError('Для сотрудника уже есть правило графика на этот день и период.')
+        return attrs
+
+
+class EmployeeShiftSerializer(BranchNameMixin, serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    template_schedule_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = EmployeeShift
+        fields = '__all__'
+        read_only_fields = ('created_by', 'template_schedule', 'created_at', 'updated_at')
+
+    def get_employee_name(self, obj):
+        return (obj.employee.get_full_name() or obj.employee.username) if obj.employee else ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        shift_date = attrs.get('shift_date', self.instance.shift_date if self.instance else None)
+        is_working_day = attrs.get('is_working_day', self.instance.is_working_day if self.instance else True)
+        start_time = attrs.get('start_time', self.instance.start_time if self.instance else None)
+        end_time = attrs.get('end_time', self.instance.end_time if self.instance else None)
+        if shift_date and shift_date < timezone.localdate():
+            raise serializers.ValidationError({'shift_date': 'Нельзя изменять прошедшую смену обычным редактированием.'})
+        if not is_working_day:
+            attrs['start_time'] = None
+            attrs['end_time'] = None
+        else:
+            if start_time is None:
+                raise serializers.ValidationError({'start_time': 'Укажите время начала смены.'})
+            if end_time is None:
+                raise serializers.ValidationError({'end_time': 'Укажите время окончания смены.'})
+            if start_time >= end_time:
+                raise serializers.ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
         return attrs
 
 

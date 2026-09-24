@@ -56,10 +56,52 @@ export function todayLocalDate() {
 }
 
 export function addCalendarDays(value, days) {
-  const date = new Date(`${value}T00:00:00Z`);
+  const parts = String(value || '').split('-').map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) return '';
+  const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
   if (Number.isNaN(date.getTime())) return '';
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+export function calendarWeekStart(value = todayLocalDate()) {
+  const parts = String(value || '').split('-').map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isInteger(part))) return '';
+  const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  return addCalendarDays(value, -mondayOffset);
+}
+
+export function calendarWeekDates(value = todayLocalDate()) {
+  const monday = calendarWeekStart(value);
+  return monday ? Array.from({ length: 7 }, (_, index) => addCalendarDays(monday, index)) : [];
+}
+
+const calendarDate = (value) => {
+  const [year, month, day] = String(value || '').split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
+export function formatWeekdayDate(value) {
+  const date = calendarDate(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const weekday = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(date);
+  const dayMonth = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(date);
+  return `${weekday.slice(0, 1).toUpperCase()}${weekday.slice(1).replace('.', '')} ${dayMonth}`;
+}
+
+export function formatWeekRange(value) {
+  const dates = calendarWeekDates(value);
+  if (!dates.length) return '';
+  const start = calendarDate(dates[0]);
+  const end = calendarDate(dates[6]);
+  const month = (date) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' })
+    .formatToParts(date)
+    .find((part) => part.type === 'month')?.value || '';
+  if (start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()) {
+    return `${start.getUTCDate()}–${end.getUTCDate()} ${month(end)} ${end.getUTCFullYear()}`;
+  }
+  return `${start.getUTCDate()} ${month(start)} – ${end.getUTCDate()} ${month(end)} ${end.getUTCFullYear()}`;
 }
 
 export function businessMonthRange(value = todayLocalDate()) {

@@ -20,6 +20,7 @@ from .views import (
     EmployeePayrollProfileViewSet,
     EmployeePayrollAdvanceViewSet,
     EmployeePayrollRuleViewSet,
+    EmployeeShiftViewSet,
     EmployeeWorklogView,
     EmployeeWorkScheduleViewSet,
     ExcelImportView,
@@ -78,6 +79,7 @@ router.register('master-classes', MasterClassViewSet, basename='master-class')
 router.register('tasks', TaskViewSet, basename='task')
 router.register('addon-sales', AddonSaleViewSet, basename='addon-sale')
 router.register('finance', FinanceTransactionViewSet, basename='finance')
+router.register('employee-shifts', EmployeeShiftViewSet, basename='employee-shift')
 router.register('employee-schedules', EmployeeWorkScheduleViewSet, basename='employee-schedule')
 router.register('employee-payroll-profiles', EmployeePayrollProfileViewSet, basename='employee-payroll-profile')
 router.register('employee-payroll-rules', EmployeePayrollRuleViewSet, basename='employee-payroll-rule')

@@ -3,7 +3,7 @@ from datetime import datetime, time, timedelta
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import EmployeeWorkSchedule, Lesson, MasterClass, MasterClassStaffAssignment
+from .models import EmployeeShift, EmployeeWorkSchedule, Lesson, MasterClass, MasterClassStaffAssignment
 
 
 EXCLUDED_MASTER_CLASS_STAGES = {'cancelled', 'lost', 'lead'}
@@ -35,12 +35,20 @@ def is_outside_regular_master_class_hours(starts_at):
     return local_time < REGULAR_MASTER_CLASS_START or local_time >= REGULAR_MASTER_CLASS_END
 
 
-def schedule_for(employee, day):
+def template_schedule_for(employee, day):
     return EmployeeWorkSchedule.objects.filter(
         employee=employee,
         weekday=day.weekday(),
         valid_from__lte=day,
     ).filter(Q(valid_until__isnull=True) | Q(valid_until__gte=day)).order_by('-valid_from').first()
+
+
+def schedule_for(employee, day):
+    shift = EmployeeShift.objects.filter(
+        employee=employee,
+        shift_date=day,
+    ).first()
+    return shift or template_schedule_for(employee, day)
 
 
 def split_work_interval_by_schedule(employee, start_at, end_at, schedule=None):
@@ -78,8 +86,8 @@ def _manager_schedule_payload(status, *, start_at=None, end_at=None, schedule=No
         'label': MANAGER_WORK_SCHEDULE_LABELS[status],
         'schedule_found': bool(schedule),
         'is_working_day': bool(schedule and schedule.is_working_day),
-        'schedule_start': schedule.start_time.strftime('%H:%M') if schedule else '',
-        'schedule_end': schedule.end_time.strftime('%H:%M') if schedule else '',
+        'schedule_start': schedule.start_time.strftime('%H:%M') if schedule and schedule.start_time else '',
+        'schedule_end': schedule.end_time.strftime('%H:%M') if schedule and schedule.end_time else '',
         'regular_minutes': regular_minutes,
         'outside_minutes': outside_minutes,
         'starts_at': start_at.isoformat() if start_at else None,
@@ -127,6 +135,7 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
     now = timezone.now()
     entries = []
     warnings = 0
+    schedule_cache = {}
 
     if source in ('all', 'master_class'):
         master_classes = MasterClass.objects.select_related('teacher', 'branch', 'subject').prefetch_related('participants', 'staff_assignments__employee').filter(
@@ -167,7 +176,9 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
                     warning = 'Запланировано'
                     regular = outside = 0
                 else:
-                    split = split_work_interval_by_schedule(staff_member, item.starts_at, end_at)
+                    local_day = _local(item.starts_at).date()
+                    schedule = _schedule_from_cache(staff_member, local_day, schedule_cache)
+                    split = split_work_interval_by_schedule(staff_member, item.starts_at, end_at, schedule=schedule)
                     regular = split['regular_minutes']
                     outside = split['outside_minutes']
                 entries.append({
@@ -219,7 +230,8 @@ def build_employee_worklog(*, date_from, date_to, employee=None, branch=None, so
                     warning = 'Запланировано'
                     regular = outside = 0
                 else:
-                    split = split_work_interval_by_schedule(item.teacher, start_at, end_at)
+                    schedule = _schedule_from_cache(item.teacher, item.lesson_date, schedule_cache)
+                    split = split_work_interval_by_schedule(item.teacher, start_at, end_at, schedule=schedule)
                     regular = split['regular_minutes']
                     outside = split['outside_minutes']
             entries.append({

@@ -71,6 +71,7 @@ from .models import (
     EmployeePayrollAdvance,
     EmployeePayrollProfile,
     EmployeePayrollRule,
+    EmployeeShift,
     EmployeeWorkSchedule,
     FinanceTransaction,
     FinanceTransactionAttachment,
@@ -149,6 +150,7 @@ from .serializers import (
     EmployeePayrollAdvanceSerializer,
     EmployeePayrollProfileSerializer,
     EmployeePayrollRuleSerializer,
+    EmployeeShiftSerializer,
     EmployeeWorkScheduleSerializer,
     FinanceTransactionAttachmentSerializer,
     FinanceTransactionSerializer,
@@ -187,7 +189,7 @@ from .meta_api import (
 )
 from .subscription_addons import addons_comment, addons_total, sync_subscription_addons, total_price, validate_addons_payload
 from .discounts import calculate_discount
-from .employee_worklog import build_employee_worklog, get_employee_schedule_context, split_work_interval_by_schedule
+from .employee_worklog import build_employee_worklog, get_employee_schedule_context, split_work_interval_by_schedule, template_schedule_for
 from .payroll import apply_payroll_calculation, generate_payroll_statements
 from .phone import normalize_kz_phone
 from .subscription_dates import calculate_subscription_end_date
@@ -4419,6 +4421,189 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
                 sale.save(update_fields=('finance_transaction', 'updated_at'))
                 finance_transaction.delete()
             self._log_instance(AuditLog.Action.ADDON_SALE_UPDATE, sale, 'Изменена продажа доп. услуг', self._audit_changes(sale))
+
+
+class EmployeeShiftViewSet(BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, EmployeeSchedulePermission)
+    queryset = EmployeeShift.objects.select_related('employee', 'branch', 'template_schedule__branch').all()
+    serializer_class = EmployeeShiftSerializer
+    audit_entity_type = 'EmployeeShift'
+
+    def get_queryset(self):
+        queryset = _filter_branch(super().get_queryset(), self.request)
+        employee = self.request.query_params.get('employee')
+        if employee:
+            queryset = queryset.filter(employee_id=employee)
+        if has_role(self.request.user, TEACHER) and not has_any_role(self.request.user, {MANAGER, ACCOUNTANT}):
+            queryset = queryset.filter(employee=self.request.user)
+        return queryset.order_by('shift_date', 'employee__first_name', 'employee__username')
+
+    @staticmethod
+    def _shift_changes(shift):
+        return {
+            'employee': shift.employee_id,
+            'shift_date': shift.shift_date.isoformat(),
+            'branch': shift.branch_id,
+            'start_time': str(shift.start_time) if shift.start_time else None,
+            'end_time': str(shift.end_time) if shift.end_time else None,
+            'is_working_day': shift.is_working_day,
+            'note': shift.note,
+            'template_schedule_id': shift.template_schedule_id,
+        }
+
+    def perform_create(self, serializer):
+        employee = serializer.validated_data['employee']
+        shift_date = serializer.validated_data['shift_date']
+        template = template_schedule_for(employee, shift_date)
+        instance = serializer.save(created_by=self.request.user, template_schedule=template)
+        self._log_instance(
+            AuditLog.Action.EMPLOYEE_SCHEDULE_CREATE,
+            instance,
+            f'Создана смена сотрудника на {shift_date:%d.%m.%Y}',
+            {'old': None, 'new': self._shift_changes(instance), 'source': 'override'},
+        )
+
+    def perform_update(self, serializer):
+        if serializer.instance.shift_date < timezone.localdate():
+            raise drf_serializers.ValidationError({'detail': 'Нельзя изменять прошедшую смену обычным редактированием.'})
+        old = self._shift_changes(serializer.instance)
+        employee = serializer.validated_data.get('employee', serializer.instance.employee)
+        shift_date = serializer.validated_data.get('shift_date', serializer.instance.shift_date)
+        template = template_schedule_for(employee, shift_date)
+        instance = serializer.save(template_schedule=template)
+        self._log_instance(
+            AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE,
+            instance,
+            f'Изменена смена сотрудника на {shift_date:%d.%m.%Y}',
+            {'old': old, 'new': self._shift_changes(instance), 'source': 'override'},
+        )
+
+    def perform_destroy(self, instance):
+        if instance.shift_date < timezone.localdate():
+            raise drf_serializers.ValidationError({'detail': 'Нельзя изменять прошедшую смену обычным редактированием.'})
+        changes = self._shift_changes(instance)
+        entity_id = instance.pk
+        entity_name = str(instance)
+        shift_date = instance.shift_date
+        instance.delete()
+        log_action(
+            self.request,
+            AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE,
+            self.audit_entity_type,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            description=f'Смена {shift_date:%d.%m.%Y} возвращена к шаблону',
+            changes={'old': changes, 'new': None, 'source': 'template'},
+        )
+
+    @action(detail=False, methods=['get'])
+    def resolved(self, request):
+        date_from = parse_date(request.query_params.get('date_from', ''))
+        date_to = parse_date(request.query_params.get('date_to', ''))
+        if date_from is None or date_to is None:
+            raise drf_serializers.ValidationError({'detail': 'Укажите date_from и date_to в формате ГГГГ-ММ-ДД.'})
+        if date_to < date_from:
+            raise drf_serializers.ValidationError({'date_to': 'Дата окончания не может быть раньше даты начала.'})
+        if (date_to - date_from).days >= 31:
+            raise drf_serializers.ValidationError({'date_to': 'Можно запросить не более 31 дня.'})
+
+        employees = User.objects.filter(is_active=True).select_related('branch').order_by('first_name', 'last_name', 'username')
+        employee_value = request.query_params.get('employee')
+        if employee_value:
+            try:
+                employees = employees.filter(pk=int(employee_value))
+            except (TypeError, ValueError):
+                raise drf_serializers.ValidationError({'employee': 'Некорректный сотрудник.'})
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
+            employees = employees.filter(pk=request.user.pk)
+        employees = list(employees)
+        employee_ids = [employee.pk for employee in employees]
+
+        shifts = EmployeeShift.objects.filter(
+            employee_id__in=employee_ids,
+            shift_date__range=(date_from, date_to),
+        ).select_related('branch', 'template_schedule__branch')
+        shift_map = {(shift.employee_id, shift.shift_date): shift for shift in shifts}
+        templates = EmployeeWorkSchedule.objects.filter(
+            employee_id__in=employee_ids,
+            valid_from__lte=date_to,
+        ).filter(Q(valid_until__isnull=True) | Q(valid_until__gte=date_from)).select_related('branch').order_by('-valid_from', '-pk')
+        template_map = {}
+        for template in templates:
+            template_map.setdefault((template.employee_id, template.weekday), []).append(template)
+
+        branch_value = request.query_params.get('branch')
+        branch_id = None
+        if branch_value not in (None, '', 'all', 'unassigned'):
+            try:
+                branch_id = int(branch_value)
+            except (TypeError, ValueError):
+                raise drf_serializers.ValidationError({'branch': 'Некорректный филиал.'})
+            if branch_id <= 0:
+                raise drf_serializers.ValidationError({'branch': 'Некорректный филиал.'})
+        rows = []
+        day = date_from
+        while day <= date_to:
+            for employee in employees:
+                shift = shift_map.get((employee.pk, day))
+                template = next((item for item in template_map.get((employee.pk, day.weekday()), [])
+                                 if item.valid_from <= day and (item.valid_until is None or item.valid_until >= day)), None)
+                source = 'override' if shift else ('template' if template else 'none')
+                schedule = shift or template
+                branch = (shift.branch if shift and shift.branch_id else None) or (template.branch if template else None)
+                if not schedule:
+                    branch = employee.branch
+                if branch_value not in (None, '', 'all'):
+                    if branch_value == 'unassigned':
+                        if branch is not None:
+                            continue
+                    elif not branch or branch.pk != branch_id:
+                        continue
+                rows.append({
+                    'employee': employee.pk,
+                    'employee_name': employee.get_full_name() or employee.username,
+                    'shift_date': day.isoformat(),
+                    'weekday': day.weekday(),
+                    'start_time': schedule.start_time.isoformat() if schedule and schedule.start_time else None,
+                    'end_time': schedule.end_time.isoformat() if schedule and schedule.end_time else None,
+                    'is_working_day': schedule.is_working_day if schedule else None,
+                    'branch': branch.pk if branch else None,
+                    'branch_name': branch.name if branch else '',
+                    'source': source,
+                    'shift_id': shift.pk if shift else None,
+                    'template_schedule_id': template.pk if template else (shift.template_schedule_id if shift else None),
+                    'note': shift.note if shift else '',
+                })
+            day += timedelta(days=1)
+        return Response(rows)
+
+    @action(detail=False, methods=['post'], url_path='set-for-date')
+    @transaction.atomic
+    def set_for_date(self, request):
+        employee_id = request.data.get('employee')
+        try:
+            employee = User.objects.select_for_update().get(pk=employee_id, is_active=True)
+        except (User.DoesNotExist, TypeError, ValueError):
+            raise drf_serializers.ValidationError({'employee': 'Выберите действующего сотрудника.'})
+        shift_date = parse_date(str(request.data.get('shift_date', '')))
+        if shift_date is None:
+            raise drf_serializers.ValidationError({'shift_date': 'Укажите дату в формате ГГГГ-ММ-ДД.'})
+        instance = EmployeeShift.objects.select_for_update().filter(employee=employee, shift_date=shift_date).first()
+        serializer = self.get_serializer(instance, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        template = template_schedule_for(employee, shift_date)
+        old = self._shift_changes(instance) if instance else None
+        shift = serializer.save(
+            created_by=instance.created_by if instance and instance.created_by_id else request.user,
+            template_schedule=template,
+        )
+        self._log_instance(
+            AuditLog.Action.EMPLOYEE_SCHEDULE_UPDATE if instance else AuditLog.Action.EMPLOYEE_SCHEDULE_CREATE,
+            shift,
+            f'{"Изменена" if instance else "Создана"} смена сотрудника на {shift_date:%d.%m.%Y}',
+            {'old': old, 'new': self._shift_changes(shift), 'source': 'override'},
+        )
+        return Response(self.get_serializer(shift).data, status=status.HTTP_200_OK if instance else status.HTTP_201_CREATED)
 
 
 class EmployeeWorkScheduleViewSet(BaseAuthenticatedViewSet):

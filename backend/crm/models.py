@@ -879,6 +879,60 @@ class EmployeeWorkSchedule(TimeStampedModel):
         return f'{self.employee} · {self.weekday} · {self.start_time:%H:%M}-{self.end_time:%H:%M}'
 
 
+class EmployeeShift(TimeStampedModel):
+    employee = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='employee_shifts')
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='employee_shifts')
+    shift_date = models.DateField(db_index=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    is_working_day = models.BooleanField(default=True)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_employee_shifts',
+    )
+    template_schedule = models.ForeignKey(
+        EmployeeWorkSchedule,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='date_overrides',
+    )
+
+    class Meta:
+        ordering = ('shift_date', 'employee__first_name', 'employee__username')
+        constraints = (
+            models.UniqueConstraint(fields=('employee', 'shift_date'), name='unique_employee_shift_date'),
+        )
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if not self.is_working_day:
+            self.start_time = None
+            self.end_time = None
+            return
+        if self.start_time is None:
+            raise ValidationError({'start_time': 'Укажите время начала смены.'})
+        if self.end_time is None:
+            raise ValidationError({'end_time': 'Укажите время окончания смены.'})
+        if self.start_time >= self.end_time:
+            raise ValidationError({'end_time': 'Время окончания должно быть позже начала.'})
+
+    def save(self, *args, **kwargs):
+        if not self.is_working_day:
+            self.start_time = None
+            self.end_time = None
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        state = f'{self.start_time:%H:%M}-{self.end_time:%H:%M}' if self.is_working_day else 'выходной'
+        return f'{self.employee} · {self.shift_date:%d.%m.%Y} · {state}'
+
+
 class EmployeePayrollProfile(TimeStampedModel):
     class PayType(models.TextChoices):
         HOURLY = 'hourly', 'Почасовая'

@@ -245,7 +245,7 @@ export function Filters({ children, initiallyExpanded = false }) {
   );
 }
 
-export function SelectField({ label, value, onChange, options, name }) {
+export function SelectField({ label, value, onChange, options, name, disabled = false }) {
   const fieldName = name || String(label || 'select').toLowerCase().replace(/\s+/g, '-');
 
   return (
@@ -253,9 +253,10 @@ export function SelectField({ label, value, onChange, options, name }) {
       <span className="truncate">{label}</span>
       <select
         name={fieldName}
+        disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 transition-[border-color,box-shadow,background-color,color] duration-150 hover:border-slate-300 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10"
+        className="min-h-11 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 transition-[border-color,box-shadow,background-color,color] duration-150 hover:border-slate-300 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>

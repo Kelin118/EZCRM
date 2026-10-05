@@ -2261,10 +2261,13 @@ class EmployeeShiftSerializer(BranchNameMixin, serializers.ModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         shift_date = attrs.get('shift_date', self.instance.shift_date if self.instance else None)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        can_edit_past = bool(user and (user.is_superuser or user.has_role('admin')))
         is_working_day = attrs.get('is_working_day', self.instance.is_working_day if self.instance else True)
         start_time = attrs.get('start_time', self.instance.start_time if self.instance else None)
         end_time = attrs.get('end_time', self.instance.end_time if self.instance else None)
-        if shift_date and shift_date < timezone.localdate():
+        if shift_date and shift_date < timezone.localdate() and not can_edit_past:
             raise serializers.ValidationError({'shift_date': 'Нельзя изменять прошедшую смену обычным редактированием.'})
         if not is_working_day:
             attrs['start_time'] = None

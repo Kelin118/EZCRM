@@ -4464,7 +4464,7 @@ class EmployeeShiftViewSet(BaseAuthenticatedViewSet):
         )
 
     def perform_update(self, serializer):
-        if serializer.instance.shift_date < timezone.localdate():
+        if serializer.instance.shift_date < timezone.localdate() and not is_admin(self.request.user):
             raise drf_serializers.ValidationError({'detail': 'Нельзя изменять прошедшую смену обычным редактированием.'})
         old = self._shift_changes(serializer.instance)
         employee = serializer.validated_data.get('employee', serializer.instance.employee)
@@ -4479,7 +4479,7 @@ class EmployeeShiftViewSet(BaseAuthenticatedViewSet):
         )
 
     def perform_destroy(self, instance):
-        if instance.shift_date < timezone.localdate():
+        if instance.shift_date < timezone.localdate() and not is_admin(self.request.user):
             raise drf_serializers.ValidationError({'detail': 'Нельзя изменять прошедшую смену обычным редактированием.'})
         changes = self._shift_changes(instance)
         entity_id = instance.pk

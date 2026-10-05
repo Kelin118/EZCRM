@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
+import { getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
@@ -30,6 +31,7 @@ function sourceLabel(source) {
 }
 
 export default function EmployeeSchedulePage() {
+  const canEditPastShifts = isAdmin(getStoredUser());
   const [tab, setTab] = useState('shifts');
   const [filters, setFilters] = useState({ employee: '', branch: 'all' });
   const [weekStart, setWeekStart] = useState(() => calendarWeekStart(todayIso()));
@@ -281,6 +283,7 @@ export default function EmployeeSchedulePage() {
   ];
 
   const shiftIsPast = Boolean(shiftEditing && shiftEditing.shift_date < todayIso());
+  const shiftIsReadOnly = shiftIsPast && !canEditPastShifts;
 
   return (
     <>
@@ -351,35 +354,36 @@ export default function EmployeeSchedulePage() {
         onClose={() => setShiftEditing(null)}
         footer={shiftEditing && (
           <>
-            {shiftEditing.source === 'override' && !shiftIsPast && (
+            {shiftEditing.source === 'override' && !shiftIsReadOnly && (
               <Button variant="secondary" onClick={() => setResettingShift(shiftEditing)} disabled={saving}>
                 <RotateCcw size={16} aria-hidden="true" /> Вернуть по шаблону
               </Button>
             )}
             <Button variant="secondary" onClick={() => setShiftEditing(null)}>Закрыть</Button>
-            {!shiftIsPast && <Button onClick={saveShift} disabled={saving}>{saving ? 'Сохранение…' : 'Сохранить'}</Button>}
+            {!shiftIsReadOnly && <Button onClick={saveShift} disabled={saving}>{saving ? 'Сохранение…' : 'Сохранить'}</Button>}
           </>
         )}
       >
         {shiftEditing && (
           <div className="grid gap-4 md:grid-cols-2">
-            <SelectField disabled={Boolean(shiftEditing.shift_id) || shiftIsPast} label="Сотрудник" value={shiftEditing.employee} onChange={(employee) => setShiftEditing({ ...shiftEditing, employee })} options={employeeOptions} />
-            <Input disabled={Boolean(shiftEditing.shift_id) || shiftIsPast} label="Дата" type="date" min={todayIso()} value={shiftEditing.shift_date} onChange={(event) => setShiftEditing({ ...shiftEditing, shift_date: event.target.value })} />
+            <SelectField disabled={Boolean(shiftEditing.shift_id) || shiftIsReadOnly} label="Сотрудник" value={shiftEditing.employee} onChange={(employee) => setShiftEditing({ ...shiftEditing, employee })} options={employeeOptions} />
+            <Input disabled={Boolean(shiftEditing.shift_id) || shiftIsReadOnly} label="Дата" type="date" min={canEditPastShifts ? undefined : todayIso()} value={shiftEditing.shift_date} onChange={(event) => setShiftEditing({ ...shiftEditing, shift_date: event.target.value })} />
             <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm md:col-span-2">
               <span className="text-slate-500">Источник:</span> <strong className="text-slate-800">{sourceLabel(shiftEditing.source)}</strong>
-              {shiftIsPast && <p className="mt-1 text-amber-700">Прошедшая смена доступна только для просмотра.</p>}
+              {shiftIsReadOnly && <p className="mt-1 text-amber-700">Прошедшая смена доступна только для просмотра.</p>}
+              {shiftIsPast && canEditPastShifts && <p className="mt-1 text-amber-700">Корректировка изменит исторический график и будет записана в журнал действий.</p>}
             </div>
-            <SelectField disabled={shiftIsPast} label="Рабочий день" value={shiftEditing.is_working_day ? '1' : '0'} onChange={(value) => setShiftEditing({ ...shiftEditing, is_working_day: value === '1' })} options={[{ value: '1', label: 'Да' }, { value: '0', label: 'Нет' }]} />
-            <SelectField disabled={shiftIsPast} label="Филиал" value={shiftEditing.branch || ''} onChange={(branch) => setShiftEditing({ ...shiftEditing, branch })} options={[{ value: '', label: 'По шаблону / без филиала' }, ...branchOptions]} />
+            <SelectField disabled={shiftIsReadOnly} label="Рабочий день" value={shiftEditing.is_working_day ? '1' : '0'} onChange={(value) => setShiftEditing({ ...shiftEditing, is_working_day: value === '1' })} options={[{ value: '1', label: 'Да' }, { value: '0', label: 'Нет' }]} />
+            <SelectField disabled={shiftIsReadOnly} label="Филиал" value={shiftEditing.branch || ''} onChange={(branch) => setShiftEditing({ ...shiftEditing, branch })} options={[{ value: '', label: 'По шаблону / без филиала' }, ...branchOptions]} />
             {shiftEditing.is_working_day && (
               <>
-                <Input disabled={shiftIsPast} label="Начало" type="time" value={shiftEditing.start_time || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, start_time: event.target.value })} />
-                <Input disabled={shiftIsPast} label="Конец" type="time" value={shiftEditing.end_time || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, end_time: event.target.value })} />
+                <Input disabled={shiftIsReadOnly} label="Начало" type="time" value={shiftEditing.start_time || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, start_time: event.target.value })} />
+                <Input disabled={shiftIsReadOnly} label="Конец" type="time" value={shiftEditing.end_time || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, end_time: event.target.value })} />
               </>
             )}
             <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
               <span>Комментарий</span>
-              <textarea disabled={shiftIsPast} name="shift-note" rows="3" value={shiftEditing.note || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, note: event.target.value })} className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-normal text-slate-800 transition-[border-color,box-shadow] duration-150 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10 disabled:bg-slate-50" />
+              <textarea disabled={shiftIsReadOnly} name="shift-note" rows="3" value={shiftEditing.note || ''} onChange={(event) => setShiftEditing({ ...shiftEditing, note: event.target.value })} className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-normal text-slate-800 transition-[border-color,box-shadow] duration-150 focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/10 disabled:bg-slate-50" />
             </label>
           </div>
         )}

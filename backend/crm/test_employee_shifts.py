@@ -19,6 +19,9 @@ class EmployeeShiftTests(APITestCase):
         self.manager = user_model.objects.create_user(
             username='shift-manager', password='pass', role='manager', roles=['manager'],
         )
+        self.admin = user_model.objects.create_user(
+            username='shift-admin', password='pass', role='admin', roles=['admin'],
+        )
         self.teacher = user_model.objects.create_user(
             username='shift-teacher', password='pass', role='teacher', roles=['teacher'],
         )
@@ -226,6 +229,37 @@ class EmployeeShiftTests(APITestCase):
         self.assertEqual(self.client.delete(url).status_code, 400)
         shift.refresh_from_db()
         self.assertEqual(shift.note, '')
+
+    def test_admin_can_create_update_and_reset_past_shift(self):
+        past_date = timezone.localdate() - timedelta(days=2)
+        self.client.force_authenticate(self.admin)
+        created = self.client.post('/api/employee-shifts/set-for-date/', {
+            'employee': self.teacher.pk,
+            'shift_date': past_date.isoformat(),
+            'branch': self.branch.pk,
+            'start_time': '09:00',
+            'end_time': '17:00',
+            'is_working_day': True,
+            'note': 'Историческая корректировка',
+        }, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        shift = EmployeeShift.objects.get(employee=self.teacher, shift_date=past_date)
+
+        updated = self.client.patch(
+            f'/api/employee-shifts/{shift.pk}/',
+            {'start_time': '10:00', 'end_time': '18:00', 'note': 'Исправлено администратором'},
+            format='json',
+        )
+        self.assertEqual(updated.status_code, 200, updated.data)
+        shift.refresh_from_db()
+        self.assertEqual((shift.start_time, shift.end_time), (time(10), time(18)))
+
+        deleted = self.client.delete(f'/api/employee-shifts/{shift.pk}/')
+        self.assertEqual(deleted.status_code, 204, getattr(deleted, 'data', None))
+        self.assertFalse(EmployeeShift.objects.filter(pk=shift.pk).exists())
+        self.assertTrue(AuditLog.objects.filter(
+            entity_type='EmployeeShift', entity_id=shift.pk, description__icontains='возвращена к шаблону',
+        ).exists())
 
     def test_resolved_range_is_limited(self):
         response = self.client.get('/api/employee-shifts/resolved/', {

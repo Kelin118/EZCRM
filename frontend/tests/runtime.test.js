@@ -331,6 +331,9 @@ test('employee schedule separates exact shifts from versioned templates', async 
   assert.match(source, /Вернуть по шаблону/);
   assert.match(source, /formatWeekdayDate\(date\)/);
   assert.match(source, /openShiftCell\(item\)/);
+  assert.match(source, /const canEditPastShifts = isAdmin\(getStoredUser\(\)\)/);
+  assert.match(source, /const shiftIsReadOnly = shiftIsPast && !canEditPastShifts/);
+  assert.match(source, /Корректировка изменит исторический график/);
   assert.match(source, /effective_on: scheduleDate/);
   assert.match(source, /employee-schedules\/set-from-date\//);
   const shiftSave = source.slice(source.indexOf('const saveShift'), source.indexOf('const resetToTemplate'));

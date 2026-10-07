@@ -65,25 +65,50 @@ def clients_payload(clients):
 
 
 def duplicate_phone_groups(queryset=None):
-    queryset = queryset or Client.objects.all()
+    info = duplicate_info_map(queryset)
     groups = defaultdict(list)
-    for client_id, phone in queryset.values_list('id', 'phone'):
-        normalized = normalize_kz_phone(phone)
-        if normalized:
-            groups[normalized].append(client_id)
-    return {phone: ids for phone, ids in groups.items() if len(ids) > 1}
+    for client_id, item in info.items():
+        if item['has_phone_duplicate']:
+            groups[item['normalized_phone']].append(client_id)
+    return dict(groups)
 
 
 def duplicate_info_map(queryset=None):
-    groups = duplicate_phone_groups(queryset)
+    clients = list(Client.objects.values_list('id', 'phone'))
+    parent = {client_id: client_id for client_id, _ in clients}
+
+    def root(client_id):
+        while parent[client_id] != client_id:
+            parent[client_id] = parent[parent[client_id]]
+            client_id = parent[client_id]
+        return client_id
+
+    through = Client.relatives.through
+    for left, right in through.objects.values_list('from_client_id', 'to_client_id'):
+        if left in parent and right in parent:
+            parent[root(left)] = root(right)
+
+    groups = defaultdict(list)
+    for client_id, phone in clients:
+        normalized = normalize_kz_phone(phone)
+        if normalized:
+            groups[normalized].append(client_id)
+
+    selected_ids = set(queryset.values_list('id', flat=True)) if queryset is not None else None
     info = {}
     for normalized, ids in groups.items():
         for client_id in ids:
+            if selected_ids is not None and client_id not in selected_ids:
+                continue
+            relatives = [item_id for item_id in ids if item_id != client_id and root(item_id) == root(client_id)]
+            duplicates = [item_id for item_id in ids if item_id != client_id and root(item_id) != root(client_id)]
             info[client_id] = {
                 'normalized_phone': normalized,
-                'duplicate_phone_count': len(ids),
-                'has_phone_duplicate': True,
-                'duplicate_client_ids': [item_id for item_id in ids if item_id != client_id],
+                'duplicate_phone_count': len(duplicates) + 1 if duplicates else 0,
+                'has_phone_duplicate': bool(duplicates),
+                'duplicate_client_ids': duplicates,
+                'relative_phone_count': len(relatives),
+                'relative_client_ids': relatives,
             }
     return info
 
@@ -95,7 +120,28 @@ def default_duplicate_info(phone=''):
         'duplicate_phone_count': 0,
         'has_phone_duplicate': False,
         'duplicate_client_ids': [],
+        'relative_phone_count': 0,
+        'relative_client_ids': [],
     }
+
+
+def related_client_ids(client_id):
+    if not client_id:
+        return set()
+    through = Client.relatives.through
+    edges = through.objects.values_list('from_client_id', 'to_client_id')
+    neighbours = defaultdict(set)
+    for left, right in edges:
+        neighbours[left].add(right)
+        neighbours[right].add(left)
+    visited = {client_id}
+    pending = [client_id]
+    while pending:
+        for neighbour in neighbours[pending.pop()]:
+            if neighbour not in visited:
+                visited.add(neighbour)
+                pending.append(neighbour)
+    return visited
 
 
 def duplicate_clients_for_phone(phone, exclude_client=None):
@@ -156,7 +202,12 @@ def merge_clients(*, primary, duplicate):
         duplicate = locked.get(duplicate.id)
         if not primary or not duplicate:
             raise serializers.ValidationError({'detail': 'Клиент не найден.'})
+        if duplicate.id in related_client_ids(primary.id):
+            raise serializers.ValidationError({'duplicate_client': 'Родственников нельзя объединять как дубликаты.'})
 
+        relative_ids = list(duplicate.relatives.exclude(pk=primary.pk).values_list('pk', flat=True))
+        if relative_ids:
+            primary.relatives.add(*relative_ids)
         fill_primary_empty_fields(primary, duplicate)
         Subscription.objects.filter(client=duplicate).update(client=primary)
         Visit.objects.filter(client=duplicate).update(client=primary)

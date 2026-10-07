@@ -1,14 +1,15 @@
-import { AlertTriangle, GitMerge, Trash2 } from 'lucide-react';
+import { AlertTriangle, GitMerge, Trash2, UsersRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageClients, getStoredUser, isAdmin } from '../auth.js';
 import Button from '../components/ui/Button.jsx';
+import RelativeClientPicker from '../components/clients/RelativeClientPicker.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { useEmployeeOptions } from './lookupUtils.jsx';
+import { useClientOptions, useEmployeeOptions } from './lookupUtils.jsx';
 
 const emptyClient = {
   first_name: '',
@@ -23,6 +24,7 @@ const emptyClient = {
   notes: '',
   is_active: true,
   branch: '',
+  relatives: [],
 };
 
 const usageLabels = {
@@ -64,17 +66,12 @@ function UsageSummary({ usage }) {
 }
 
 function DuplicateBadge({ row, onClick }) {
-  if (!row.has_phone_duplicate) return null;
+  if (!row.has_phone_duplicate && !row.relative_phone_count) return null;
   return (
-    <button
-      type="button"
-      title="Этот номер указан у нескольких клиентов."
-      onClick={onClick}
-      className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-700 transition hover:border-red-300 hover:bg-red-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-red-100"
-    >
-      <AlertTriangle size={13} aria-hidden="true" />
-      Дубликат ×{row.duplicate_phone_count}
-    </button>
+    <span className="inline-flex flex-wrap gap-1">
+      {row.relative_phone_count > 0 && <button type="button" title="Номер общий с родственниками" onClick={onClick} className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"><UsersRound size={13} aria-hidden="true" />Родственники ×{row.relative_phone_count}</button>}
+      {row.has_phone_duplicate && <button type="button" title="Есть неподтверждённые совпадения номера" onClick={onClick} className="inline-flex items-center gap-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"><AlertTriangle size={13} aria-hidden="true" />Дубликат ×{row.duplicate_phone_count}</button>}
+    </span>
   );
 }
 
@@ -82,6 +79,7 @@ export default function ClientsPage() {
   const crud = useCrudResource('clients/', { search: '', status: '', manager: '', branch: '', duplicates: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
+  const { refreshClients } = useClientOptions();
   const user = getStoredUser();
   const canEdit = canManageClients(user);
   const canDelete = canDeleteDangerous(user);
@@ -112,31 +110,34 @@ export default function ClientsPage() {
     const phone = String(form.phone || '').trim();
     if (!phone) {
       setPhoneWarning(null);
+      setCheckingPhone(false);
       return undefined;
     }
+    let active = true;
     const timer = window.setTimeout(async () => {
       setCheckingPhone(true);
       try {
-        const { data } = await api.get('clients/phone-duplicates/', { params: { phone, exclude_client: form.id || '' } });
-        setPhoneWarning(data.has_duplicates ? data : null);
+        const { data } = await api.get('clients/phone-duplicates/', { params: { phone, exclude_client: form.id || '', relatives: (form.relatives || []).join(',') } });
+        if (active) setPhoneWarning(data.count ? data : null);
       } catch (error) {
-        showApiError(error);
+        if (active) showApiError(error);
       } finally {
-        setCheckingPhone(false);
+        if (active) setCheckingPhone(false);
       }
     }, 350);
-    return () => window.clearTimeout(timer);
-  }, [crud.modalOpen, form.phone, form.id]);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [crud.modalOpen, form.phone, form.id, JSON.stringify(form.relatives || [])]);
 
   const saveClient = async () => {
     await crud.save(form);
+    try { await refreshClients(); } catch (error) { showApiError(error); }
     setPhoneWarning(null);
   };
 
   const loadDuplicates = async (row) => {
     setDuplicateModal({ open: true, source: row, clients: [], loading: true });
     try {
-      const { data } = await api.get('clients/phone-duplicates/', { params: { phone: row.phone } });
+      const { data } = await api.get('clients/phone-duplicates/', { params: { phone: row.phone, exclude_client: row.id } });
       setDuplicateModal({ open: true, source: row, clients: data.results || [], loading: false });
     } catch (error) {
       setDuplicateModal({ open: true, source: row, clients: [], loading: false });
@@ -182,8 +183,8 @@ export default function ClientsPage() {
         <Input label="Телефон" value={form.phone || ''} onChange={(e) => setFormField('phone', e.target.value)} />
         {checkingPhone && <p className="mt-1 text-xs font-semibold text-slate-500">Проверяем номер…</p>}
         {phoneWarning && (
-          <div className="mt-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-800">
-            <p className="font-semibold">Такой номер уже используется у {phoneWarning.count} клиентов.</p>
+          <div className={`mt-2 rounded border px-3 py-2 text-sm ${phoneWarning.has_duplicates ? 'border-red-100 bg-red-50 text-red-800' : 'border-emerald-100 bg-emerald-50 text-emerald-800'}`}>
+            <p className="font-semibold">{phoneWarning.has_duplicates ? `Неподтверждённые совпадения: ${phoneWarning.duplicate_count}.` : `Номер общий с родственниками: ${phoneWarning.relative_count}.`}</p>
             <Button className="mt-2 h-9 px-3" variant="secondary" onClick={() => setDuplicateModal({ open: true, source: form, clients: phoneWarning.results || [], loading: false })}>
               Посмотреть
             </Button>
@@ -191,6 +192,7 @@ export default function ClientsPage() {
         )}
       </div>
       <Input label="Email" type="email" value={form.email || ''} onChange={(e) => setFormField('email', e.target.value)} />
+      <RelativeClientPicker value={form.relatives || []} onChange={(relatives) => setFormField('relatives', relatives)} excludeId={form.id} className="md:col-span-2" />
       <Input label="Дата рождения" type="date" value={form.birth_date || ''} onChange={(e) => setFormField('birth_date', e.target.value)} />
       <Input label="Класс" value={form.school_class || ''} onChange={(e) => setFormField('school_class', e.target.value)} />
       <Input label="Направление" value={form.direction || ''} onChange={(e) => setFormField('direction', e.target.value)} />
@@ -241,7 +243,7 @@ export default function ClientsPage() {
             key: 'phone',
             header: 'Телефон',
             render: (row) => (
-              <div className={`inline-flex items-center gap-2 rounded-xl px-2 py-1 ${row.has_phone_duplicate ? 'bg-red-50' : ''}`}>
+              <div className={`inline-flex flex-wrap items-center gap-2 px-2 py-1 ${row.has_phone_duplicate ? 'bg-red-50' : ''}`}>
                 <span>{row.phone || '—'}</span>
                 <DuplicateBadge row={row} onClick={() => loadDuplicates(row)} />
               </div>
@@ -285,18 +287,24 @@ export default function ClientsPage() {
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div className="min-w-0">
                     <p className="font-semibold text-slate-900">{client.full_name}</p>
-                    <p className="mt-1 text-sm text-slate-600">{[client.phone || 'Телефон не указан', client.branch_name || 'Не распределено', client.manager_name || 'Менеджер не выбран', client.is_active ? 'Активен' : 'Неактивен'].join(' · ')}</p>
+                    <p className="mt-1 text-sm text-slate-600">{[client.is_relative ? 'Родственник' : 'Возможный дубликат', client.phone || 'Телефон не указан', client.branch_name || 'Не распределено', client.manager_name || 'Менеджер не выбран', client.is_active ? 'Активен' : 'Неактивен'].join(' · ')}</p>
                     <div className="mt-3"><UsageSummary usage={client.usage} /></div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Link to={`/clients/${client.id}`}><Button variant="secondary">Открыть карточку</Button></Link>
-                    {canMerge && duplicateModal.source?.id && client.id !== duplicateModal.source.id && (
+                    {crud.modalOpen && !duplicateModal.source?.id && !client.is_relative && (
+                      <Button variant="secondary" onClick={() => {
+                        setFormField('relatives', [...(form.relatives || []), client.id]);
+                        setDuplicateModal({ open: false, source: null, clients: [], loading: false });
+                      }}>Указать родственником</Button>
+                    )}
+                    {canMerge && !client.is_relative && duplicateModal.source?.id && client.id !== duplicateModal.source.id && (
                       <Button variant="accent" onClick={() => setMergeTarget({ primary: duplicateModal.source, duplicate: client })}>
                         <GitMerge size={16} />
                         Объединить клиентов
                       </Button>
                     )}
-                    {canDelete && usageTotal(client.usage) === 0 && (
+                    {canDelete && !client.is_relative && usageTotal(client.usage) === 0 && (
                       <Button variant="danger" onClick={() => deleteEmptyDuplicate(client)}>
                         <Trash2 size={16} />
                         Удалить пустой дубль

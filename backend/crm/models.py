@@ -32,6 +32,7 @@ class Branch(TimeStampedModel):
 
 class Client(TimeStampedModel):
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='clients')
+    relatives = models.ManyToManyField('self', symmetrical=True, blank=True)
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100, blank=True)
     parent_name = models.CharField(max_length=150, blank=True)

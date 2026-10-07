@@ -114,6 +114,7 @@ export default function ClientDetailPage() {
               <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <Info label="Родитель" value={client.parent_name} />
                 <Info label="Телефон" value={client.phone} />
+                <Info label="Родственники" value={client.relatives_info?.length ? client.relatives_info.map((relative, index) => <span key={relative.id}>{index > 0 ? ', ' : ''}<Link className="text-brand hover:underline" to={`/clients/${relative.id}`}>{relative.full_name}</Link></span>) : null} wide />
                 <Info label="Класс" value={client.school_class} />
                 <Info label="Направление" value={client.direction} />
                 <Info label="Менеджер" value={client.manager_name || client.manager} />

@@ -6,6 +6,7 @@ import { useEmployeeOptions } from '../../pages/lookupUtils.jsx';
 import Button from '../ui/Button.jsx';
 import Input from '../ui/Input.jsx';
 import Modal from '../ui/Modal.jsx';
+import RelativeClientPicker from './RelativeClientPicker.jsx';
 
 const emptyForm = {
   first_name: '',
@@ -16,11 +17,8 @@ const emptyForm = {
   birth_date: '',
   notes: '',
   manager: '',
+  relatives: [],
 };
-
-function normalizePhone(value) {
-  return String(value || '').replace(/\D/g, '');
-}
 
 function normalizeText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -110,10 +108,8 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
     const phone = form.phone.trim();
     if (!phone) return [];
 
-    const { data } = await api.get('clients/', { params: { search: phone } });
-    const items = Array.isArray(data) ? data : data.results || [];
-    const normalizedPhone = normalizePhone(phone);
-    return items.filter((client) => normalizePhone(client.phone) === normalizedPhone);
+    const { data } = await api.get('clients/phone-duplicates/', { params: { phone, relatives: form.relatives.join(',') } });
+    return (data.results || []).filter((client) => !client.is_relative);
   };
 
   const chooseExisting = (client) => {
@@ -133,6 +129,7 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
       birth_date: form.birth_date || null,
       notes: form.notes.trim(),
       manager: form.manager || null,
+      relatives: form.relatives,
       is_active: true,
     };
     const { data } = await api.post('clients/', payload);
@@ -155,7 +152,7 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
         const found = await findExistingByPhone();
         if (found.length) {
           setExistingClients(found);
-          setError('С этим номером уже есть клиенты. Если это брат или сестра, можно создать нового клиента с этим же номером.');
+          setError('С этим номером есть другие клиенты. Выберите родственника или существующую карточку.');
           return;
         }
       }
@@ -207,6 +204,9 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
                       Выбрать существующего
                     </Button>
                   )}
+                  <Button variant="secondary" className="min-h-9 px-3 py-1.5" onClick={() => update({ relatives: [...form.relatives, client.id] })}>
+                    Указать родственником
+                  </Button>
                 </div>
               ))}
               {!sameNameExists && (
@@ -227,6 +227,7 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
         <Input label="WhatsApp / email" type="email" value={form.email} onChange={(event) => update({ email: event.target.value })} />
         <Input label="Дата рождения" type="date" value={form.birth_date} onChange={(event) => update({ birth_date: event.target.value })} />
         <SelectField label="Менеджер" value={form.manager} onChange={(value) => update({ manager: value })} options={managerOptions} />
+        <RelativeClientPicker value={form.relatives} onChange={(relatives) => update({ relatives })} className="md:col-span-2" />
         <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
           Комментарий
           <textarea

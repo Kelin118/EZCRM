@@ -37,6 +37,7 @@ from .client_duplicates import (
     duplicate_phone_groups,
     has_client_usage,
     merge_clients,
+    related_client_ids,
 )
 from .export_excel import (
     export_clients,
@@ -1901,7 +1902,7 @@ class AttendanceDayView(APIView):
 
 class ClientViewSet(BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, ClientPermission)
-    queryset = Client.objects.select_related('manager', 'branch').all()
+    queryset = Client.objects.select_related('manager', 'branch').prefetch_related('relatives').all()
     serializer_class = ClientSerializer
     audit_entity_type = 'Client'
     audit_create_description = 'Создан клиент'
@@ -1944,11 +1945,21 @@ class ClientViewSet(BaseAuthenticatedViewSet):
         except (TypeError, ValueError):
             exclude_client = None
         normalized, clients = duplicate_clients_for_phone(request.query_params.get('phone'), exclude_client=exclude_client)
+        relative_ids = related_client_ids(exclude_client)
+        requested = request.query_params.get('relatives') or ''
+        for value in requested.split(','):
+            if value.strip().isdigit():
+                relative_ids.update(related_client_ids(int(value.strip())))
+        results = [{**item, 'is_relative': item['id'] in relative_ids} for item in clients_payload(clients)]
+        duplicate_count = sum(not item['is_relative'] for item in results)
+        relative_count = sum(item['is_relative'] for item in results)
         return Response({
             'normalized_phone': normalized,
             'count': len(clients),
-            'has_duplicates': bool(clients),
-            'results': clients_payload(clients),
+            'duplicate_count': duplicate_count,
+            'relative_count': relative_count,
+            'has_duplicates': bool(duplicate_count),
+            'results': results,
         })
 
     @action(detail=False, methods=['post'], url_path='merge')

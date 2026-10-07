@@ -208,6 +208,9 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
     duplicate_phone_count = serializers.SerializerMethodField()
     has_phone_duplicate = serializers.SerializerMethodField()
     duplicate_client_ids = serializers.SerializerMethodField()
+    relative_phone_count = serializers.SerializerMethodField()
+    relative_client_ids = serializers.SerializerMethodField()
+    relatives_info = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
@@ -223,7 +226,15 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
         return obj.manager.get_full_name() or obj.manager.username if obj.manager else ''
 
     def _duplicate_info(self, obj):
-        return self.context.get('duplicate_info_map', {}).get(obj.id, default_duplicate_info(obj.phone))
+        info = self.context.get('duplicate_info_map')
+        if info is None and obj.pk:
+            cached = getattr(obj, '_duplicate_info_cache', None)
+            if cached is None:
+                from .client_duplicates import duplicate_info_map
+                cached = duplicate_info_map(Client.objects.filter(pk=obj.pk)).get(obj.pk, default_duplicate_info(obj.phone))
+                obj._duplicate_info_cache = cached
+            return cached
+        return (info or {}).get(obj.id, default_duplicate_info(obj.phone))
 
     def get_normalized_phone(self, obj):
         return self._duplicate_info(obj)['normalized_phone']
@@ -237,11 +248,22 @@ class ClientSerializer(BranchNameMixin, serializers.ModelSerializer):
     def get_duplicate_client_ids(self, obj):
         return self._duplicate_info(obj)['duplicate_client_ids']
 
+    def get_relative_phone_count(self, obj):
+        return self._duplicate_info(obj)['relative_phone_count']
+
+    def get_relative_client_ids(self, obj):
+        return self._duplicate_info(obj)['relative_client_ids']
+
+    def get_relatives_info(self, obj):
+        return [{'id': client.id, 'full_name': str(client)} for client in obj.relatives.all()]
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         first_name = attrs.get('first_name', getattr(self.instance, 'first_name', ''))
         if not str(first_name or '').strip():
             raise serializers.ValidationError({'first_name': 'Укажите имя клиента.'})
+        if self.instance and 'relatives' in attrs and self.instance in attrs['relatives']:
+            raise serializers.ValidationError({'relatives': 'Клиента нельзя указать родственником самого себя.'})
         return attrs
 
 

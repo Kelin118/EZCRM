@@ -1282,6 +1282,74 @@ class ClientPhoneDuplicateTests(APITestCase):
         self.assertEqual({item['id'] for item in filtered.data}, {first.id, second.id})
         self.assertEqual(lookup.data['count'], 2)
 
+    def test_related_siblings_with_same_phone_are_not_duplicates(self):
+        first = Client.objects.create(first_name='First', phone='87070000000')
+        created = self.client.post('/api/clients/', {**self.payload('Second'), 'relatives': [first.id]}, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        second_id = created.data['id']
+        self.assertEqual(created.data['relative_client_ids'], [first.id])
+        self.assertEqual(created.data['relatives'], [first.id])
+
+        third = self.client.post('/api/clients/', {**self.payload('Third'), 'relatives': [second_id]}, format='json')
+        self.assertEqual(third.status_code, 201, third.data)
+        rows = {item['id']: item for item in self.client.get('/api/clients/').data}
+        for client_id in (first.id, second_id, third.data['id']):
+            self.assertFalse(rows[client_id]['has_phone_duplicate'])
+            self.assertEqual(rows[client_id]['relative_phone_count'], 2)
+        self.assertEqual(self.client.get('/api/clients/', {'duplicates': 'true'}).data, [])
+        lookup = self.client.get('/api/clients/phone-duplicates/', {'phone': '87070000000', 'exclude_client': first.id})
+        self.assertEqual(lookup.data['duplicate_count'], 0)
+        self.assertEqual(lookup.data['relative_count'], 2)
+        self.assertTrue(all(item['is_relative'] for item in lookup.data['results']))
+        by_phone = self.client.get('/api/clients/phone-duplicates/', {'phone': '87070000000'})
+        self.assertTrue(by_phone.data['has_duplicates'])
+        self.assertEqual(by_phone.data['duplicate_count'], 3)
+
+    def test_edit_can_mark_existing_phone_match_as_relative(self):
+        first = Client.objects.create(first_name='First', phone='87070000000')
+        second = Client.objects.create(first_name='Second', phone='87070000000')
+        self.assertEqual(len(self.client.get('/api/clients/', {'duplicates': 'true'}).data), 2)
+        patched = self.client.patch(f'/api/clients/{second.id}/', {'relatives': [first.id]}, format='json')
+        self.assertEqual(patched.status_code, 200, patched.data)
+        self.assertEqual(patched.data['relative_client_ids'], [first.id])
+        self.assertTrue(first.relatives.filter(pk=second.id).exists())
+        self.assertEqual(self.client.get('/api/clients/', {'duplicates': 'true'}).data, [])
+
+    def test_unrelated_same_phone_remains_a_duplicate_with_family(self):
+        first = Client.objects.create(first_name='First', phone='87070000000')
+        sibling = Client.objects.create(first_name='Sibling', phone='+7 707 000 0000')
+        outsider = Client.objects.create(first_name='Outsider', phone='77070000000')
+        first.relatives.add(sibling)
+        rows = {item['id']: item for item in self.client.get('/api/clients/').data}
+        self.assertEqual(rows[first.id]['relative_client_ids'], [sibling.id])
+        self.assertEqual(rows[first.id]['duplicate_client_ids'], [outsider.id])
+        self.assertEqual(rows[sibling.id]['duplicate_client_ids'], [outsider.id])
+        self.assertEqual(set(item['id'] for item in self.client.get('/api/clients/', {'duplicates': 'true'}).data),
+                         {first.id, sibling.id, outsider.id})
+        lookup = self.client.get('/api/clients/phone-duplicates/', {'phone': '87070000000', 'relatives': str(first.id)})
+        self.assertEqual(lookup.data['relative_count'], 2)
+        self.assertEqual(lookup.data['duplicate_count'], 1)
+
+    def test_client_cannot_be_own_relative_or_merged_with_relative(self):
+        first = Client.objects.create(first_name='First', phone='87070000000')
+        sibling = Client.objects.create(first_name='Sibling', phone='87070000000')
+        first.relatives.add(sibling)
+        patched = self.client.patch(f'/api/clients/{first.id}/', {'relatives': [first.id]}, format='json')
+        merged = self.client.post('/api/clients/merge/', {'primary_client': first.id, 'duplicate_client': sibling.id}, format='json')
+        self.assertEqual(patched.status_code, 400)
+        self.assertEqual(merged.status_code, 400)
+        self.assertTrue(Client.objects.filter(pk=sibling.id).exists())
+
+    def test_merge_preserves_relatives_of_removed_duplicate(self):
+        primary = Client.objects.create(first_name='Primary', phone='87070000000')
+        duplicate = Client.objects.create(first_name='Duplicate', phone='87070000000')
+        relative = Client.objects.create(first_name='Sibling', phone='87070000000')
+        duplicate.relatives.add(relative)
+        merged = self.client.post('/api/clients/merge/', {'primary_client': primary.id, 'duplicate_client': duplicate.id}, format='json')
+        self.assertEqual(merged.status_code, 200, merged.data)
+        self.assertTrue(primary.relatives.filter(pk=relative.id).exists())
+        self.assertFalse(Client.objects.filter(pk=duplicate.id).exists())
+
     def _create_merge_history(self, duplicate):
         payment = PaymentMethod.objects.create(name='Client duplicate cash', code='client_duplicate_cash')
         service = CatalogItem.objects.create(name='Duplicate Course', price=1000, category='service')

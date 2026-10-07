@@ -72,6 +72,7 @@ export default function FinancePage() {
   const [masterClassPaymentForm, setMasterClassPaymentForm] = useState(emptyMasterClassPaymentForm);
   const [masterClassPaymentSaving, setMasterClassPaymentSaving] = useState(false);
   const [deletingMasterClassPaymentId, setDeletingMasterClassPaymentId] = useState(null);
+  const [deletingFinanceId, setDeletingFinanceId] = useState(null);
   const user = getStoredUser();
   const canEdit = canManageFinance(user);
   const canDelete = canDeleteDangerous(user);
@@ -303,6 +304,18 @@ export default function FinancePage() {
       setDeletingMasterClassPaymentId(null);
     }
   };
+  const deleteFinancePayment = async (row) => {
+    if (!window.confirm(`Удалить операцию на ${money(row.amount)}?\n\nЕсли она связана с продажей или услугой, запись останется, но её оплата будет сброшена. Операцию можно будет восстановить только повторным вводом.`)) return;
+    setDeletingFinanceId(row.id);
+    try {
+      await api.delete(`finance/${row.id}/`);
+      await refreshFinance();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setDeletingFinanceId(null);
+    }
+  };
   const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
   const hasSpecificPaymentMethodFilter = crud.filters.payment_method && !['all', 'unassigned'].includes(crud.filters.payment_method);
 
@@ -409,9 +422,9 @@ export default function FinancePage() {
           return (
             <Actions
               canEdit={canEdit}
-              canDelete={canDelete && (!isMasterClassPayment || deletingMasterClassPaymentId !== row.master_class_payment_id)}
+              canDelete={canDelete && deletingFinanceId !== row.id && (!isMasterClassPayment || deletingMasterClassPaymentId !== row.master_class_payment_id)}
               onEdit={() => (isMasterClassPayment ? openMasterClassPaymentEdit(row) : editTransaction(row))}
-              onDelete={() => (isMasterClassPayment ? deleteMasterClassPayment(row) : crud.remove(row.id))}
+              onDelete={() => (isMasterClassPayment ? deleteMasterClassPayment(row) : deleteFinancePayment(row))}
             />
           );
         } },

@@ -5348,13 +5348,59 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
     def _has_payment_owner(self, instance):
         return any(getattr(instance, name, None) is not None for name in (
             'subscription_payment', 'trial_payment', 'addon_sale', 'master_class_payment',
-            'master_class_payment_entry', 'certificate_batch', 'payroll_statement',
+            'master_class_payment_entry', 'certificate_batch', 'payroll_statement', 'payroll_advance',
         )) or instance.certificates.exists()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         if getattr(instance, 'master_class_payment_entry', None):
             return super().destroy(request, *args, **kwargs)
+        owner = next((getattr(instance, name, None) for name in (
+            'subscription_payment', 'trial_payment', 'addon_sale',
+        ) if getattr(instance, name, None) is not None), None)
+        if owner is not None:
+            if not is_admin(request.user):
+                self.permission_denied(request, message='Удалять связанные оплаты может только администратор.')
+            with transaction.atomic():
+                owner = type(owner).objects.select_for_update().get(pk=owner.pk)
+                payment = FinanceTransaction.objects.select_for_update().get(pk=instance.pk)
+                if owner.finance_transaction_id != payment.pk:
+                    return Response({'detail': 'Оплата уже изменилась. Обновите список.'}, status=status.HTTP_409_CONFLICT)
+                owner_relation = {
+                    Subscription: 'subscription_payment',
+                    Trial: 'trial_payment',
+                    AddonSale: 'addon_sale',
+                }[type(owner)]
+                other_owners = any(getattr(payment, name, None) is not None for name in (
+                    'subscription_payment', 'trial_payment', 'addon_sale', 'master_class_payment',
+                    'master_class_payment_entry', 'certificate_batch', 'payroll_statement', 'payroll_advance',
+                ) if name != owner_relation) or payment.certificates.exists()
+                if other_owners:
+                    return Response({'detail': 'Операция связана с несколькими записями. Удалите оплату в исходной карточке.'}, status=status.HTTP_409_CONFLICT)
+                snapshot = self._finance_audit_changes(payment)
+                snapshot['payment_owner'] = type(owner).__name__
+                snapshot['payment_owner_id'] = owner.pk
+                payment_id = payment.pk
+                payment_name = str(payment)
+                owner.finance_transaction = None
+                fields = ['finance_transaction', 'updated_at']
+                if isinstance(owner, Subscription):
+                    owner.paid_amount = Decimal('0.00')
+                    fields.append('paid_amount')
+                elif isinstance(owner, Trial):
+                    owner.payment_date = None
+                    fields.append('payment_date')
+                else:
+                    owner.payment_amount = Decimal('0.00')
+                    owner.payment_method = None
+                    owner.payment_method_name = ''
+                    fields.extend(('payment_amount', 'payment_method', 'payment_method_name'))
+                owner.save(update_fields=fields)
+                payment.delete()
+                log_action(request, AuditLog.Action.DELETE, self._audit_entity_type(),
+                           entity_id=payment_id, entity_name=payment_name,
+                           description='Удалена связанная оплата', changes=snapshot)
+            return Response(status=status.HTTP_204_NO_CONTENT)
         if self._has_payment_owner(instance):
             return Response({'detail': 'Операция связана с оплаченной записью. Измените оплату в её карточке.'}, status=status.HTTP_409_CONFLICT)
         return super().destroy(request, *args, **kwargs)

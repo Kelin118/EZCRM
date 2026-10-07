@@ -15,7 +15,7 @@ from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 from openpyxl import load_workbook
 
 from .models import (
-    AddonSale, Branch, CatalogItem, CertificateTemplate, Client, Discount, EmployeePayrollProfile,
+    AddonSale, AuditLog, Branch, CatalogItem, CertificateTemplate, Client, Discount, EmployeePayrollAdvance, EmployeePayrollProfile,
     FinanceTransaction, GiftCertificate, GroupMembership, Lesson, MasterClass, MasterClassPayment, MasterClassSubject,
     PaymentMethod, PayrollStatement, Room, StudyGroup, Subscription, Trial, Visit,
 )
@@ -217,9 +217,82 @@ class ProductionReadinessTests(APITestCase):
         item = self.income(split=False)
         subscription = self.subscription(paid_amount=100, finance_transaction=item)
         response = self.client.delete(f'/api/finance/{item.id}/')
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 204, response.data)
+        subscription.refresh_from_db()
+        self.assertIsNone(subscription.finance_transaction_id)
+        self.assertEqual(subscription.paid_amount, Decimal('0'))
+        self.assertFalse(FinanceTransaction.objects.filter(pk=item.id).exists())
+        audit = AuditLog.objects.filter(entity_type='FinanceTransaction', entity_id=item.id, action='delete').latest('id')
+        self.assertEqual(audit.changes['amount'], '100.00')
+        self.assertEqual(audit.changes['payment_owner'], 'Subscription')
+        replacement = self.client.patch(f'/api/subscriptions/{subscription.id}/',
+                                        {'paid_amount': '100.00', 'payment_method': self.card.id}, format='json')
+        self.assertEqual(replacement.status_code, 200, replacement.data)
+        subscription.refresh_from_db()
+        self.assertNotEqual(subscription.finance_transaction_id, item.id)
+        self.assertEqual(subscription.paid_amount, Decimal('100'))
+
+    def test_admin_can_remove_trial_payment_without_changing_trial_price(self):
+        item = self.income()
+        trial = Trial.objects.create(client=self.student, branch=self.branch, scheduled_at=timezone.now(),
+                                     price=100, payment_date=date(2026, 9, 1), finance_transaction=item)
+        response = self.client.delete(f'/api/finance/{item.id}/')
+        self.assertEqual(response.status_code, 204, response.data)
+        trial.refresh_from_db()
+        self.assertIsNone(trial.finance_transaction_id)
+        self.assertIsNone(trial.payment_date)
+        self.assertEqual(trial.price, Decimal('100'))
+        self.assertFalse(FinanceTransaction.objects.filter(pk=item.id).exists())
+        replacement = self.client.patch(f'/api/trials/{trial.id}/',
+                                        {'payment_date': '2026-09-02', 'payment_method': self.card.id}, format='json')
+        self.assertEqual(replacement.status_code, 200, replacement.data)
+        trial.refresh_from_db()
+        self.assertNotEqual(trial.finance_transaction_id, item.id)
+        self.assertEqual(trial.payment_date, date(2026, 9, 2))
+
+    def test_admin_can_remove_sale_payment_without_removing_sale(self):
+        item = self.income()
+        sale = AddonSale.objects.create(client=self.student, branch=self.branch, total_price=100,
+                                        payment_amount=100, finance_transaction=item)
+        response = self.client.delete(f'/api/finance/{item.id}/')
+        self.assertEqual(response.status_code, 204, response.data)
+        sale.refresh_from_db()
+        self.assertEqual(sale.total_price, Decimal('100'))
+        self.assertEqual(sale.payment_amount, Decimal('0'))
+        self.assertIsNone(sale.finance_transaction_id)
+        self.assertFalse(FinanceTransaction.objects.filter(pk=item.id).exists())
+
+    def test_accountant_cannot_remove_linked_payment(self):
+        accountant = get_user_model().objects.create_user(username='audit-accountant', role='accountant', roles=['accountant'])
+        self.client.force_authenticate(accountant)
+        item = self.income(split=False)
+        subscription = self.subscription(paid_amount=100, finance_transaction=item)
+        response = self.client.delete(f'/api/finance/{item.id}/')
+        self.assertEqual(response.status_code, 403)
         subscription.refresh_from_db()
         self.assertEqual(subscription.finance_transaction_id, item.id)
+        self.assertEqual(subscription.paid_amount, Decimal('100'))
+
+    def test_shared_payment_is_not_removed_from_one_sale(self):
+        item = self.income(split=False)
+        subscription = self.subscription(paid_amount=100, finance_transaction=item)
+        trial = Trial.objects.create(client=self.student, branch=self.branch, scheduled_at=timezone.now(),
+                                     price=100, payment_date=date(2026, 9, 1), finance_transaction=item)
+        response = self.client.delete(f'/api/finance/{item.id}/')
+        self.assertEqual(response.status_code, 409)
+        subscription.refresh_from_db()
+        trial.refresh_from_db()
+        self.assertEqual(subscription.paid_amount, Decimal('100'))
+        self.assertEqual(trial.finance_transaction_id, item.id)
+
+    def test_payroll_advance_finance_cannot_be_deleted_separately(self):
+        item = FinanceTransaction.objects.create(transaction_type='expense', amount=100, source='salary_advance', branch=self.branch)
+        advance = EmployeePayrollAdvance.objects.create(employee=self.admin, branch=self.branch, amount=100,
+                                                         finance_transaction=item)
+        response = self.client.delete(f'/api/finance/{item.id}/')
+        self.assertEqual(response.status_code, 409)
+        advance.refresh_from_db()
+        self.assertEqual(advance.finance_transaction_id, item.id)
 
     def test_linked_finance_amount_cannot_diverge_from_subscription(self):
         item = self.income(split=False)

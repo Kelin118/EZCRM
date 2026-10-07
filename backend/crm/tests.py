@@ -5477,6 +5477,74 @@ class CertificateApiTests(APITestCase):
         certificate = GiftCertificate.objects.get(pk=response.data['id'])
         self.assertIsNone(certificate.finance_transaction)
 
+    def test_admin_deletes_unused_single_certificate_and_its_payment(self):
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        certificate = GiftCertificate.objects.get(pk=created.data['id'])
+        certificate_id = certificate.id
+        batch_id = certificate.batch_id
+        finance_id = certificate.finance_transaction_id
+
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertFalse(GiftCertificate.objects.filter(pk=certificate_id).exists())
+        self.assertFalse(CertificateBatch.objects.filter(pk=batch_id).exists())
+        self.assertFalse(FinanceTransaction.objects.filter(pk=finance_id).exists())
+        log = AuditLog.objects.get(entity_type='GiftCertificate', entity_id=certificate_id, action='delete')
+        self.assertEqual(log.changes['finance_transaction_id'], finance_id)
+        self.assertEqual(log.changes['sale_price'], '45000.00')
+
+    def test_admin_deletes_free_single_certificate(self):
+        self.template.sale_discount_percent = Decimal('100.00000')
+        self.template.save()
+        created = self.client.post('/api/certificates/', self.payload(payment_parts=[]), format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        certificate_id = created.data['id']
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertFalse(GiftCertificate.objects.filter(pk=certificate_id).exists())
+
+    def test_non_admin_cannot_delete_certificate(self):
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = created.data['id']
+        self.client.force_authenticate(self.manager)
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(GiftCertificate.objects.filter(pk=certificate_id).exists())
+
+    def test_redeemed_certificate_cannot_be_deleted(self):
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = created.data['id']
+        self.client.post(f'/api/certificates/{certificate_id}/redeem/', {'amount': '1000.00'}, format='json')
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(GiftCertificate.objects.filter(pk=certificate_id).exists())
+        self.assertEqual(CertificateRedemption.objects.filter(certificate_id=certificate_id).count(), 1)
+
+    def test_legacy_used_status_without_redemptions_cannot_be_deleted(self):
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = created.data['id']
+        GiftCertificate.objects.filter(pk=certificate_id).update(status=GiftCertificate.Status.USED)
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(GiftCertificate.objects.filter(pk=certificate_id).exists())
+
+    def test_certificate_in_batch_cannot_be_deleted_alone(self):
+        created = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.id, 'purchaser_client': self.client_obj.id,
+            'quantity': 2, 'face_value': '10000.00',
+            'payment_parts': [{'payment_method': self.cash.id, 'amount': '18000.00'}],
+        }, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        certificate_id = created.data['certificates'][0]['id']
+        self.assertEqual(created.data['certificates'][0]['batch_quantity'], 2)
+        finance_id = created.data['batch']['finance_transaction']
+        response = self.client.delete(f'/api/certificates/{certificate_id}/')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(GiftCertificate.objects.filter(batch_id=created.data['batch']['id']).count(), 2)
+        self.assertTrue(FinanceTransaction.objects.filter(pk=finance_id).exists())
+
     def test_redeem_updates_remaining_and_status_without_income(self):
         response = self.client.post('/api/certificates/', self.payload(), format='json')
         certificate_id = response.data['id']

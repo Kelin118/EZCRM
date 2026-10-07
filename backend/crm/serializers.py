@@ -1584,6 +1584,7 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
     serial_code = serializers.CharField(read_only=True)
     purchaser_name = serializers.SerializerMethodField()
     purchaser_phone = serializers.SerializerMethodField()
+    batch_quantity = serializers.IntegerField(source='batch.quantity', read_only=True)
     visits_count = serializers.SerializerMethodField()
     last_visit = serializers.SerializerMethodField()
     background_asset_url = serializers.SerializerMethodField()

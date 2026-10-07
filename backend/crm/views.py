@@ -3312,6 +3312,51 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
     serializer_class = GiftCertificateSerializer
     audit_entity_type = 'GiftCertificate'
 
+    def destroy(self, request, *args, **kwargs):
+        if not is_admin(request.user):
+            self.permission_denied(request, message='Удалять сертификаты может только администратор.')
+        visible = self.get_object()
+        with transaction.atomic():
+            certificate = get_object_or_404(
+                GiftCertificate.objects.select_for_update(of=('self',)).select_related('finance_transaction'), pk=visible.pk,
+            )
+            if (certificate.redemptions.exists() or certificate.remaining_amount != certificate.face_value
+                    or certificate.status in {GiftCertificate.Status.PARTIALLY_USED, GiftCertificate.Status.USED}):
+                return Response({'detail': 'Сертификат уже использовался. Историю погашений удалять нельзя.'}, status=status.HTTP_409_CONFLICT)
+            batch = None
+            if certificate.batch_id:
+                batch = CertificateBatch.objects.select_for_update().get(pk=certificate.batch_id)
+                if batch.quantity != 1 or batch.certificates.exclude(pk=certificate.pk).exists():
+                    return Response({'detail': 'Сертификат входит в партию. Удаление отдельного сертификата партии недоступно.'}, status=status.HTTP_409_CONFLICT)
+            finance = (FinanceTransaction.objects.select_for_update().get(pk=certificate.finance_transaction_id)
+                       if certificate.finance_transaction_id else None)
+            if batch and batch.finance_transaction_id != certificate.finance_transaction_id:
+                return Response({'detail': 'Связь сертификата с оплатой партии не совпадает. Удаление остановлено.'}, status=status.HTTP_409_CONFLICT)
+            if finance and (
+                finance.certificates.exclude(pk=certificate.pk).exists()
+                or CertificateBatch.objects.filter(finance_transaction=finance).exclude(pk=certificate.batch_id).exists()
+                or Subscription.objects.filter(finance_transaction=finance).exists()
+                or Trial.objects.filter(finance_transaction=finance).exists()
+                or AddonSale.objects.filter(finance_transaction=finance).exists()
+                or MasterClass.objects.filter(finance_transaction=finance).exists()
+                or MasterClassPayment.objects.filter(finance_transaction=finance).exists()
+                or PayrollStatement.objects.filter(finance_transaction=finance).exists()
+                or EmployeePayrollAdvance.objects.filter(finance_transaction=finance).exists()
+            ):
+                return Response({'detail': 'Оплата связана с другими записями. Удаление остановлено.'}, status=status.HTTP_409_CONFLICT)
+            certificate_id = certificate.pk
+            certificate_name = str(certificate)
+            changes = _certificate_audit(certificate)
+            changes.update({'batch_id': certificate.batch_id, 'finance_transaction_id': certificate.finance_transaction_id})
+            certificate.delete()
+            if batch:
+                batch.delete()
+            if finance:
+                finance.delete()
+            log_action(request, AuditLog.Action.DELETE, self._audit_entity_type(), entity_id=certificate_id,
+                       entity_name=certificate_name, description='Удалён одиночный сертификат', changes=changes)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def get_queryset(self):
         queryset = GiftCertificate.objects.select_related(
             'template', 'template__background_asset', 'batch', 'background_asset',

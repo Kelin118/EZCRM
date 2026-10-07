@@ -3,6 +3,7 @@ import { Download, Eye, Gift, MessageCircle, Plus, RotateCcw, Send, Trash2 } fro
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
+import { getStoredUser, isAdmin } from '../auth.js';
 import { todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import CertificateCard from '../components/certificates/CertificateCard.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
@@ -89,9 +90,11 @@ export default function CertificatesPage() {
   const [wizardStep, setWizardStep] = useState(1);
   const [certificateForm, setCertificateForm] = useState(emptyCertificate);
   const [selectedCertificate, setSelectedCertificate] = useState(null);
+  const [deletingCertificateId, setDeletingCertificateId] = useState(null);
   const [redeemForm, setRedeemForm] = useState({ amount: '', visitor_name: '', visitor_phone: '', service_name: '', comment: '' });
   const cardRef = useRef(null);
   const { clientOptions } = useClientOptions();
+  const canDelete = isAdmin(getStoredUser());
 
   const templateOptions = templates.map((item) => ({ value: String(item.id), label: item.name }));
   const selectedTemplate = templates.find((item) => String(item.id) === String(certificateForm.template));
@@ -242,6 +245,21 @@ export default function CertificatesPage() {
     }
   };
 
+  const deleteCertificate = async (certificate) => {
+    if (!window.confirm(`Удалить сертификат ${certificate.serial_code || certificate.code}?\n\nЕго финансовая операция и одиночная партия также будут удалены. Это действие нельзя отменить.`)) return;
+    setDeletingCertificateId(certificate.id);
+    try {
+      await api.delete(`certificates/${certificate.id}/`);
+      if (selectedCertificate?.id === certificate.id) setSelectedCertificate(null);
+      await loadCertificates();
+      dispatchSuccess('Сертификат удалён.');
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setDeletingCertificateId(null);
+    }
+  };
+
   const uploadTemplateAsset = async (file) => {
     if (!file) return;
     try {
@@ -289,14 +307,17 @@ export default function CertificatesPage() {
     { key: 'last_visit', header: 'Последнее посещение', render: (row) => row.last_visit ? new Date(row.last_visit).toLocaleString('ru-RU', { timeZone: BUSINESS_TIME_ZONE }) : '—' },
     { key: 'valid_until', header: 'Действует до' },
     { key: 'status', header: 'Статус', render: (row) => <Badge value={row.status}>{row.status_display || row.status}</Badge> },
-    { key: 'actions', header: '', render: (row) => (
-      <div className="flex justify-end gap-2">
+    { key: 'actions', header: '', render: (row) => {
+      const inBatch = row.batch_quantity > 1;
+      const used = Number(row.visits_count) > 0 || Number(row.remaining_amount) !== Number(row.face_value) || ['partially_used', 'used'].includes(row.status);
+      return <div className="flex flex-wrap justify-end gap-2">
         <Button variant="secondary" className="h-9 px-3" onClick={() => setSelectedCertificate(row)}><Eye size={15} />Открыть</Button>
         <Button variant="secondary" className="h-9 px-3" onClick={() => setSelectedCertificate(row)}>Зафиксировать посещение</Button>
         {row.status !== 'cancelled' && <Button variant="secondary" className="h-9 px-3" onClick={() => cancelCertificate(row)}><Trash2 size={15} />Отменить</Button>}
-      </div>
-    ) },
-  ], [selectedCertificate]);
+        {canDelete && <Button variant="danger" className="h-9 px-3" onClick={() => deleteCertificate(row)} disabled={deletingCertificateId === row.id || inBatch || used} title={inBatch ? 'Сертификат входит в партию' : used ? 'Сертификат уже использовался' : 'Удалить сертификат и его оплату'}><Trash2 size={15} />Удалить</Button>}
+      </div>;
+    } },
+  ], [selectedCertificate, deletingCertificateId, canDelete]);
 
   return (
     <>

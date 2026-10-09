@@ -29,7 +29,7 @@ const paymentStatusLabels = { unpaid: 'Не оплачено', partial: 'Час�
 
 export default function ClientDetailPage() {
   const { id } = useParams();
-  const user = getStoredUser();
+  const [user] = useState(getStoredUser);
   const visibleTabs = useMemo(
     () => tabs.filter((tab) => !tab.roles || isAdmin(user) || hasAnyRole(user, tab.roles)),
     [user],
@@ -48,11 +48,14 @@ export default function ClientDetailPage() {
   const [paymentModal, setPaymentModal] = useState({ open: false, masterClass: null });
   const [paymentForm, setPaymentForm] = useState({ amount: '', payment_date: todayIso(), payment_parts: [], comment: '' });
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const load = useCallback(async () => {
+      setLoadError(false);
       const getList = (endpoint) => api.get(endpoint, { params: { client: id } });
-      const [clientRes, subscriptions, payments, trials, masterClasses, visits, finance, tasks] = await Promise.all([
-        api.get(`clients/${id}/`),
+      const clientRes = await api.get(`clients/${id}/`);
+      setClient(clientRes.data);
+      const [subscriptions, payments, trials, masterClasses, visits, finance, tasks] = await Promise.all([
         getList('subscriptions/'),
         api.get(`clients/${id}/master-class-payments/`),
         getList('trials/'),
@@ -62,7 +65,6 @@ export default function ClientDetailPage() {
         visibleTabs.some((tab) => tab.key === 'tasks') ? getList('tasks/') : Promise.resolve({ data: [] }),
       ]);
 
-      setClient(clientRes.data);
       setData({
         subscriptions: list(subscriptions.data),
         payments: list(payments.data),
@@ -74,7 +76,7 @@ export default function ClientDetailPage() {
       });
   }, [id, visibleTabs]);
 
-  useEffect(() => { load().catch(showApiError); }, [load]);
+  useEffect(() => { load().catch((error) => { setLoadError(true); showApiError(error); }); }, [load]);
 
   useEffect(() => {
     if (!visibleTabs.some((tab) => tab.key === activeTab)) {
@@ -85,7 +87,7 @@ export default function ClientDetailPage() {
   const fullName = useMemo(() => `${client?.first_name || ''} ${client?.last_name || ''}`.trim(), [client]);
 
   if (!client) {
-    return <div className="rounded-[24px] bg-white p-6 text-slate-500 shadow-card">Загрузка карточки клиента...</div>;
+    return <div className="rounded-[24px] bg-white p-6 text-slate-500 shadow-card">{loadError ? 'Не удалось загрузить карточку клиента. Обновите страницу и попробуйте снова.' : 'Загрузка карточки клиента...'}</div>;
   }
 
   return (

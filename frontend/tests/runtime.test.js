@@ -24,6 +24,13 @@ async function loadModule(path) {
 
 const loadApi = async () => (await loadModule('api/axios.js')).default;
 
+test('client detail load does not restart on every render', async () => {
+  const source = await readFile(new URL('../src/pages/ClientDetailPage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /const \[user\] = useState\(getStoredUser\)/);
+  assert.doesNotMatch(source, /const user = getStoredUser\(\)/);
+  assert.ok(source.indexOf('setClient(clientRes.data)') < source.indexOf('await Promise.all(['));
+});
+
 test('business datetime round trip is independent of workstation timezone', () => {
   for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
     process.env.TZ = zone;

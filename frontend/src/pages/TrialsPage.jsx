@@ -10,7 +10,7 @@ import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
 import { Actions, Badge, Button, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
+import { employeeLabel, useClientOptions, useEmployeeOptions, useLookup } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 import { BUSINESS_TIME_ZONE, todayLocalDate } from '../utils/dateTime.js';
@@ -166,6 +166,7 @@ function TrialCard({ canEdit, item, onEdit }) {
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Телефон</dt><dd className="text-right font-medium">{dash(getPhone(item))}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Клиент</dt><dd className="text-right font-medium">{dash(item.client_name)}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Менеджер</dt><dd className="text-right font-medium">{dash(item.manager_name)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-slate-400">Преподаватель</dt><dd className="text-right font-medium">{dash(item.teacher_name)}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата пробного</dt><dd className="text-right font-medium">{dateTime(getTrialDate(item))}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Дата оплаты</dt><dd className="text-right font-medium">{dash(item.payment_date)}</dd></div>
             <div className="flex justify-between gap-3"><dt className="text-slate-400">Сумма</dt><dd className="text-right font-semibold text-brand">{money(item.price)}</dd></div>
@@ -220,12 +221,17 @@ function TrialsKanban({ canEdit, items, moveTrial, onEdit }) {
 }
 
 export default function TrialsPage() {
-  const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
+  const crud = useCrudResource('trials/', { search: '', stage: '', manager: '', teacher: '', scheduled_at_from: '', scheduled_at_to: '', payment_date_from: '', payment_date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
+  const { items: filterTeachers } = useLookup('users/staff-options/', { role: 'teacher' });
+  const teacherFilterOptions = useMemo(() => [
+    { value: '', label: 'Все' },
+    ...filterTeachers.map((teacher) => ({ value: String(teacher.id), label: employeeLabel(teacher) })),
+  ], [filterTeachers]);
   const [viewMode, setViewMode] = useState('kanban');
   const [convertTrial, setConvertTrial] = useState(null);
   const [convertForm, setConvertForm] = useState(emptyConvertForm);
@@ -382,16 +388,17 @@ export default function TrialsPage() {
   return (
     <>
       <PageHeader title="Пробники" actionLabel="Добавить пробник" onAction={canEdit ? () => { crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
-        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Всего: {total}</span>
+        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Пробников: {crud.loading ? '…' : total}</span>
         <span className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Купили: {bought}</span>
         <span className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700">Не купили: {lost}</span>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Сумма: {money(paidTotal)}</span>
         <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">Конверсия: {conversion}%</span>
         <ViewToggle value={viewMode} onChange={setViewMode} />
       </PageHeader>
-      <Filters>
+      <Filters initiallyExpanded>
         <Input label="Поиск" value={crud.filters.search} onChange={(e) => crud.setFilters({ ...crud.filters, search: e.target.value })} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...trialStages]} />
+        <SelectField label="Преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={teacherFilterOptions} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Филиал" value={crud.filters.branch || 'all'} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <Input label="Пробный от" type="date" value={crud.filters.scheduled_at_from} onChange={(e) => crud.setFilters({ ...crud.filters, scheduled_at_from: e.target.value })} />
@@ -409,6 +416,7 @@ export default function TrialsPage() {
           { key: 'phone', header: 'Телефон', render: (row) => dash(getPhone(row)) },
           { key: 'client', header: 'Клиент', render: (row) => dash(row.client_name) },
           { key: 'manager', header: 'Менеджер', render: (row) => dash(row.manager_name) },
+          { key: 'teacher', header: 'Преподаватель', render: (row) => dash(row.teacher_name) },
           { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage ?? row.status}>{stageLabel(row.stage ?? row.status)}</Badge> },
           { key: 'subscription', header: 'Абонемент', render: (row) => row.subscription ? <Badge value="active">Создан</Badge> : '-' },
           { key: 'scheduled_at', header: 'Дата пробного', render: (row) => dateTime(getTrialDate(row)) },

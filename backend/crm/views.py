@@ -2279,6 +2279,7 @@ class TrialViewSet(BaseAuthenticatedViewSet):
         queryset = _filter_branch(super().get_queryset(), self.request)
         stage = self.request.query_params.get('stage')
         manager = self.request.query_params.get('manager')
+        teacher = self.request.query_params.get('teacher')
         client = self.request.query_params.get('client')
         search = self.request.query_params.get('search')
         scheduled_at_from = _date_param(self.request, 'scheduled_at_from')
@@ -2298,6 +2299,8 @@ class TrialViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(status=stage)
         if manager:
             queryset = queryset.filter(manager_id=manager)
+        if teacher:
+            queryset = queryset.filter(teacher_id=teacher)
         if client:
             queryset = queryset.filter(client_id=client)
         if _my_param(self.request):

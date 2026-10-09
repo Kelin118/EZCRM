@@ -3479,6 +3479,35 @@ class TrialConversionTests(APITestCase):
             status=Trial.Status.ATTENDED,
         )
 
+    def test_teacher_filter_combines_with_trial_date_range(self):
+        other_teacher = get_user_model().objects.create_user(
+            username='other-teacher-convert', password='pass', role='teacher', roles=['teacher'],
+        )
+        first = self.create_trial()
+        first.scheduled_at = timezone.make_aware(datetime(2026, 9, 3, 14, 0))
+        first.save(update_fields=['scheduled_at'])
+        second = self.create_trial()
+        second.scheduled_at = timezone.make_aware(datetime(2026, 9, 29, 17, 0))
+        second.save(update_fields=['scheduled_at'])
+        outside_period = self.create_trial()
+        outside_period.scheduled_at = timezone.make_aware(datetime(2026, 10, 1, 12, 0))
+        outside_period.save(update_fields=['scheduled_at'])
+        other = self.create_trial()
+        other.teacher = other_teacher
+        other.scheduled_at = timezone.make_aware(datetime(2026, 9, 12, 15, 0))
+        other.save(update_fields=['teacher', 'scheduled_at'])
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get('/api/trials/', {
+            'teacher': self.teacher.id,
+            'scheduled_at_from': '2026-09-01',
+            'scheduled_at_to': '2026-09-30',
+        })
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual({item['id'] for item in response.data}, {first.id, second.id})
+        self.assertTrue(all(item['teacher_name'] for item in response.data))
+
     def payload(self, payment_amount='45000'):
         return {
             'subscription_type': 'AB-8',

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import api from '../api/axios.js';
 import { canDeleteDangerous, canManageSubscriptions, getStoredUser } from '../auth.js';
 import { Actions, Badge, CrudModal, Filters, Input, money, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
-import { useClientOptions, useLookup } from './lookupUtils.jsx';
+import { useClientOptions, useLookup, useStudyGroups } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateEndDateFromService, formatScheduleDays } from '../utils/subscriptionDates.js';
@@ -17,6 +17,7 @@ import PaymentSplitFields, { paymentPartsPayload } from '../components/finance/P
 
 const empty = {
   client: '',
+  group: '',
   title: '',
   start_date: '',
   end_date: '',
@@ -82,7 +83,8 @@ export default function SubscriptionsPage() {
   const crud = useCrudResource('subscriptions/', { status: '', client: '', service_type: '', date_from: '', date_to: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { options: paymentMethodOptions } = usePaymentMethods({ activeOnly: true });
-  const { clientOptions } = useClientOptions();
+  const { clients, clientOptions } = useClientOptions();
+  const { items: groups } = useStudyGroups();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
   const [addonCatalogItems, setAddonCatalogItems] = useState([]);
   const [paymentTouched, setPaymentTouched] = useState(false);
@@ -105,6 +107,11 @@ export default function SubscriptionsPage() {
   const currentDiscountAmount = calculateDiscountAmount(subtotalPrice, selectedDiscount);
   const currentTotalPrice = calculateDiscountedTotal(subtotalPrice, selectedDiscount);
   const hasService = Boolean(form.service);
+  const selectedClient = clients.find((client) => String(client.id) === String(form.client));
+  const selectedBranch = form.branch || selectedClient?.branch;
+  const groupOptions = groups
+    .filter((group) => group.status === 'active' && (!selectedBranch || String(group.branch) === String(selectedBranch)))
+    .map((group) => ({ value: String(group.id), label: group.name }));
   const selectedAddons = addonPayload(form.addons);
   const calculateEndDate = (startDate, service) => calculateEndDateFromService(startDate, service);
   const selectService = (value, current, update) => {
@@ -162,7 +169,7 @@ export default function SubscriptionsPage() {
     const currentHasAddons = addons.length > 0;
 
     if (!currentHasService && !currentHasAddons) {
-      notifyError('Выберите основную или дополнительную услугу.');
+      notifyError('Выберите основную услугу, товар или дополнительную услугу.');
       return;
     }
 
@@ -194,7 +201,7 @@ export default function SubscriptionsPage() {
       crud.setEditing(null);
       setPaymentTouched(false);
       await crud.reload();
-      notifySuccess('Дополнительные услуги проданы.');
+      notifySuccess('Продажа сохранена.');
     } catch (error) {
       showApiError(error);
     } finally {
@@ -202,15 +209,25 @@ export default function SubscriptionsPage() {
     }
   };
   const fields = [
-    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента' },
-    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions] },
+    { name: 'client', label: 'Клиент', type: 'client', options: clientOptions, placeholder: 'Выберите клиента', onChange: (value, current, update) => update({ ...current, client: value, group: '' }) },
+    { name: 'branch', label: 'Филиал', type: 'select', options: [{ value: '', label: 'Из клиента' }, ...branchOptions], onChange: (value, current, update) => update({ ...current, branch: value, group: '' }) },
     { name: 'service', label: 'Основная услуга', type: 'select', options: [{ value: '', label: 'Без основной услуги' }, ...serviceOptions], onChange: selectService },
+    ...(hasService && !form.id ? [{
+      name: 'group', label: 'Добавить в группу', type: 'select', options: [{ value: '', label: 'Не добавлять' }, ...groupOptions],
+      onChange: (value, current, update) => {
+        const group = groups.find((item) => String(item.id) === String(value));
+        update({ ...current, group: value, branch: current.branch || group?.branch || '' });
+      },
+    }] : []),
     {
       name: 'addons',
       type: 'custom',
       render: (current, update) => (
         <SubscriptionAddonsSelect
           value={current.addons}
+          categories={hasService ? ['addon'] : ['addon', 'product']}
+          title={hasService ? 'Дополнительные услуги' : 'Товары и дополнительные услуги'}
+          emptyText="Добавьте товары или дополнительные услуги в настройках."
           onCatalogItemsChange={setAddonCatalogItems}
           onChange={(value) => changeAddons(value, current, update)}
         />
@@ -315,7 +332,7 @@ export default function SubscriptionsPage() {
         { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setPaymentTouched(true); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => crud.remove(row.id)} /> },
       ]} />
       <CrudModal
-        title={hasService ? 'Добавить абонемент' : selectedAddons.length ? 'Продать дополнительные услуги' : 'Продажа услуги'}
+        title={hasService ? 'Добавить абонемент' : selectedAddons.length ? 'Продать товары и услуги' : 'Продажа товара или услуги'}
         open={crud.modalOpen}
         onClose={() => crud.setModalOpen(false)}
         fields={fields}

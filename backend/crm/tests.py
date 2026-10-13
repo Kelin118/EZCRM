@@ -703,6 +703,48 @@ class AddonSaleApiTests(APITestCase):
         data.update(overrides)
         return data
 
+    def test_product_stock_tracks_sales_and_rejects_overselling(self):
+        self.product.total_stock_quantity = 3
+        self.product.save(update_fields=('total_stock_quantity', 'updated_at'))
+        self.client.force_authenticate(self.manager)
+        first = self.client.post('/api/addon-sales/', self.payload(
+            items=[{'catalog_item': self.product.id, 'quantity': 2}],
+        ), format='json')
+        too_many = self.client.post('/api/addon-sales/', self.payload(
+            items=[{'catalog_item': self.product.id, 'quantity': 2}],
+        ), format='json')
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(too_many.status_code, 400)
+        self.assertEqual(AddonSaleItem.objects.filter(catalog_item=self.product).count(), 1)
+        catalog = self.client.get(f'/api/catalog-items/{self.product.id}/')
+        self.assertEqual(catalog.data['sold_quantity'], 2)
+        self.assertEqual(catalog.data['available_quantity'], 1)
+
+        changed = self.client.patch(f"/api/addon-sales/{first.data['id']}/", {
+            'items': [{'catalog_item': self.product.id, 'quantity': 3}],
+        }, format='json')
+        self.assertEqual(changed.status_code, 200, changed.data)
+        self.assertEqual(self.client.get(f'/api/catalog-items/{self.product.id}/').data['available_quantity'], 0)
+        rejected_update = self.client.patch(f"/api/addon-sales/{first.data['id']}/", {
+            'items': [{'catalog_item': self.product.id, 'quantity': 4}],
+        }, format='json')
+        self.assertEqual(rejected_update.status_code, 400)
+        self.assertEqual(AddonSaleItem.objects.get(sale_id=first.data['id']).quantity, 3)
+
+    def test_unpaid_product_sale_delete_returns_available_quantity(self):
+        self.product.total_stock_quantity = 2
+        self.product.save(update_fields=('total_stock_quantity', 'updated_at'))
+        self.client.force_authenticate(self.admin)
+        created = self.client.post('/api/addon-sales/', self.payload(
+            items=[{'catalog_item': self.product.id, 'quantity': 1}], payment_amount='0', payment_method=None,
+        ), format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        deleted = self.client.delete(f"/api/addon-sales/{created.data['id']}/")
+        self.assertEqual(deleted.status_code, 204)
+        catalog = self.client.get(f'/api/catalog-items/{self.product.id}/')
+        self.assertEqual(catalog.data['sold_quantity'], 0)
+        self.assertEqual(catalog.data['available_quantity'], 2)
+
     def test_can_sell_one_addon_without_subscription(self):
         self.client.force_authenticate(self.manager)
 
@@ -1533,6 +1575,49 @@ class CatalogItemApiTests(APITestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['schedule_days'], [])
         self.assertEqual(response.data['category_display'], 'Товары')
+
+    def test_product_quantity_cannot_drop_below_units_sold(self):
+        branch = Branch.objects.create(name='Catalog stock branch')
+        client = Client.objects.create(first_name='Buyer', branch=branch)
+        self.client.force_authenticate(self.admin)
+        product = self.client.post('/api/catalog-items/', {
+            'name': 'Stock book', 'price': '1000.00', 'category': 'product', 'total_stock_quantity': 4,
+        }, format='json')
+        self.assertEqual(product.status_code, 201, product.data)
+        sale = self.client.post('/api/addon-sales/', {
+            'client': client.id, 'branch': branch.id, 'payment_amount': '0',
+            'items': [{'catalog_item': product.data['id'], 'quantity': 2}],
+        }, format='json')
+        self.assertEqual(sale.status_code, 201, sale.data)
+
+        too_low = self.client.patch(f"/api/catalog-items/{product.data['id']}/", {
+            'total_stock_quantity': 1,
+        }, format='json')
+        self.assertEqual(too_low.status_code, 400)
+        self.assertIn('total_stock_quantity', too_low.data)
+        catalog = self.client.get('/api/catalog-items/', {'category': 'product'})
+        item = next(row for row in catalog.data if row['id'] == product.data['id'])
+        self.assertEqual(item['total_stock_quantity'], 4)
+        self.assertEqual(item['sold_quantity'], 2)
+        self.assertEqual(item['available_quantity'], 2)
+
+    def test_existing_product_without_quantity_keeps_untracked_stock(self):
+        branch = Branch.objects.create(name='Legacy product branch')
+        client = Client.objects.create(first_name='Legacy buyer', branch=branch)
+        self.client.force_authenticate(self.admin)
+        product = self.client.post('/api/catalog-items/', {
+            'name': 'Legacy workbook', 'price': '1000.00', 'category': 'product',
+        }, format='json')
+        self.assertEqual(product.status_code, 201, product.data)
+        sale = self.client.post('/api/addon-sales/', {
+            'client': client.id, 'branch': branch.id, 'payment_amount': '0',
+            'items': [{'catalog_item': product.data['id'], 'quantity': 2}],
+        }, format='json')
+        self.assertEqual(sale.status_code, 201, sale.data)
+        catalog = self.client.get(f"/api/catalog-items/{product.data['id']}/").data
+        self.assertIsNone(catalog['total_stock_quantity'])
+        self.assertEqual(catalog['sold_quantity'], 2)
+        self.assertIsNone(catalog['available_quantity'])
 
     def test_admin_can_create_product(self):
         response = self.create_item(category='product', name='Учебник', price='3500.00')
@@ -3285,6 +3370,50 @@ class GroupScheduleTests(APITestCase):
         }
         payload.update(overrides)
         return payload
+
+    def test_subscription_creation_can_add_client_to_group_once(self):
+        branch = Branch.objects.create(name='Enrollment branch')
+        client = Client.objects.create(first_name='Enrolled child', branch=branch)
+        group = StudyGroup.objects.create(name='Enrollment group', branch=branch, status=StudyGroup.Status.ACTIVE)
+        payload = {
+            'client': client.id, 'branch': branch.id, 'group': group.id,
+            'title': 'Course', 'start_date': '2026-10-13', 'price': '0',
+        }
+
+        first = self.client.post('/api/subscriptions/', payload, format='json')
+        second = self.client.post('/api/subscriptions/', payload, format='json')
+
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(GroupMembership.objects.filter(group=group, client=client, status='active').count(), 1)
+
+    def test_subscription_rejects_group_from_another_branch(self):
+        branch = Branch.objects.create(name='Subscription branch')
+        other = Branch.objects.create(name='Other enrollment branch')
+        client = Client.objects.create(first_name='Wrong branch child', branch=branch)
+        group = StudyGroup.objects.create(name='Wrong branch group', branch=other)
+
+        response = self.client.post('/api/subscriptions/', {
+            'client': client.id, 'branch': branch.id, 'group': group.id,
+            'title': 'Course', 'start_date': '2026-10-13', 'price': '0',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('group', response.data)
+        self.assertFalse(Subscription.objects.filter(client=client).exists())
+        self.assertFalse(GroupMembership.objects.filter(client=client).exists())
+
+    def test_failed_subscription_payment_does_not_enroll_client(self):
+        branch = Branch.objects.create(name='Atomic enrollment branch')
+        client = Client.objects.create(first_name='Unpaid child', branch=branch)
+        group = StudyGroup.objects.create(name='Atomic enrollment group', branch=branch)
+        response = self.client.post('/api/subscriptions/', {
+            'client': client.id, 'branch': branch.id, 'group': group.id,
+            'title': 'Course', 'start_date': '2026-10-13', 'price': '1000', 'paid_amount': '1000',
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Subscription.objects.filter(client=client).exists())
+        self.assertFalse(GroupMembership.objects.filter(client=client).exists())
 
     def test_can_create_group_with_schedule(self):
         response = self.client.post('/api/study-groups/', self.group_payload(), format='json')

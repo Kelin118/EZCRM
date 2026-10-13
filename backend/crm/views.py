@@ -56,6 +56,7 @@ from .group_schedule import sync_group_schedule_slots
 from .payment_parts import payment_parts_audit, sync_finance_payment_parts, update_finance_payment_parts, validate_payment_parts
 from .models import (
     AddonSale,
+    AddonSaleItem,
     AuditLog,
     Branch,
     BusinessMediaAsset,
@@ -938,6 +939,30 @@ class RoomViewSet(EducationBaseViewSet):
         return queryset.order_by('name')
 
 
+def _activate_group_membership(group, client, *, note=None):
+    StudyGroup.objects.select_for_update().get(pk=group.pk)
+    memberships = GroupMembership.objects.select_for_update().filter(group=group, client=client)
+    active = memberships.filter(status=GroupMembership.Status.ACTIVE).first()
+    if active:
+        return active, False, True
+    membership = memberships.order_by('-created_at').first()
+    if membership:
+        membership.status = GroupMembership.Status.ACTIVE
+        membership.left_at = None
+        if note is not None:
+            membership.note = note
+        membership.save(update_fields=('status', 'left_at', 'note', 'updated_at'))
+        return membership, False, False
+    membership = GroupMembership.objects.create(
+        group=group,
+        client=client,
+        status=GroupMembership.Status.ACTIVE,
+        note=note or '',
+        joined_at=timezone.localdate(),
+    )
+    return membership, True, False
+
+
 class StudyGroupViewSet(EducationBaseViewSet):
     queryset = StudyGroup.objects.select_related('subject', 'room', 'teacher', 'manager').prefetch_related('memberships__client').all()
     serializer_class = StudyGroupSerializer
@@ -1057,27 +1082,11 @@ class StudyGroupViewSet(EducationBaseViewSet):
             return Response({'detail': 'Выберите ученика.'}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            memberships = GroupMembership.objects.select_for_update().filter(group=group, client=client)
-            active = memberships.filter(status=GroupMembership.Status.ACTIVE).first()
-            if active:
-                return self._membership_response(active, status.HTTP_400_BAD_REQUEST)
-            membership = memberships.order_by('-created_at').first()
-            created = False
-            if membership:
-                membership.status = GroupMembership.Status.ACTIVE
-                membership.left_at = None
-                if request.data.get('note') is not None:
-                    membership.note = request.data.get('note') or ''
-                membership.save(update_fields=('status', 'left_at', 'note', 'updated_at'))
-            else:
-                membership = GroupMembership.objects.create(
-                    group=group,
-                    client=client,
-                    status=GroupMembership.Status.ACTIVE,
-                    note=request.data.get('note') or '',
-                    joined_at=timezone.localdate(),
-                )
-                created = True
+            membership, created, already_active = _activate_group_membership(
+                group, client, note=request.data.get('note'),
+            )
+            if already_active:
+                return self._membership_response(membership, status.HTTP_400_BAD_REQUEST)
 
         log_action(
             request,
@@ -2102,7 +2111,20 @@ class SubscriptionViewSet(BaseAuthenticatedViewSet):
 
     def perform_create(self, serializer):
         with transaction.atomic():
+            group = serializer.validated_data.pop('group', None)
             subscription = serializer.save()
+            if group:
+                membership, created, already_active = _activate_group_membership(group, subscription.client)
+                if not already_active:
+                    log_action(
+                        self.request,
+                        AuditLog.Action.GROUP_MEMBER_ADD if created else AuditLog.Action.GROUP_MEMBER_RESTORE,
+                        'GroupMembership',
+                        entity_id=membership.id,
+                        entity_name=str(membership),
+                        description='Ученик добавлен в группу при создании абонемента' if created else 'Ученик возвращён в группу при создании абонемента',
+                        changes={'group': group.name, 'client': str(subscription.client), 'subscription': subscription.pk},
+                    )
             if subscription.paid_amount > 0 and not subscription.finance_transaction_id:
                 payment_method = getattr(subscription, 'selected_payment_method', None)
                 payment_parts = getattr(subscription, 'selected_payment_parts', None)
@@ -4358,6 +4380,31 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
             return 'product'
         return 'addon'
 
+    def _check_product_stock(self, serializer, *, sale=None):
+        items = serializer.validated_data.get('items')
+        if items is None:
+            return
+        requested = {item['catalog_item'].pk: item['quantity'] for item in items}
+        catalog_items = list(CatalogItem.objects.select_for_update().filter(pk__in=requested).order_by('pk'))
+        if len(catalog_items) != len(requested) or any(
+            item.category not in {CatalogItem.Category.ADDON, CatalogItem.Category.PRODUCT} or not item.is_active
+            for item in catalog_items
+        ):
+            raise drf_serializers.ValidationError({'items': 'Одна из позиций больше не доступна для продажи.'})
+        product_ids = [item.pk for item in catalog_items if item.category == CatalogItem.Category.PRODUCT]
+        if not product_ids:
+            return
+        sold_query = AddonSaleItem.objects.filter(catalog_item_id__in=product_ids)
+        if sale:
+            sold_query = sold_query.exclude(sale_id=sale.pk)
+        sold = dict(sold_query.values('catalog_item_id').annotate(total=Sum('quantity')).values_list('catalog_item_id', 'total'))
+        for product in catalog_items:
+            if product.pk not in product_ids:
+                continue
+            if product.total_stock_quantity is not None and sold.get(product.pk, 0) + requested[product.pk] > product.total_stock_quantity:
+                available = max(product.total_stock_quantity - sold.get(product.pk, 0), 0)
+                raise drf_serializers.ValidationError({'items': f'Недостаточно товара «{product.name}». Доступно: {available}.'})
+
     def _sale_comment(self, sale):
         names = [f'{item.name} ?{item.quantity}' for item in sale.items.all()]
         details = ', '.join(names)
@@ -4398,6 +4445,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
 
     def perform_create(self, serializer):
         with transaction.atomic():
+            self._check_product_stock(serializer)
             sale = serializer.save(created_by=self.request.user)
             if sale.payment_amount and sale.payment_amount > 0:
                 finance_transaction = _create_income_transaction(
@@ -4422,6 +4470,7 @@ class AddonSaleViewSet(BaseAuthenticatedViewSet):
 
     def perform_update(self, serializer):
         with transaction.atomic():
+            self._check_product_stock(serializer, sale=serializer.instance)
             sale = serializer.save()
             finance_transaction = sale.finance_transaction
             if sale.payment_amount and sale.payment_amount > 0:
@@ -5811,7 +5860,7 @@ class StudioSettingsViewSet(BaseAuthenticatedViewSet):
 
 class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
     permission_classes = (IsAuthenticated, CatalogItemPermission)
-    queryset = CatalogItem.objects.prefetch_related('images__asset').all()
+    queryset = CatalogItem.objects.prefetch_related('images__asset').annotate(_sold_quantity=Sum('addon_sale_items__quantity')).all()
     serializer_class = CatalogItemSerializer
     audit_entity_type = 'CatalogItem'
     delete_audit_description = 'Удалена позиция справочника цен'
@@ -5842,6 +5891,7 @@ class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
             'category': instance.category,
             'service_type': instance.service_type,
             'owner_name': instance.owner_name,
+            'total_stock_quantity': instance.total_stock_quantity,
             'is_active': instance.is_active,
             'lessons_count': instance.lessons_count,
             'validity_days': instance.validity_days,
@@ -5858,8 +5908,21 @@ class CatalogItemViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
         )
 
     def perform_update(self, serializer):
-        was_active = serializer.instance.is_active
-        instance = serializer.save()
+        with transaction.atomic():
+            locked = CatalogItem.objects.select_for_update().get(pk=serializer.instance.pk)
+            serializer.instance = locked
+            category = serializer.validated_data.get('category', locked.category)
+            stock = serializer.validated_data.get('total_stock_quantity', locked.total_stock_quantity)
+            sold = locked.addon_sale_items.aggregate(total=Sum('quantity'))['total'] or 0
+            if locked.category == CatalogItem.Category.PRODUCT and category != CatalogItem.Category.PRODUCT and sold:
+                raise drf_serializers.ValidationError({'category': 'Нельзя сменить категорию товара с историей продаж.'})
+            if category == CatalogItem.Category.PRODUCT:
+                if locked.total_stock_quantity is not None and stock is None:
+                    raise drf_serializers.ValidationError({'total_stock_quantity': 'Учет количества нельзя отключить для этого товара.'})
+                if stock is not None and stock < sold:
+                    raise drf_serializers.ValidationError({'total_stock_quantity': f'Количество не может быть меньше проданного: {sold}.'})
+            was_active = locked.is_active
+            instance = serializer.save()
         action_value = AuditLog.Action.CATALOG_ITEM_UPDATE
         description = 'Изменена позиция справочника цен'
         if was_active and not instance.is_active:

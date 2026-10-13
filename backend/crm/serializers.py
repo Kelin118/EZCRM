@@ -714,6 +714,10 @@ class AddonSaleSerializer(BranchNameMixin, serializers.ModelSerializer):
 
 
 class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
+    group = serializers.PrimaryKeyRelatedField(
+        queryset=StudyGroup.objects.filter(status=StudyGroup.Status.ACTIVE),
+        write_only=True, required=False, allow_null=True,
+    )
     client_name = serializers.SerializerMethodField()
     client_phone = serializers.SerializerMethodField()
     lessons_total = serializers.IntegerField(source='total_visits', read_only=True)
@@ -841,6 +845,12 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         branch = resolve_optional_branch(attrs, self.instance, client=client)
         if not client:
             raise serializers.ValidationError({'client': 'Укажите клиента.'})
+        group = attrs.get('group')
+        if group:
+            if self.instance:
+                raise serializers.ValidationError({'group': 'Добавление в группу доступно при создании абонемента.'})
+            if not branch or not group.branch_id or group.branch_id != branch.pk:
+                raise serializers.ValidationError({'group': 'Выберите группу того же филиала, что и абонемент.'})
         if branch:
             attrs['branch'] = branch
         discount = attrs.get('discount', self.instance.discount if self.instance else None)
@@ -893,6 +903,8 @@ class SubscriptionSerializer(BranchNameMixin, serializers.ModelSerializer):
         return subscription
 
     def _subscription_group(self, attrs):
+        if attrs.get('group'):
+            return attrs['group']
         if self.instance:
             return subscription_group(self.instance)
         client = attrs.get('client')
@@ -2525,6 +2537,8 @@ class CatalogItemSerializer(serializers.ModelSerializer):
     service_type_display = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     primary_image_url = serializers.SerializerMethodField()
+    sold_quantity = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = CatalogItem
@@ -2543,9 +2557,25 @@ class CatalogItemSerializer(serializers.ModelSerializer):
             attrs['service_type'] = CatalogItem.ServiceType.COURSE
         if category != CatalogItem.Category.PRODUCT:
             attrs['owner_name'] = ''
+            attrs['total_stock_quantity'] = None
         elif 'owner_name' in attrs:
             attrs['owner_name'] = str(attrs.get('owner_name') or '').strip()
         return attrs
+
+    def _sold_quantity(self, obj):
+        cached = getattr(obj, '_sold_quantity', None)
+        if cached is None:
+            cached = obj.addon_sale_items.aggregate(total=Sum('quantity'))['total'] or 0
+            obj._sold_quantity = cached
+        return cached
+
+    def get_sold_quantity(self, obj):
+        return self._sold_quantity(obj) if obj.category == CatalogItem.Category.PRODUCT else 0
+
+    def get_available_quantity(self, obj):
+        if obj.category != CatalogItem.Category.PRODUCT or obj.total_stock_quantity is None:
+            return None
+        return obj.total_stock_quantity - self._sold_quantity(obj)
 
     def create(self, validated_data):
         if 'sort_order' not in getattr(self, 'initial_data', {}):

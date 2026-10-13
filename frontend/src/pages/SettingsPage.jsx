@@ -35,6 +35,7 @@ const emptyCatalogForm = {
   schedule_days: [],
   service_type: 'course',
   owner_name: '',
+  total_stock_quantity: '',
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
@@ -465,7 +466,7 @@ export default function SettingsPage() {
     setCatalogModal({ open: true, category, item });
     setCatalogForm(
       item
-        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], service_type: item.service_type || 'course', owner_name: item.owner_name || '', is_active: item.is_active ?? true }
+        ? { name: item.name ?? '', price: item.price ?? '', lessons_count: item.lessons_count ?? '', validity_days: item.validity_days ?? '', schedule_days: Array.isArray(item.schedule_days) ? [...item.schedule_days] : [], service_type: item.service_type || 'course', owner_name: item.owner_name || '', total_stock_quantity: item.total_stock_quantity ?? '', is_active: item.is_active ?? true }
         : { ...emptyCatalogForm },
     );
   };
@@ -501,6 +502,10 @@ export default function SettingsPage() {
       setCatalogError('Цена не может быть меньше 0.');
       return;
     }
+    if (catalogModal.category === 'product' && catalogForm.total_stock_quantity !== '' && (!Number.isSafeInteger(Number(catalogForm.total_stock_quantity)) || Number(catalogForm.total_stock_quantity) < 0)) {
+      setCatalogError('Укажите целое неотрицательное количество товара.');
+      return;
+    }
 
     setCatalogSaving(true);
     setCatalogError('');
@@ -510,6 +515,7 @@ export default function SettingsPage() {
       category: catalogModal.category,
       is_active: catalogForm.is_active,
       owner_name: catalogModal.category === 'product' ? (catalogForm.owner_name || '').trim() : '',
+      total_stock_quantity: catalogModal.category === 'product' && catalogForm.total_stock_quantity !== '' ? Number(catalogForm.total_stock_quantity) : null,
       service_type: catalogModal.category === 'service' ? catalogForm.service_type : 'course',
       lessons_count: catalogModal.category === 'service' && catalogForm.lessons_count !== '' ? Number(catalogForm.lessons_count) : null,
       validity_days: catalogModal.category === 'service' && catalogForm.validity_days !== '' ? Number(catalogForm.validity_days) : null,
@@ -1053,6 +1059,9 @@ export default function SettingsPage() {
           {catalogModal.category === 'product' && (
             <Input label="Чей товар" placeholder="Например: ArtHub, Аружан, Компания" value={catalogForm.owner_name || ''} onChange={(event) => setCatalogForm({ ...catalogForm, owner_name: event.target.value })} />
           )}
+          {catalogModal.category === 'product' && (
+            <Input label="Всего товара, шт." type="number" min="0" step="1" value={catalogForm.total_stock_quantity} onChange={(event) => setCatalogForm({ ...catalogForm, total_stock_quantity: event.target.value })} />
+          )}
           {catalogModal.category === 'product' && catalogModal.item?.id && (
             <div className="grid gap-3 md:col-span-2">
               <Input label="Фото товара" type="file" accept="image/jpeg,image/png,image/webp" onChange={uploadCatalogImage} />
@@ -1225,7 +1234,7 @@ function SettingsCard({ id, icon: Icon, title, subtitle, action, children }) {
 function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd, onEdit, onToggle, onDelete }) {
   const Icon = section.icon;
   const isProduct = section.category === 'product';
-  const emptyColSpan = section.category === 'service' ? 8 : isProduct ? 5 : 4;
+  const emptyColSpan = section.category === 'service' ? 8 : isProduct ? 8 : 4;
 
   return (
     <section id={id} className="scroll-mt-24 rounded-[24px] border border-slate-100 bg-white p-5 shadow-card sm:p-6">
@@ -1254,6 +1263,9 @@ function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Наименование</th>
               <th className="border-b border-slate-100 px-4 py-3 font-bold">Цена</th>
               {isProduct && <th className="border-b border-slate-100 px-4 py-3 font-bold">Чей товар</th>}
+              {isProduct && <th className="border-b border-slate-100 px-4 py-3 font-bold">Всего</th>}
+              {isProduct && <th className="border-b border-slate-100 px-4 py-3 font-bold">Продано</th>}
+              {isProduct && <th className="border-b border-slate-100 px-4 py-3 font-bold">Осталось</th>}
               {section.category === 'service' && (
                 <>
                   <th className="border-b border-slate-100 px-4 py-3 font-bold">Тип услуги</th>
@@ -1293,6 +1305,9 @@ function CatalogSection({ id, section, items, loading, canEdit, canDelete, onAdd
                   {isProduct && (
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.owner_name || '—'}</td>
                   )}
+                  {isProduct && <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.total_stock_quantity ?? 'Не задано'}</td>}
+                  {isProduct && <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.sold_quantity ?? 0}</td>}
+                  {isProduct && <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.available_quantity ?? '—'}</td>}
                   {section.category === 'service' && (
                     <>
                       <td className="border-b border-slate-100 px-4 py-3 text-slate-700">{item.service_type === 'camp' ? 'Лагерь' : 'Основной курс'}</td>

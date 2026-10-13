@@ -93,18 +93,19 @@ export default function SubscriptionAddonsSelect({
                 </div>
               ) : group.items.map((item) => {
                 const checked = selectedIds.has(String(item.id));
+                const outOfStock = item.category === 'product' && item.available_quantity === 0;
                 return (
                   <div key={item.id} className={`rounded-2xl border px-4 py-3 ${checked ? 'border-brand bg-brand/5' : 'border-slate-200 bg-white'}`}>
                     <label className="flex items-center justify-between gap-3 text-sm font-bold text-slate-800">
                       <span className="flex items-center gap-3">
-                        <input type="checkbox" checked={checked} onChange={() => toggle(item)} className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand" />
+                        <input type="checkbox" checked={checked} disabled={!checked && outOfStock} onChange={() => toggle(item)} className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand" />
                         {item.name}
                       </span>
-                      <span className="text-slate-500">{money(item.price)}</span>
+                      <span className="text-right text-slate-500">{money(item.price)}{item.category === 'product' && item.available_quantity !== null && <span className="block text-xs">Осталось: {item.available_quantity}</span>}</span>
                     </label>
                     {checked && (
                       <div className="mt-3 max-w-40">
-                        <Input label="Количество" type="number" min="1" value={quantityFor(item)} onChange={(event) => changeQuantity(item, event.target.value)} />
+                        <Input label="Количество" type="number" min="1" max={item.category === 'product' ? item.available_quantity ?? undefined : undefined} value={quantityFor(item)} onChange={(event) => changeQuantity(item, event.target.value)} />
                       </div>
                     )}
                   </div>

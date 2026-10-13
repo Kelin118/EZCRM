@@ -1565,6 +1565,7 @@ class CatalogItem(TimeStampedModel):
     category = models.CharField(max_length=30, choices=Category.choices)
     service_type = models.CharField(max_length=20, choices=ServiceType.choices, default=ServiceType.COURSE)
     owner_name = models.CharField(max_length=150, blank=True, default='')
+    total_stock_quantity = models.PositiveIntegerField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0, blank=True)
 

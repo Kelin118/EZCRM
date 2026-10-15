@@ -1472,6 +1472,12 @@ class ScheduleSlotViewSet(EducationBaseViewSet):
         return Response({'lesson': LessonSerializer(lesson).data, 'created': created})
 
 
+class AttendancePeriodQuerySerializer(drf_serializers.Serializer):
+    group = drf_serializers.IntegerField(min_value=1)
+    date_from = drf_serializers.DateField()
+    date_to = drf_serializers.DateField()
+
+
 class LessonViewSet(EducationBaseViewSet):
     queryset = Lesson.objects.select_related('group', 'schedule_slot', 'subject', 'teacher', 'room').prefetch_related('visits').all()
     serializer_class = LessonSerializer
@@ -1518,6 +1524,116 @@ class LessonViewSet(EducationBaseViewSet):
                 | Q(subject__name__icontains=search)
             )
         return queryset.order_by('-lesson_date', 'start_time')
+
+    @action(detail=False, methods=['get'], url_path='attendance-period')
+    def attendance_period(self, request):
+        query = AttendancePeriodQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        group_id = query.validated_data['group']
+        date_from = query.validated_data['date_from']
+        date_to = query.validated_data['date_to']
+        if date_to < date_from or (date_to - date_from).days >= 366:
+            raise drf_serializers.ValidationError({'date_to': 'Укажите период не длиннее 366 дней.'})
+
+        groups = _filter_branch(StudyGroup.objects.all(), request)
+        if has_role(request.user, TEACHER) and not has_any_role(request.user, {MANAGER, ACCOUNTANT}):
+            groups = groups.filter(teacher=request.user)
+        group = get_object_or_404(groups, pk=group_id)
+        lessons = list(
+            self.get_queryset()
+            .filter(group=group, lesson_date__range=(date_from, date_to))
+            .exclude(status=Lesson.Status.CANCELLED)
+            .order_by('lesson_date', 'start_time', 'pk')
+            .values('id', 'lesson_date', 'start_time', 'end_time', 'status')
+        )
+        lesson_ids = [lesson['id'] for lesson in lessons]
+        memberships = GroupMembership.objects.filter(group=group).select_related('client')
+        members = {}
+        clients = {}
+        for membership in memberships:
+            if membership.joined_at and membership.joined_at > date_to:
+                continue
+            if membership.left_at and membership.left_at < date_from:
+                continue
+            members.setdefault(membership.client_id, []).append(membership)
+            clients[membership.client_id] = membership.client
+
+        visits = {}
+        for visit in (
+            Visit.objects.filter(lesson_id__in=lesson_ids)
+            .select_related('client')
+            .order_by('client_id', 'lesson_id', '-created_at', '-pk')
+        ):
+            visits.setdefault((visit.client_id, visit.lesson_id), visit)
+            clients[visit.client_id] = visit.client
+
+        subscriptions = {}
+        for subscription in (
+            Subscription.objects.filter(client_id__in=clients, status=Subscription.Status.ACTIVE)
+            .order_by('client_id', '-start_date', '-pk')
+            .values('client_id', 'title', 'remaining_visits')
+        ):
+            subscriptions.setdefault(subscription['client_id'], subscription)
+
+        students = []
+        for client_id, client in sorted(clients.items(), key=lambda item: (str(item[1]).casefold(), item[0])):
+            client_memberships = members.get(client_id, [])
+            current_member = any(item.status == GroupMembership.Status.ACTIVE for item in client_memberships)
+            totals = {'attended': 0, 'sick': 0, 'missed': 0, 'unmarked': 0, 'deducted': 0}
+            cells = []
+            for lesson in lessons:
+                visit = visits.get((client_id, lesson['id']))
+                lesson_date = lesson['lesson_date']
+                eligible = bool(visit) or any(
+                    (not item.joined_at or item.joined_at <= lesson_date)
+                    and (not item.left_at or lesson_date <= item.left_at)
+                    and (item.status != GroupMembership.Status.LEFT or item.left_at is not None)
+                    for item in client_memberships
+                )
+                status_value = visit.status if visit else None
+                if eligible:
+                    if status_value in (Visit.Status.ATTENDED, Visit.Status.MAKEUP, Visit.Status.TRIAL):
+                        totals['attended'] += 1
+                    elif status_value == Visit.Status.SICK:
+                        totals['sick'] += 1
+                    elif status_value == Visit.Status.MISSED:
+                        totals['missed'] += 1
+                    elif status_value in (None, Visit.Status.PLANNED):
+                        totals['unmarked'] += 1
+                    if visit and visit.lesson_deducted:
+                        totals['deducted'] += 1
+                cells.append({
+                    'status': status_value,
+                    'eligible': eligible,
+                    'deducted': visit.lesson_deducted if visit else False,
+                })
+            subscription = subscriptions.get(client_id)
+            students.append({
+                'client': client_id,
+                'client_name': str(client),
+                'current_member': current_member,
+                'subscription_title': subscription['title'] if subscription else '',
+                'remaining_lessons': subscription['remaining_visits'] if subscription else None,
+                'cells': cells,
+                'totals': totals,
+            })
+
+        return Response({
+            'group': {'id': group.id, 'name': group.name},
+            'date_from': str(date_from),
+            'date_to': str(date_to),
+            'lessons': [
+                {
+                    'id': lesson['id'],
+                    'date': str(lesson['lesson_date']),
+                    'start_time': lesson['start_time'].strftime('%H:%M'),
+                    'end_time': lesson['end_time'].strftime('%H:%M'),
+                    'status': lesson['status'],
+                }
+                for lesson in lessons
+            ],
+            'students': students,
+        })
 
     def _attendance_payload(self, lesson):
         memberships = GroupMembership.objects.select_related('client').filter(

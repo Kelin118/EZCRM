@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
-import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
+import { BUSINESS_TIME_ZONE, businessMonthRange, todayLocalDate } from '../utils/dateTime.js';
 import { canDeleteDangerous, canManageVisits, getStoredUser, hasAnyRole, ROLES } from '../auth.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import DiscountSelect from '../components/sales/DiscountSelect.jsx';
 import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../components/subscriptions/SubscriptionAddonsSelect.jsx';
+import AttendancePeriod from '../components/visits/AttendancePeriod.jsx';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
 import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
@@ -64,6 +65,7 @@ const journalStatusOptions = [
 
 const modeOptions = [
   { value: 'journal', label: 'Табель' },
+  { value: 'period', label: 'За период' },
   { value: 'classic', label: 'Классический' },
 ];
 
@@ -139,6 +141,8 @@ export default function VisitsPage() {
   const canAddStudent = hasAnyRole(user, [ROLES.ADMIN, ROLES.MANAGER]);
   const canDelete = canDeleteDangerous(user);
   const [mode, setMode] = useState('journal');
+  const [periodGroup, setPeriodGroup] = useState(initialGroup);
+  const [periodRange, setPeriodRange] = useState(() => businessMonthRange(todayLocalDate()));
   const [selectedDate, setSelectedDate] = useState(isoDate(new Date()));
   const [lessons, setLessons] = useState([]);
   const [lessonsLoading, setLessonsLoading] = useState(false);
@@ -244,6 +248,16 @@ export default function VisitsPage() {
     } catch (error) {
       showApiError(error);
     }
+  };
+
+  const openPeriodLesson = async (lesson, groupId) => {
+    setSelectedLesson(null);
+    setAttendanceRows([]);
+    setInitialRows([]);
+    setSelectedDate(lesson.date);
+    setLessonFilters((current) => ({ ...current, group: String(groupId) }));
+    setMode('journal');
+    await loadAttendance({ id: lesson.id });
   };
 
   useEffect(() => {
@@ -449,7 +463,7 @@ export default function VisitsPage() {
       <PageHeader title="Журнал учёта посещений">
         <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
           {modeOptions.map((item) => (
-            <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => setMode(item.value)}>
+            <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => { if (item.value === 'period' && lessonFilters.group) setPeriodGroup(lessonFilters.group); setMode(item.value); }}>
               {item.label}
             </button>
           ))}
@@ -566,6 +580,8 @@ export default function VisitsPage() {
             </section>
           </div>
         </>
+      ) : mode === 'period' ? (
+        <AttendancePeriod groupOptions={groupOptions} group={periodGroup} onGroupChange={setPeriodGroup} range={periodRange} onRangeChange={setPeriodRange} onOpenLesson={openPeriodLesson} />
       ) : (
         <ClassicVisits
           crud={historyCrud}

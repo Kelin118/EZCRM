@@ -1,4 +1,4 @@
-import { AlertCircle, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserX } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserMinus, UserX } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
@@ -12,7 +12,7 @@ import SubscriptionAddonsSelect, { addonPayload, addonsTotal } from '../componen
 import AttendancePeriod from '../components/visits/AttendancePeriod.jsx';
 import Button from '../components/ui/Button.jsx';
 import Modal from '../components/ui/Modal.jsx';
-import { Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
+import { ActionButton, Actions, Badge, Filters, Input, PageHeader, SelectField, showApiError, Table, useCrudResource } from './pageUtils.jsx';
 import { useClientOptions, useEmployeeOptions, useLookup, useStudyGroupOptions } from './lookupUtils.jsx';
 import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
@@ -164,6 +164,8 @@ export default function VisitsPage() {
   const [activeStudentSubscription, setActiveStudentSubscription] = useState(null);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [addingStudent, setAddingStudent] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState(null);
+  const [removingMember, setRemovingMember] = useState(false);
 
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
@@ -348,6 +350,22 @@ export default function VisitsPage() {
     setPaymentTouched(false);
     setActiveStudentSubscription(null);
     setStudentModalOpen(true);
+  };
+
+  const removeStudentFromGroup = async () => {
+    if (!memberToRemove || !selectedLesson?.group || !canAddStudent || dirtyRows.length || removingMember) return;
+    setRemovingMember(true);
+    try {
+      await api.post(`study-groups/${selectedLesson.group}/remove-member/`, { client: memberToRemove.client });
+      setMemberToRemove(null);
+      await loadAttendance(selectedLesson);
+      await loadLessons();
+      dispatchToast('Ученик убран из группы. История посещений сохранена.');
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setRemovingMember(false);
+    }
   };
 
   const loadActiveSubscription = async (clientId) => {
@@ -571,6 +589,10 @@ export default function VisitsPage() {
                   dirtyCount={dirtyRows.length}
                   saving={savingAttendance}
                   canEdit={canEdit}
+                  canRemoveMember={canAddStudent && Boolean(selectedLesson?.group)}
+                  removeDisabled={Boolean(dirtyRows.length) || attendanceLoading || savingAttendance || removingMember}
+                  hasUnsavedChanges={Boolean(dirtyRows.length)}
+                  onRemoveMember={setMemberToRemove}
                   onSetRow={setRow}
                   onSetAll={setAllStatuses}
                   onReset={resetChanges}
@@ -602,6 +624,23 @@ export default function VisitsPage() {
         onSave={saveManualVisit}
         clientOptions={clientOptions}
       />
+      <Modal
+        title="Убрать ученика из группы?"
+        open={Boolean(memberToRemove)}
+        onClose={() => { if (!removingMember) setMemberToRemove(null); }}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setMemberToRemove(null)} disabled={removingMember}>Отмена</Button>
+            <Button variant="danger" onClick={removeStudentFromGroup} disabled={removingMember}>
+              {removingMember ? 'Удаление...' : 'Убрать из группы'}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm font-semibold text-slate-700">
+          {memberToRemove?.client_name || 'Ученик'} больше не будет в активном составе группы. Карточка, абонемент и история посещений сохранятся.
+        </p>
+      </Modal>
       <AddStudentModal
         open={studentModalOpen}
         form={studentForm}
@@ -634,7 +673,7 @@ export default function VisitsPage() {
 }
 
 function AttendanceJournal({
-  rows, loading, dirtyCount, saving, canEdit, onSetRow, onSetAll, onReset, onSave,
+  rows, loading, dirtyCount, saving, canEdit, canRemoveMember, removeDisabled, hasUnsavedChanges, onRemoveMember, onSetRow, onSetAll, onReset, onSave,
 }) {
   return (
     <div>
@@ -673,8 +712,13 @@ function AttendanceJournal({
                   <tr key={row.client} className={row.dirty ? 'bg-amber-50/40' : ''}>
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-500">{index + 1}</td>
                     <td className="border-b border-slate-100 px-4 py-3">
-                      <p className="font-bold text-slate-900">{row.client_name}</p>
-                      <p className="text-xs text-slate-500">{[row.client_parent_name, row.client_phone].filter(Boolean).join(' · ')}</p>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-900">{row.client_name}</p>
+                          <p className="text-xs text-slate-500">{[row.client_parent_name, row.client_phone].filter(Boolean).join(' · ')}</p>
+                        </div>
+                        {canRemoveMember && <ActionButton icon={UserMinus} label={`Убрать ${row.client_name} из группы`} variant="danger" disabled={removeDisabled} className="disabled:cursor-not-allowed disabled:opacity-50" title={hasUnsavedChanges ? 'Сначала сохраните или очистите изменения табеля' : `Убрать ${row.client_name} из группы`} onClick={() => onRemoveMember(row)} />}
+                      </div>
                     </td>
                     <td className="border-b border-slate-100 px-4 py-3">{row.subscription_title || 'Без абонемента'}</td>
                     <td className="border-b border-slate-100 px-4 py-3 font-bold text-slate-900">{row.remaining_lessons ?? '-'}</td>
@@ -695,7 +739,10 @@ function AttendanceJournal({
               <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center font-semibold text-slate-500">Ученики не найдены</div>
             ) : rows.map((row) => (
               <div key={row.client} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-                <p className="font-bold text-slate-900">{row.client_name}</p>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 font-bold text-slate-900">{row.client_name}</p>
+                  {canRemoveMember && <ActionButton icon={UserMinus} label={`Убрать ${row.client_name} из группы`} variant="danger" disabled={removeDisabled} className="disabled:cursor-not-allowed disabled:opacity-50" title={hasUnsavedChanges ? 'Сначала сохраните или очистите изменения табеля' : `Убрать ${row.client_name} из группы`} onClick={() => onRemoveMember(row)} />}
+                </div>
                 <p className="mt-1 text-xs text-slate-500">{row.subscription_title || 'Без абонемента'} / Осталось: {row.remaining_lessons ?? '-'}</p>
                 <div className="mt-3 flex gap-2">
                   <StatusButton active={row.status === 'attended'} variant="border-brand bg-brand text-white" icon={UserCheck} onClick={() => onSetRow(row.client, { status: 'attended' })}>Посетил</StatusButton>

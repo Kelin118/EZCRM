@@ -368,6 +368,15 @@ test('employee schedule separates exact shifts from versioned templates', async 
   assert.doesNotMatch(shiftSave, /employee-schedules\/set-from-date\//);
 });
 
+test('attendance journal removes group members without discarding unsaved marks', async () => {
+  const source = await readFile(new URL('../src/pages/VisitsPage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /api\.post\(`study-groups\/\$\{selectedLesson\.group\}\/remove-member\/`, \{ client: memberToRemove\.client \}\)/);
+  assert.match(source, /if \(!memberToRemove \|\| !selectedLesson\?\.group \|\| !canAddStudent \|\| dirtyRows\.length \|\| removingMember\) return/);
+  assert.match(source, /removeDisabled=\{Boolean\(dirtyRows\.length\) \|\| attendanceLoading \|\| savingAttendance \|\| removingMember\}/);
+  assert.equal((source.match(/icon=\{UserMinus\}/g) || []).length, 2);
+  assert.match(source, /await loadAttendance\(selectedLesson\)/);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

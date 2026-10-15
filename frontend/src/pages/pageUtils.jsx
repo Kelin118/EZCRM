@@ -356,6 +356,7 @@ export function CrudModal({ title, open, onClose, fields, form, setForm, onSubmi
                 disabled={field.disabled}
                 error={field.error}
                 onClientCreated={field.onClientCreated}
+                defaultBranch={field.branch ?? form.branch ?? ''}
               />
             );
           }

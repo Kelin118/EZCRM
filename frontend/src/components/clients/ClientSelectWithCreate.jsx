@@ -69,6 +69,7 @@ export default function ClientSelectWithCreate({
   clients,
   options,
   onClientCreated,
+  defaultBranch = '',
   label = 'Клиент',
   required = false,
   disabled = false,
@@ -255,7 +256,7 @@ export default function ClientSelectWithCreate({
           )}
         </div>
       )}
-      <QuickClientCreateModal open={modalOpen} onClose={() => setModalOpen(false)} onCreated={handleCreated} />
+      {modalOpen && <QuickClientCreateModal open onClose={() => setModalOpen(false)} onCreated={handleCreated} defaultBranch={defaultBranch} />}
     </div>
   );
 }

@@ -3,6 +3,8 @@ import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   addCalendarDays, businessMonthRange, calendarWeekDates, calendarWeekStart, formatDateTimeLocal,
   formatDisplayDateTime, formatFinanceDate, formatWeekdayDate, formatWeekRange, normalizeDateForInput,
@@ -14,7 +16,7 @@ const require = createRequire(import.meta.url);
 async function loadModule(path) {
   const result = await build({
     entryPoints: [new URL(`../src/${path}`, import.meta.url).pathname.replace(/^\/(\w:)/, '$1')],
-    bundle: true, packages: 'external', platform: 'node', format: 'cjs', write: false,
+    bundle: true, packages: 'external', platform: 'node', format: 'cjs', jsx: 'automatic', write: false,
     define: { 'import.meta.env': '{}' },
   });
   const module = { exports: {} };
@@ -23,6 +25,17 @@ async function loadModule(path) {
 }
 
 const loadApi = async () => (await loadModule('api/axios.js')).default;
+
+test('quick client form shows branch and includes it in the create payload', async () => {
+  const QuickClientCreateModal = (await loadModule('components/clients/QuickClientCreateModal.jsx')).default;
+  const markup = renderToStaticMarkup(createElement(QuickClientCreateModal, { open: true, onClose() {}, onCreated() {} }));
+  assert.match(markup, /Филиал \*/);
+  assert.match(markup, /Загрузка филиалов/);
+
+  const source = await readFile(new URL('../src/components/clients/QuickClientCreateModal.jsx', import.meta.url), 'utf8');
+  assert.match(source, /branch: form\.branch/);
+  assert.match(source, /if \(!form\.branch\)/);
+});
 
 test('client detail load does not restart on every render', async () => {
   const source = await readFile(new URL('../src/pages/ClientDetailPage.jsx', import.meta.url), 'utf8');

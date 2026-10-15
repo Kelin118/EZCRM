@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 
 import api from '../../api/axios.js';
 import { getStoredUser } from '../../auth.js';
+import useBranches from '../../hooks/useBranches.js';
 import { useEmployeeOptions } from '../../pages/lookupUtils.jsx';
 import Button from '../ui/Button.jsx';
 import Input from '../ui/Input.jsx';
@@ -17,6 +18,7 @@ const emptyForm = {
   birth_date: '',
   notes: '',
   manager: '',
+  branch: '',
   relatives: [],
 };
 
@@ -80,10 +82,11 @@ function SelectField({ label, value, onChange, options }) {
   );
 }
 
-export default function QuickClientCreateModal({ open, onClose, onCreated }) {
+export default function QuickClientCreateModal({ open, onClose, onCreated, defaultBranch = '' }) {
   const user = getStoredUser();
   const { employeeOptions } = useEmployeeOptions(['admin', 'manager']);
-  const [form, setForm] = useState(() => ({ ...emptyForm, manager: user?.id ? String(user.id) : '' }));
+  const { branchOptions, loading: branchesLoading } = useBranches();
+  const [form, setForm] = useState(() => ({ ...emptyForm, manager: user?.id ? String(user.id) : '', branch: defaultBranch ? String(defaultBranch) : '' }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [existingClients, setExistingClients] = useState([]);
@@ -129,6 +132,7 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
       birth_date: form.birth_date || null,
       notes: form.notes.trim(),
       manager: form.manager || null,
+      branch: form.branch,
       relatives: form.relatives,
       is_active: true,
     };
@@ -141,6 +145,10 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
   const submit = async (forceCreate = false) => {
     if (!form.first_name.trim()) {
       setError('Укажите имя клиента.');
+      return;
+    }
+    if (!form.branch) {
+      setError('Укажите филиал клиента.');
       return;
     }
 
@@ -227,6 +235,7 @@ export default function QuickClientCreateModal({ open, onClose, onCreated }) {
         <Input label="WhatsApp / email" type="email" value={form.email} onChange={(event) => update({ email: event.target.value })} />
         <Input label="Дата рождения" type="date" value={form.birth_date} onChange={(event) => update({ birth_date: event.target.value })} />
         <SelectField label="Менеджер" value={form.manager} onChange={(value) => update({ manager: value })} options={managerOptions} />
+        <SelectField label="Филиал *" value={form.branch} onChange={(value) => update({ branch: value })} options={[{ value: '', label: branchesLoading ? 'Загрузка филиалов...' : 'Выберите филиал' }, ...branchOptions]} />
         <RelativeClientPicker value={form.relatives} onChange={(relatives) => update({ relatives })} className="md:col-span-2" />
         <label className="grid gap-1.5 text-sm font-semibold text-slate-700 md:col-span-2">
           Комментарий

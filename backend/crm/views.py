@@ -1584,12 +1584,13 @@ class LessonViewSet(EducationBaseViewSet):
             for lesson in lessons:
                 visit = visits.get((client_id, lesson['id']))
                 lesson_date = lesson['lesson_date']
-                eligible = bool(visit) or any(
+                editable = any(
                     (not item.joined_at or item.joined_at <= lesson_date)
                     and (not item.left_at or lesson_date <= item.left_at)
                     and (item.status != GroupMembership.Status.LEFT or item.left_at is not None)
                     for item in client_memberships
                 )
+                eligible = bool(visit) or editable
                 status_value = visit.status if visit else None
                 if eligible:
                     if status_value in (Visit.Status.ATTENDED, Visit.Status.MAKEUP, Visit.Status.TRIAL):
@@ -1605,7 +1606,10 @@ class LessonViewSet(EducationBaseViewSet):
                 cells.append({
                     'status': status_value,
                     'eligible': eligible,
+                    'editable': editable,
                     'deducted': visit.lesson_deducted if visit else False,
+                    'comment': visit.notes if visit else '',
+                    'subscription': visit.subscription_id if visit else None,
                 })
             subscription = subscriptions.get(client_id)
             students.append({
@@ -1686,8 +1690,10 @@ class LessonViewSet(EducationBaseViewSet):
                 if not GroupMembership.objects.filter(
                     group=lesson.group,
                     client_id=client_id,
-                    status=GroupMembership.Status.ACTIVE,
-                ).exists():
+                ).filter(
+                    Q(joined_at__isnull=True) | Q(joined_at__lte=lesson.lesson_date),
+                    Q(left_at__isnull=True) | Q(left_at__gte=lesson.lesson_date),
+                ).exclude(status=GroupMembership.Status.LEFT, left_at__isnull=True).exists():
                     raise drf_serializers.ValidationError({'detail': 'Ученик не состоит в группе выбранного урока.'})
                 status_value = item.get('status') or Visit.Status.PLANNED
                 if status_value not in Visit.Status.values:
@@ -1696,7 +1702,7 @@ class LessonViewSet(EducationBaseViewSet):
                 if subscription_id:
                     subscription = drf_serializers.PrimaryKeyRelatedField(queryset=Subscription.objects.filter(client_id=client_id)).run_validation(subscription_id)
                     subscription_id = subscription.pk
-                if not subscription_id:
+                if not subscription_id and item.get('auto_subscription', True) is not False:
                     subscription = (
                         Subscription.objects.filter(client_id=client_id, status=Subscription.Status.ACTIVE)
                         .order_by('-start_date')

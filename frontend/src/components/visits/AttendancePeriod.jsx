@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios.js';
 import { formatDisplayDate } from '../../utils/dateTime.js';
 import Button from '../ui/Button.jsx';
+import Modal from '../ui/Modal.jsx';
 import { Input, SelectField } from '../../pages/pageUtils.jsx';
 
 const statusMarks = {
@@ -15,11 +16,27 @@ const statusMarks = {
   cancelled: { symbol: '×', label: 'Отменено', className: 'bg-slate-100 text-slate-600' },
 };
 
-export default function AttendancePeriod({ groupOptions, group, onGroupChange, range, onRangeChange, onOpenLesson }) {
+const statusOptions = [
+  { value: 'planned', label: 'Не отмечено' },
+  { value: 'attended', label: 'Посетил' },
+  { value: 'sick', label: 'Болел' },
+  { value: 'missed', label: 'Пропуск' },
+  { value: 'makeup', label: 'Отработка' },
+  { value: 'frozen', label: 'Заморозка' },
+  { value: 'trial', label: 'Пробное' },
+  { value: 'cancelled', label: 'Отменено' },
+];
+
+export default function AttendancePeriod({ groupOptions, group, onGroupChange, range, onRangeChange, onOpenLesson, canEdit }) {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [editor, setEditor] = useState(null);
+  const [subscriptionOptions, setSubscriptionOptions] = useState([]);
+  const [subscriptionsLoading, setSubscriptionsLoading] = useState(false);
+  const [editorError, setEditorError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!group || !range.date_from || !range.date_to) {
@@ -44,6 +61,63 @@ export default function AttendancePeriod({ groupOptions, group, onGroupChange, r
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
   }, [group, range.date_from, range.date_to, reload]);
+
+  useEffect(() => {
+    if (!editor) return undefined;
+    let ignore = false;
+    setSubscriptionsLoading(true);
+    setSubscriptionOptions([]);
+    api.get('subscriptions/', { params: { client: editor.student.client } })
+      .then(({ data }) => {
+        if (!ignore) setSubscriptionOptions(Array.isArray(data) ? data : data?.results || []);
+      })
+      .catch(() => { if (!ignore) setEditorError('Не удалось загрузить абонементы ученика.'); })
+      .finally(() => { if (!ignore) setSubscriptionsLoading(false); });
+    return () => { ignore = true; };
+  }, [editor?.student.client]);
+
+  const openEditor = (student, lesson, cell) => {
+    setEditor({
+      student,
+      lesson,
+      original: cell,
+      status: cell.status || 'planned',
+      comment: cell.comment || '',
+      subscription: cell.subscription ? String(cell.subscription) : '',
+    });
+    setEditorError('');
+  };
+
+  const changed = editor && (
+    editor.status !== (editor.original.status || 'planned')
+    || editor.comment !== (editor.original.comment || '')
+    || editor.subscription !== (editor.original.subscription ? String(editor.original.subscription) : '')
+  );
+
+  const saveCell = async () => {
+    if (!editor || !changed || saving) return;
+    setSaving(true);
+    setEditorError('');
+    try {
+      await api.post(`lessons/${editor.lesson.id}/attendance/`, {
+        items: [{
+          client: editor.student.client,
+          status: editor.status,
+          comment: editor.comment,
+          subscription: editor.subscription || null,
+          auto_subscription: false,
+        }],
+      });
+      setEditor(null);
+      setReload((current) => current + 1);
+      window.dispatchEvent(new CustomEvent('api-success', { detail: 'Посещение сохранено.' }));
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail || requestError.response?.data?.status?.[0];
+      setEditorError(typeof detail === 'string' ? detail : 'Не удалось сохранить посещение.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const lessons = report?.lessons || [];
   const students = report?.students || [];
@@ -105,8 +179,8 @@ export default function AttendancePeriod({ groupOptions, group, onGroupChange, r
                         const title = `${student.client_name}, ${formatDisplayDate(lessons[index].date)} ${lessons[index].start_time}: ${mark.label}${cell.deducted ? ', занятие списано' : ''}`;
                         return (
                           <td key={lessons[index].id} className={`h-11 min-w-16 border-b border-r border-slate-200 p-0 ${cell.eligible ? mark.className : 'bg-slate-100'}`}>
-                            {cell.eligible && (student.current_member
-                              ? <button type="button" className="h-11 w-full text-base font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-brand" onClick={() => onOpenLesson(lessons[index], group)} title={title} aria-label={title}>{mark.symbol}</button>
+                            {cell.eligible && (canEdit && cell.editable
+                              ? <button type="button" className="h-11 w-full text-base font-semibold hover:bg-brand/10 focus-visible:outline-2 focus-visible:outline-brand" onClick={() => openEditor(student, lessons[index], cell)} title={`Изменить: ${title}`} aria-label={`Изменить: ${title}`}>{mark.symbol}</button>
                               : <span className="inline-grid h-11 w-full place-items-center text-base font-semibold" title={title}>{mark.symbol}</span>)}
                           </td>
                         );
@@ -126,6 +200,38 @@ export default function AttendancePeriod({ groupOptions, group, onGroupChange, r
           )}
         </>
       )}
+      <Modal
+        title="Отметка посещения"
+        open={Boolean(editor)}
+        onClose={() => { if (!saving) setEditor(null); }}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditor(null)} disabled={saving}>Отмена</Button>
+            <Button onClick={saveCell} disabled={!changed || saving || subscriptionsLoading}>{saving ? 'Сохранение...' : 'Сохранить'}</Button>
+          </>
+        }
+      >
+        {editor && (
+          <div className="grid gap-4">
+            <p className="text-sm font-semibold text-slate-800">{editor.student.client_name} · {formatDisplayDate(editor.lesson.date)} · {editor.lesson.start_time}</p>
+            {editorError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{editorError}</p>}
+            <SelectField label="Отметка" value={editor.status} onChange={(status) => setEditor((current) => ({ ...current, status }))} options={statusOptions} />
+            <SelectField
+              label="Абонемент"
+              value={editor.subscription}
+              onChange={(subscription) => setEditor((current) => ({ ...current, subscription }))}
+              options={[
+                { value: '', label: subscriptionsLoading ? 'Загрузка...' : 'Без абонемента' },
+                ...subscriptionOptions.map((subscription) => ({ value: String(subscription.id), label: `${subscription.title} · ${subscription.start_date}–${subscription.end_date || '...'} · осталось ${subscription.remaining_visits}` })),
+              ]}
+            />
+            {editor.status === 'attended' && !editor.subscription && !subscriptionsLoading && (
+              <p className="text-sm text-amber-800">Без абонемента занятие не спишется.</p>
+            )}
+            <Input label="Комментарий" value={editor.comment} onChange={(event) => setEditor((current) => ({ ...current, comment: event.target.value }))} />
+          </div>
+        )}
+      </Modal>
     </section>
   );
 }

@@ -63,6 +63,7 @@ class AttendancePeriodTests(APITestCase):
         current = rows[self.current.id]
         former = rows[self.former.id]
         self.assertFalse(current['cells'][0]['eligible'])
+        self.assertFalse(current['cells'][0]['editable'])
         self.assertEqual(current['cells'][1]['status'], Visit.Status.ATTENDED)
         self.assertEqual(current['cells'][2]['status'], Visit.Status.MISSED)
         self.assertTrue(current['cells'][3]['eligible'])
@@ -99,3 +100,59 @@ class AttendancePeriodTests(APITestCase):
         self.assertEqual(self._get(date_from='2026-11-01').status_code, 400)
         self.assertEqual(self._get(date_to='2028-01-01').status_code, 400)
         self.assertEqual(self._get(group='invalid').status_code, 400)
+
+    def test_period_mark_can_skip_automatic_subscription_and_updates_totals(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(f'/api/lessons/{self.lessons[3].id}/attendance/', {
+            'items': [{'client': self.current.id, 'status': Visit.Status.ATTENDED, 'auto_subscription': False}],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        visit = Visit.objects.get(client=self.current, lesson=self.lessons[3])
+        self.assertIsNone(visit.subscription_id)
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(Subscription.objects.get(client=self.current).remaining_visits, 5)
+        row = next(row for row in self._get().data['students'] if row['client'] == self.current.id)
+        self.assertEqual(row['cells'][3]['status'], Visit.Status.ATTENDED)
+        self.assertTrue(row['cells'][3]['editable'])
+        self.assertEqual(row['totals']['attended'], 2)
+
+    def test_former_member_can_correct_historical_lesson_but_not_later_lesson(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(f'/api/lessons/{self.lessons[2].id}/attendance/', {
+            'items': [{'client': self.former.id, 'status': Visit.Status.MISSED,
+                       'comment': 'Уточнено', 'auto_subscription': False}],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(row for row in self._get().data['students'] if row['client'] == self.former.id)
+        self.assertEqual(row['cells'][2]['status'], Visit.Status.MISSED)
+        self.assertEqual(row['cells'][2]['comment'], 'Уточнено')
+        self.assertTrue(row['cells'][2]['editable'])
+        self.assertFalse(row['cells'][3]['editable'])
+        rejected = self.client.post(f'/api/lessons/{self.lessons[3].id}/attendance/', {
+            'items': [{'client': self.former.id, 'status': Visit.Status.ATTENDED}],
+        }, format='json')
+        self.assertEqual(rejected.status_code, 400)
+        self.assertFalse(Visit.objects.filter(client=self.former, lesson=self.lessons[3]).exists())
+
+    def test_period_correction_restores_linked_subscription_and_teacher_scope(self):
+        subscription = Subscription.objects.get(client=self.current)
+        visit = Visit.objects.get(client=self.current, lesson=self.lessons[1])
+        visit.subscription = subscription
+        visit.save(update_fields=['subscription'])
+        self.client.force_authenticate(self.other_teacher)
+        denied = self.client.post(f'/api/lessons/{self.lessons[1].id}/attendance/', {
+            'items': [{'client': self.current.id, 'status': Visit.Status.SICK}],
+        }, format='json')
+        self.assertEqual(denied.status_code, 404)
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(f'/api/lessons/{self.lessons[1].id}/attendance/', {
+            'items': [{'client': self.current.id, 'status': Visit.Status.SICK,
+                       'subscription': subscription.id, 'auto_subscription': False}],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        visit.refresh_from_db()
+        subscription.refresh_from_db()
+        self.assertEqual(visit.status, Visit.Status.SICK)
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(visit.subscription_id, subscription.id)
+        self.assertEqual(subscription.remaining_visits, 6)

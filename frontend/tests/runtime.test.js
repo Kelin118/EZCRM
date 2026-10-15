@@ -37,6 +37,14 @@ test('quick client form shows branch and includes it in the create payload', asy
   assert.match(source, /if \(!form\.branch\)/);
 });
 
+test('period attendance cells open an inline editor and save through lesson attendance', async () => {
+  const source = await readFile(new URL('../src/components/visits/AttendancePeriod.jsx', import.meta.url), 'utf8');
+  assert.match(source, /onClick=\{\(\) => openEditor\(student, lessons\[index\], cell\)\}/);
+  assert.match(source, /api\.post\(`lessons\/\$\{editor\.lesson\.id\}\/attendance\/`/);
+  assert.match(source, /auto_subscription: false/);
+  assert.match(source, /setReload\(\(current\) => current \+ 1\)/);
+});
+
 test('client detail load does not restart on every render', async () => {
   const source = await readFile(new URL('../src/pages/ClientDetailPage.jsx', import.meta.url), 'utf8');
   assert.match(source, /const \[user\] = useState\(getStoredUser\)/);

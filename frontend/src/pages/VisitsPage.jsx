@@ -581,7 +581,7 @@ export default function VisitsPage() {
           </div>
         </>
       ) : mode === 'period' ? (
-        <AttendancePeriod groupOptions={groupOptions} group={periodGroup} onGroupChange={setPeriodGroup} range={periodRange} onRangeChange={setPeriodRange} onOpenLesson={openPeriodLesson} />
+        <AttendancePeriod groupOptions={groupOptions} group={periodGroup} onGroupChange={setPeriodGroup} range={periodRange} onRangeChange={setPeriodRange} onOpenLesson={openPeriodLesson} canEdit={canEdit} />
       ) : (
         <ClassicVisits
           crud={historyCrud}

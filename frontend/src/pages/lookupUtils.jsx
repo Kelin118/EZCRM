@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import api from '../api/axios.js';
 import useSharedClients from '../hooks/useClients.js';
@@ -10,7 +10,9 @@ export function toList(data) {
 export function useLookup(endpoint, params = {}, options = {}) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(Boolean(endpoint));
+  const [revision, setRevision] = useState(0);
   const paramsKey = JSON.stringify(params || {});
+  const reload = useCallback(() => setRevision((current) => current + 1), []);
 
   useEffect(() => {
     if (!endpoint || options.enabled === false) {
@@ -41,9 +43,9 @@ export function useLookup(endpoint, params = {}, options = {}) {
     return () => {
       mounted = false;
     };
-  }, [endpoint, paramsKey, options.enabled]);
+  }, [endpoint, paramsKey, options.enabled, revision]);
 
-  return { items, loading };
+  return { items, loading, reload };
 }
 
 export function useClients() {
@@ -153,7 +155,7 @@ export function useRoomOptions() {
 }
 
 export function useStudyGroupOptions() {
-  const { items, loading } = useStudyGroups();
+  const { items, loading, reload } = useStudyGroups();
   const options = useMemo(() => items.map((group) => ({ value: String(group.id), label: groupLabel(group) })), [items]);
-  return { groups: items, groupOptions: options, loadingGroups: loading };
+  return { groups: items, groupOptions: options, loadingGroups: loading, refreshGroups: reload };
 }

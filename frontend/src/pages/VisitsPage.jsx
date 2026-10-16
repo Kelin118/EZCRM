@@ -18,6 +18,7 @@ import useBranches from '../hooks/useBranches.js';
 import useDiscounts from '../hooks/useDiscounts.js';
 import { calculateEndDateFromService } from '../utils/subscriptionDates.js';
 import { calculateDiscountAmount, calculateDiscountedTotal } from '../utils/discounts.js';
+import GroupsPage from './GroupsPage.jsx';
 
 const emptyManualVisit = {
   client: '',
@@ -67,6 +68,7 @@ const modeOptions = [
   { value: 'journal', label: 'Табель' },
   { value: 'period', label: 'За период' },
   { value: 'classic', label: 'Классический' },
+  { value: 'groups', label: 'Группы' },
 ];
 
 const pad = (value) => String(value).padStart(2, '0');
@@ -133,14 +135,17 @@ function StatusButton({ active, variant, icon: Icon, children, onClick }) {
 }
 
 export default function VisitsPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialGroup = searchParams.get('group') || '';
   const initialLesson = searchParams.get('lesson') || '';
   const user = getStoredUser();
   const canEdit = canManageVisits(user);
   const canAddStudent = hasAnyRole(user, [ROLES.ADMIN, ROLES.MANAGER]);
+  const canManageGroups = hasAnyRole(user, [ROLES.MANAGER, ROLES.TEACHER]);
   const canDelete = canDeleteDangerous(user);
-  const [mode, setMode] = useState('journal');
+  const requestedMode = searchParams.get('view');
+  const mode = modeOptions.some((item) => item.value === requestedMode) && (requestedMode !== 'groups' || canManageGroups)
+    ? requestedMode : 'journal';
   const [periodGroup, setPeriodGroup] = useState(initialGroup);
   const [periodRange, setPeriodRange] = useState(() => businessMonthRange(todayLocalDate()));
   const [selectedDate, setSelectedDate] = useState(isoDate(new Date()));
@@ -166,11 +171,12 @@ export default function VisitsPage() {
   const [addingStudent, setAddingStudent] = useState(false);
   const [memberToRemove, setMemberToRemove] = useState(null);
   const [removingMember, setRemovingMember] = useState(false);
+  const [groupRevision, setGroupRevision] = useState(0);
 
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
   const { items: services } = useLookup('catalog-items/', { category: 'service', is_active: 'true' });
-  const { groupOptions } = useStudyGroupOptions();
+  const { groupOptions, refreshGroups } = useStudyGroupOptions();
   const { employeeOptions } = useEmployeeOptions(['teacher', 'admin']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['teacher']);
   const { getDiscountById } = useDiscounts({ branch: selectedLesson?.branch || '' });
@@ -182,6 +188,25 @@ export default function VisitsPage() {
     () => attendanceRows.filter((row) => rowChanged(row, initialRows.find((initial) => initial.client === row.client))),
     [attendanceRows, initialRows],
   );
+
+  const selectMode = (nextMode) => {
+    if (mode === 'journal' && nextMode !== mode && dirtyRows.length) {
+      dispatchError('Сначала сохраните или очистите изменения табеля.');
+      return;
+    }
+    if (nextMode === 'period' && lessonFilters.group) setPeriodGroup(lessonFilters.group);
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (nextMode === 'journal') params.delete('view');
+      else params.set('view', nextMode);
+      return params;
+    });
+  };
+
+  const onGroupsChanged = () => {
+    refreshGroups();
+    setGroupRevision((current) => current + 1);
+  };
 
   const filteredRows = useMemo(() => {
     const query = studentSearch.trim().toLowerCase();
@@ -258,13 +283,22 @@ export default function VisitsPage() {
     setInitialRows([]);
     setSelectedDate(lesson.date);
     setLessonFilters((current) => ({ ...current, group: String(groupId) }));
-    setMode('journal');
+    selectMode('journal');
     await loadAttendance({ id: lesson.id });
   };
 
   useEffect(() => {
     if (mode === 'journal') loadLessons();
   }, [selectedDate, mode, JSON.stringify(lessonFilters)]);
+
+  useEffect(() => {
+    const group = searchParams.get('group');
+    if (group) setLessonFilters((current) => current.group === group ? current : { ...current, group });
+  }, [searchParams.get('group')]);
+
+  useEffect(() => {
+    if (mode === 'journal' && selectedLesson && groupRevision) loadAttendance(selectedLesson);
+  }, [mode, groupRevision]);
 
   useEffect(() => {
     if (!initialLesson) return;
@@ -479,9 +513,9 @@ export default function VisitsPage() {
   return (
     <>
       <PageHeader title="Журнал учёта посещений">
-        <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
-          {modeOptions.map((item) => (
-            <button key={item.value} type="button" className={`rounded-xl px-4 py-2 text-sm font-bold ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => { if (item.value === 'period' && lessonFilters.group) setPeriodGroup(lessonFilters.group); setMode(item.value); }}>
+        <div className="inline-flex max-w-full overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1">
+          {modeOptions.filter((item) => item.value !== 'groups' || canManageGroups).map((item) => (
+            <button key={item.value} type="button" aria-pressed={mode === item.value} className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${mode === item.value ? 'bg-brand text-white' : 'text-slate-600 hover:text-brand'}`} onClick={() => selectMode(item.value)}>
               {item.label}
             </button>
           ))}
@@ -604,6 +638,8 @@ export default function VisitsPage() {
         </>
       ) : mode === 'period' ? (
         <AttendancePeriod groupOptions={groupOptions} group={periodGroup} onGroupChange={setPeriodGroup} range={periodRange} onRangeChange={setPeriodRange} onOpenLesson={openPeriodLesson} canEdit={canEdit} />
+      ) : mode === 'groups' ? (
+        <GroupsPage embedded onChanged={onGroupsChanged} />
       ) : (
         <ClassicVisits
           crud={historyCrud}

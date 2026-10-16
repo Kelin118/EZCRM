@@ -20,7 +20,6 @@ import EmployeeSchedulePage from './pages/EmployeeSchedulePage.jsx';
 import EmployeeWorklogPage from './pages/EmployeeWorklogPage.jsx';
 import ExportPage from './pages/ExportPage.jsx';
 import FinancePage from './pages/FinancePage.jsx';
-import GroupsPage from './pages/GroupsPage.jsx';
 import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
 import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
@@ -168,7 +167,7 @@ export default function App() {
         <Route path="tasks" element={<TasksPage />} />
         <Route path="dictionaries" element={<DictionariesPage />} />
         <Route path="export" element={<ExportPage />} />
-        <Route path="groups" element={<GroupsPage />} />
+        <Route path="groups" element={<Navigate to="/visits?view=groups" replace />} />
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="lessons/:id/attendance" element={<LessonAttendancePage />} />
         <Route path="finance" element={<FinancePage />} />

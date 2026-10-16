@@ -377,6 +377,27 @@ test('attendance journal removes group members without discarding unsaved marks'
   assert.match(source, /await loadAttendance\(selectedLesson\)/);
 });
 
+test('group management lives in visits while old group links remain usable', async () => {
+  const [visits, groups, app, sidebar, lookups] = await Promise.all([
+    readFile(new URL('../src/pages/VisitsPage.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/pages/GroupsPage.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/App.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/layout/Sidebar.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/pages/lookupUtils.jsx', import.meta.url), 'utf8'),
+  ]);
+  assert.match(visits, /\{ value: 'groups', label: 'Группы' \}/);
+  assert.match(visits, /<GroupsPage embedded onChanged=\{onGroupsChanged\} \/>/);
+  assert.match(visits, /refreshGroups\(\)/);
+  assert.match(visits, /loadAttendance\(selectedLesson\)/);
+  assert.match(visits, /dirtyRows\.length\) \{\s*dispatchError\('Сначала сохраните или очистите изменения табеля\.'/);
+  assert.match(groups, /onChanged\?\.\(\)/);
+  assert.match(groups, /study-groups\/\$\{selectedGroup\.id\}\/add-member\//);
+  assert.match(groups, /study-groups\/\$\{selectedGroup\.id\}\/remove-member\//);
+  assert.match(lookups, /refreshGroups: reload/);
+  assert.match(app, /path="groups" element=\{<Navigate to="\/visits\?view=groups" replace \/>\}/);
+  assert.doesNotMatch(sidebar, /to: '\/groups'/);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

@@ -47,7 +47,7 @@ const weekdayShort = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'];
 
 const formatDate = (value) => (value ? new Date(value).toLocaleDateString('ru-RU') : '');
 
-export default function GroupsPage() {
+export default function GroupsPage({ embedded = false, onChanged }) {
   const crud = useCrudResource('study-groups/', { search: '', status: '', teacher: '', subject: '', branch: '' });
   const { branchOptions, branchFilterOptions } = useBranches();
   const { subjectOptions } = useSubjectOptions();
@@ -144,6 +144,7 @@ export default function GroupsPage() {
       crud.setModalOpen(false);
       crud.setEditing(null);
       await crud.reload();
+      onChanged?.();
     } catch (error) {
       setGroupError(error.response?.data?.detail || 'Не удалось сохранить группу.');
       showApiError(error);
@@ -178,6 +179,7 @@ export default function GroupsPage() {
       await loadMembers(selectedGroup, 'active');
       await crud.reload();
       await refreshSelectedGroup();
+      onChanged?.();
     } catch (error) {
       showApiError(error);
     } finally {
@@ -193,6 +195,7 @@ export default function GroupsPage() {
       await loadMembers(selectedGroup, memberStatusFilter);
       await crud.reload();
       await refreshSelectedGroup();
+      onChanged?.();
     } catch (error) {
       showApiError(error);
     }
@@ -205,6 +208,7 @@ export default function GroupsPage() {
       await loadMembers(selectedGroup, 'active');
       await crud.reload();
       await refreshSelectedGroup();
+      onChanged?.();
     } catch (error) {
       showApiError(error);
     }
@@ -216,6 +220,7 @@ export default function GroupsPage() {
       await api.delete(`study-groups/${groupToDisable.id}/`);
       setGroupToDisable(null);
       await crud.reload();
+      onChanged?.();
     } catch (error) {
       showApiError(error);
     }
@@ -233,7 +238,14 @@ export default function GroupsPage() {
 
   return (
     <>
-      <PageHeader title="Группы" actionLabel="Добавить группу" onAction={canEdit ? () => openGroupForm() : undefined} />
+      {embedded ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-bold text-slate-900">Группы</h2>
+          {canEdit && <Button onClick={() => openGroupForm()}><Plus size={16} />Добавить группу</Button>}
+        </div>
+      ) : (
+        <PageHeader title="Группы" actionLabel="Добавить группу" onAction={canEdit ? () => openGroupForm() : undefined} />
+      )}
 
       <Filters>
         <Input label="Поиск" value={crud.filters.search} onChange={(event) => crud.setFilters({ ...crud.filters, search: event.target.value })} />
@@ -258,6 +270,8 @@ export default function GroupsPage() {
           {
             key: 'actions',
             header: '',
+            headerClassName: 'sticky right-0 z-20 bg-slate-50',
+            cellClassName: 'sticky right-0 z-10 bg-white group-hover:bg-slate-50',
             render: (row) => (
               <div className="flex justify-end gap-2">
                 <ActionButton as={Link} to={`/schedule?group=${row.id}`} icon={CalendarDays} label="Расписание" title="Открыть расписание" />

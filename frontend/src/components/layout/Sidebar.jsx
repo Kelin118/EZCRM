@@ -20,7 +20,6 @@ import {
   Ticket,
   UserCog,
   Users,
-  UsersRound,
 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useEffect, useState } from 'react';
@@ -38,7 +37,6 @@ export const navItems = [
   { group: 'Продажи', to: '/master-classes', label: 'МК', icon: Sparkles, roles: [ROLES.MANAGER, ROLES.TEACHER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/certificates', label: 'Сертификаты', icon: Gift, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { group: 'Продажи', to: '/tasks', label: 'Задачи', icon: ClipboardList, roles: [ROLES.MANAGER, ROLES.TEACHER] },
-  { group: 'Обучение', to: '/groups', label: 'Группы', icon: UsersRound, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { group: 'Обучение', to: '/schedule', label: 'Расписание', icon: CalendarDays, roles: [ROLES.MANAGER, ROLES.TEACHER] },
   { group: 'Управление', to: '/finance', label: 'Финансы', icon: CreditCard, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },
   { group: 'Управление', to: '/daily-payments', label: 'Сводка оплат', icon: BarChart3, roles: [ROLES.MANAGER, ROLES.ACCOUNTANT] },

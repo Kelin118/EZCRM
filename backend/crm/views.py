@@ -544,11 +544,15 @@ def _restore_subscription_lesson(subscription):
         subscription.save(update_fields=('remaining_visits', 'updated_at'))
 
 
+def _visit_consumes_lesson(status):
+    return status in (Visit.Status.ATTENDED, Visit.Status.MISSED)
+
+
 def _deduct_subscription_lesson(visit):
     if visit.subscription_id:
         visit.subscription = Subscription.objects.select_for_update().get(pk=visit.subscription_id)
     if (
-        visit.status == Visit.Status.ATTENDED
+        _visit_consumes_lesson(visit.status)
         and visit.subscription_id
         and not visit.lesson_deducted
         and visit.subscription.total_visits > 0
@@ -558,6 +562,12 @@ def _deduct_subscription_lesson(visit):
         visit.subscription.save(update_fields=('remaining_visits', 'updated_at'))
         visit.lesson_deducted = True
         visit.save(update_fields=('lesson_deducted', 'updated_at'))
+
+
+def _deduct_updated_subscription_lesson(visit, previous_status, was_deducted, subscription_changed):
+    if previous_status == visit.status and not was_deducted and not subscription_changed:
+        return
+    _deduct_subscription_lesson(visit)
 
 
 def _active_subscription_queryset(client):
@@ -1716,6 +1726,7 @@ class LessonViewSet(EducationBaseViewSet):
                     old_subscription = previous.subscription
                     old_lesson_deducted = previous.lesson_deducted
                     old_subscription_id = previous.subscription_id
+                    old_status = previous.status
                     previous.subscription_id = subscription_id
                     previous.teacher = lesson.teacher
                     previous.visited_at = _lesson_visited_at(lesson)
@@ -1723,13 +1734,13 @@ class LessonViewSet(EducationBaseViewSet):
                     previous.notes = notes
                     previous.save()
                     subscription_changed = old_subscription_id != previous.subscription_id
-                    if old_lesson_deducted and (previous.status != Visit.Status.ATTENDED or subscription_changed):
+                    if old_lesson_deducted and (not _visit_consumes_lesson(previous.status) or subscription_changed):
                         _restore_subscription_lesson(old_subscription)
                         previous.lesson_deducted = False
                         previous.save(update_fields=('lesson_deducted', 'updated_at'))
                     if subscription_changed:
                         previous.refresh_from_db()
-                    _deduct_subscription_lesson(previous)
+                    _deduct_updated_subscription_lesson(previous, old_status, old_lesson_deducted, subscription_changed)
                 else:
                     visit = Visit.objects.create(
                         lesson=lesson,
@@ -1885,6 +1896,7 @@ class LessonViewSet(EducationBaseViewSet):
                 old_subscription = visit.subscription
                 old_subscription_id = visit.subscription_id
                 was_deducted = visit.lesson_deducted
+                old_status = visit.status
                 visit.subscription = subscription
                 visit.teacher = lesson.teacher
                 visit.visited_at = _lesson_visited_at(lesson)
@@ -1892,11 +1904,11 @@ class LessonViewSet(EducationBaseViewSet):
                 visit.notes = notes
                 visit.save()
                 subscription_changed = old_subscription_id != visit.subscription_id
-                if was_deducted and (status_value != Visit.Status.ATTENDED or subscription_changed):
+                if was_deducted and (not _visit_consumes_lesson(status_value) or subscription_changed):
                     _restore_subscription_lesson(old_subscription)
                     visit.lesson_deducted = False
                     visit.save(update_fields=('lesson_deducted', 'updated_at'))
-                _deduct_subscription_lesson(visit)
+                _deduct_updated_subscription_lesson(visit, old_status, was_deducted, subscription_changed)
                 visit_created = False
             else:
                 visit = Visit.objects.create(
@@ -2388,11 +2400,12 @@ class VisitViewSet(BaseAuthenticatedViewSet):
             previous = Visit.objects.select_for_update(of=('self',)).select_related('subscription').get(pk=serializer.instance.pk)
             previous_subscription = previous.subscription
             was_deducted = previous.lesson_deducted
+            old_status = previous.status
             serializer.instance = previous
             visit = serializer.save()
             subscription_changed = getattr(previous_subscription, 'pk', None) != visit.subscription_id
             should_restore = was_deducted and (
-                visit.status != Visit.Status.ATTENDED or subscription_changed
+                not _visit_consumes_lesson(visit.status) or subscription_changed
             )
 
             if should_restore:
@@ -2400,7 +2413,7 @@ class VisitViewSet(BaseAuthenticatedViewSet):
                 visit.lesson_deducted = False
                 visit.save(update_fields=('lesson_deducted', 'updated_at'))
 
-            self._deduct_lesson(visit)
+            _deduct_updated_subscription_lesson(visit, old_status, was_deducted, subscription_changed)
             description = 'Занятие отмечено как посещённое' if visit.status == Visit.Status.ATTENDED else 'Изменено посещение'
             self._log_instance(AuditLog.Action.UPDATE, visit, description, self._audit_changes())
 

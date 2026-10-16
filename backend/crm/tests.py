@@ -2175,13 +2175,19 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertFalse(visit.lesson_deducted)
         self.assertEqual(self.remaining(self.clients[0]), 8)
 
-    def test_missed_creates_visit_without_deduction(self):
+    def test_missed_creates_visit_and_deducts_lesson_once(self):
         response = self.post_attendance(self.clients[0], Visit.Status.MISSED)
 
         self.assertEqual(response.status_code, 200)
+        item = next(item for item in response.data['items'] if item['client'] == self.clients[0].id)
+        self.assertEqual(item['remaining_lessons'], 7)
         visit = Visit.objects.get(lesson=self.lesson, client=self.clients[0])
-        self.assertFalse(visit.lesson_deducted)
-        self.assertEqual(self.remaining(self.clients[0]), 8)
+        self.assertTrue(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 7)
+
+        response = self.post_attendance(self.clients[0], Visit.Status.MISSED)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remaining(self.clients[0]), 7)
 
     def test_attended_to_sick_restores_lesson(self):
         self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
@@ -2191,13 +2197,13 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertEqual(self.remaining(self.clients[0]), 8)
         self.assertFalse(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
 
-    def test_attended_to_missed_restores_lesson(self):
+    def test_attended_to_missed_keeps_lesson_deducted(self):
         self.post_attendance(self.clients[0], Visit.Status.ATTENDED)
         response = self.post_attendance(self.clients[0], Visit.Status.MISSED)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.remaining(self.clients[0]), 8)
-        self.assertFalse(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 7)
+        self.assertTrue(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
 
     def test_missed_to_attended_deducts_lesson(self):
         self.post_attendance(self.clients[0], Visit.Status.MISSED)
@@ -2205,6 +2211,70 @@ class LessonAttendanceJournalTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.remaining(self.clients[0]), 7)
+        self.assertTrue(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+
+    def test_missed_to_sick_restores_lesson(self):
+        self.post_attendance(self.clients[0], Visit.Status.MISSED)
+        response = self.post_attendance(self.clients[0], Visit.Status.SICK)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+        self.assertFalse(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
+
+    def test_legacy_uncharged_missed_comment_edit_keeps_history(self):
+        subscription = Subscription.objects.get(client=self.clients[0])
+        visit = Visit.objects.create(
+            lesson=self.lesson, client=self.clients[0], subscription=subscription,
+            visited_at=timezone.now(), status=Visit.Status.MISSED, lesson_deducted=False,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            f'/api/lessons/{self.lesson.id}/attendance/',
+            {'items': [{'client': self.clients[0].id, 'status': Visit.Status.MISSED, 'comment': 'Уточнение'}]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        visit.refresh_from_db()
+        self.assertEqual(visit.notes, 'Уточнение')
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+
+        response = self.client.patch(f'/api/visits/{visit.id}/', {'notes': 'Повторное уточнение'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        visit.refresh_from_db()
+        self.assertEqual(visit.notes, 'Повторное уточнение')
+        self.assertFalse(visit.lesson_deducted)
+        self.assertEqual(self.remaining(self.clients[0]), 8)
+
+    def test_missed_subscription_change_restores_old_and_deducts_new(self):
+        original = Subscription.objects.get(client=self.clients[0])
+        replacement = Subscription.objects.create(
+            client=self.clients[0], title='New AB-4', start_date=date.today(),
+            total_visits=4, remaining_visits=4, status=Subscription.Status.ACTIVE,
+        )
+        self.client.force_authenticate(self.admin)
+        first = self.client.post(
+            f'/api/lessons/{self.lesson.id}/attendance/',
+            {'items': [{'client': self.clients[0].id, 'subscription': original.id, 'status': Visit.Status.MISSED}]},
+            format='json',
+        )
+        self.assertEqual(first.status_code, 200)
+        original.refresh_from_db()
+        self.assertEqual(original.remaining_visits, 7)
+
+        changed = self.client.post(
+            f'/api/lessons/{self.lesson.id}/attendance/',
+            {'items': [{'client': self.clients[0].id, 'subscription': replacement.id, 'status': Visit.Status.MISSED}]},
+            format='json',
+        )
+
+        self.assertEqual(changed.status_code, 200)
+        original.refresh_from_db()
+        replacement.refresh_from_db()
+        self.assertEqual(original.remaining_visits, 8)
+        self.assertEqual(replacement.remaining_visits, 3)
         self.assertTrue(Visit.objects.get(lesson=self.lesson, client=self.clients[0]).lesson_deducted)
 
     def test_teacher_can_mark_only_own_lessons(self):
@@ -2367,6 +2437,22 @@ class LessonAttendanceJournalTests(APITestCase):
         self.assertEqual(visit.visited_at.date(), self.lesson.lesson_date)
         self.assertEqual(visit.subscription, subscription)
         self.assertEqual(subscription.__class__.objects.get(pk=subscription.pk).remaining_visits, 3)
+
+    def test_add_student_missed_deducts_existing_subscription(self):
+        client = Client.objects.create(first_name='Missed', last_name='Student')
+        subscription = Subscription.objects.create(
+            client=client, title='AB-4', start_date=date.today(),
+            total_visits=4, remaining_visits=4, status=Subscription.Status.ACTIVE,
+        )
+
+        response = self.add_student(client, status_value=Visit.Status.MISSED)
+
+        self.assertEqual(response.status_code, 201)
+        visit = Visit.objects.get(lesson=self.lesson, client=client)
+        self.assertEqual(visit.subscription_id, subscription.id)
+        self.assertTrue(visit.lesson_deducted)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.remaining_visits, 3)
 
     def test_add_student_without_subscription_does_not_fail(self):
         client = Client.objects.create(first_name='No', last_name='Subscription')
@@ -3577,12 +3663,17 @@ class GroupScheduleTests(APITestCase):
         )
         self.assertEqual(missed.status_code, 201)
         subscription.refresh_from_db()
-        self.assertEqual(subscription.remaining_visits, 7)
+        self.assertEqual(subscription.remaining_visits, 6)
 
         patch = self.client.patch(f"/api/visits/{attended.data['id']}/", {'status': Visit.Status.MISSED}, format='json')
         self.assertEqual(patch.status_code, 200)
         subscription.refresh_from_db()
-        self.assertEqual(subscription.remaining_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 6)
+
+        sick = self.client.patch(f"/api/visits/{missed.data['id']}/", {'status': Visit.Status.SICK}, format='json')
+        self.assertEqual(sick.status_code, 200)
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.remaining_visits, 7)
 
 
 class TrialConversionTests(APITestCase):
@@ -4315,7 +4406,7 @@ class CriticalBusinessFlowTests(APITestCase):
         )
         self.assertEqual(patch_response.status_code, 200)
         subscription.refresh_from_db()
-        self.assertEqual(subscription.remaining_visits, 8)
+        self.assertEqual(subscription.remaining_visits, 7)
 
         group = StudyGroup.objects.create(name='Flow group', teacher=self.teacher, manager=self.manager)
         GroupMembership.objects.create(group=group, client=client, status=GroupMembership.Status.ACTIVE)
@@ -4351,13 +4442,13 @@ class CriticalBusinessFlowTests(APITestCase):
         lesson_visit = Visit.objects.get(lesson=lesson, client=client)
         self.assertEqual(lesson_visit.subscription_id, subscription.id)
         subscription.refresh_from_db()
-        self.assertEqual(subscription.remaining_visits, 7)
+        self.assertEqual(subscription.remaining_visits, 6)
 
         second_response = self.client.post(f'/api/lessons/{lesson.id}/attendance/', attendance_payload, format='json')
         self.assertEqual(second_response.status_code, 200)
         self.assertEqual(Visit.objects.filter(lesson=lesson, client=client).count(), 1)
         subscription.refresh_from_db()
-        self.assertEqual(subscription.remaining_visits, 7)
+        self.assertEqual(subscription.remaining_visits, 6)
 
         self.assertTrue(AuditLog.objects.filter(entity_type='Visit').exists())
         self.assertTrue(AuditLog.objects.filter(entity_type='Lesson', action='visit').exists())

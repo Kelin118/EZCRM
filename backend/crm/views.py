@@ -3370,6 +3370,18 @@ def _certificate_code():
             return code
 
 
+def _certificate_sale_branch(data, purchaser_client):
+    if 'branch' not in data:
+        return purchaser_client.branch if purchaser_client else None
+    try:
+        return drf_serializers.PrimaryKeyRelatedField(
+            queryset=Branch.objects.filter(is_active=True),
+            error_messages={'does_not_exist': 'Выберите действующий филиал.'},
+        ).run_validation(data.get('branch'))
+    except drf_serializers.ValidationError as error:
+        raise drf_serializers.ValidationError({'branch': error.detail}) from error
+
+
 def _certificate_audit(certificate):
     return {
         'serial_code': certificate.serial_code,
@@ -3583,7 +3595,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             refresh_certificate_status(certificate)
         return queryset.distinct()
 
-    def _sync_finance(self, certificate, payment_parts):
+    def _sync_finance(self, certificate, payment_parts, branch=None):
         if certificate.sale_price <= 0:
             return None
         if certificate.finance_transaction_id:
@@ -3599,7 +3611,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 created_by=self.request.user,
                 manager=certificate.purchaser_client.manager if certificate.purchaser_client else None,
                 payment_parts=payment_parts,
-                branch=certificate.purchaser_client.branch if certificate.purchaser_client else None,
+                branch=branch or (certificate.purchaser_client.branch if certificate.purchaser_client else None),
                 discount_amount=certificate.face_value - certificate.sale_price,
                 discount_name=f'?????? ??????????? {certificate.sale_discount_percent}%',
                 subtotal_amount=certificate.face_value,
@@ -3623,6 +3635,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             snapshot = serializer.validated_data['_template_snapshot']
             serial_number = allocate_certificate_numbers(1)[0]
             purchaser_client = serializer.validated_data.get('purchaser_client')
+            branch = _certificate_sale_branch(self.request.data, purchaser_client)
             purchaser_name = _client_name(purchaser_client)
             purchaser_phone = purchaser_client.phone if purchaser_client else ''
             face_value = serializer.validated_data['face_value']
@@ -3657,7 +3670,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                 background_asset=template.background_asset,
                 created_by=self.request.user,
             )
-            finance_transaction = self._sync_finance(certificate, serializer.validated_data.get('_payment_parts'))
+            finance_transaction = self._sync_finance(certificate, serializer.validated_data.get('_payment_parts'), branch=branch)
             if finance_transaction:
                 batch.finance_transaction = finance_transaction
                 batch.save(update_fields=('finance_transaction', 'updated_at'))
@@ -3727,6 +3740,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
         if not template:
             raise drf_serializers.ValidationError({'template': 'Выберите активный шаблон сертификата.'})
         purchaser_client = Client.objects.filter(pk=data.get('purchaser_client')).first() if data.get('purchaser_client') else None
+        branch = _certificate_sale_branch(data, purchaser_client)
         purchaser_name = (data.get('purchaser_name') or _client_name(purchaser_client)).strip()
         purchaser_phone = (data.get('purchaser_phone') or (purchaser_client.phone if purchaser_client else '')).strip()
         if not purchaser_client and (not purchaser_name or not purchaser_phone):
@@ -3802,7 +3816,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
                     created_by=request.user,
                     manager=purchaser_client.manager if purchaser_client else None,
                     payment_parts=payment_parts,
-                    branch=purchaser_client.branch if purchaser_client else None,
+                    branch=branch,
                     discount_amount=total_face_value - total_sale_price,
                     discount_name=f'Скидка сертификата {template.sale_discount_percent}%',
                     subtotal_amount=total_face_value,
@@ -5563,10 +5577,16 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             financial_fields = {'amount', 'transaction_type', 'payment_method', 'payment_parts', 'client',
                                 'subscription', 'branch', 'source', 'paid_at', 'discount',
                                 'discount_name', 'discount_amount', 'subtotal_amount'}
+            certificate_owned = bool(getattr(serializer.instance, 'certificate_batch', None)) or serializer.instance.certificates.exists()
+            other_owner = any(getattr(serializer.instance, name, None) is not None for name in (
+                'subscription_payment', 'trial_payment', 'addon_sale', 'master_class_payment',
+                'payroll_statement', 'payroll_advance',
+            ))
+            protected_fields = financial_fields - {'branch'} if certificate_owned and not other_owner else financial_fields
             changed = any(
                 value != getattr(serializer.instance, field)
                 for field, value in serializer.validated_data.items()
-                if field in financial_fields and field != 'payment_parts'
+                if field in protected_fields and field != 'payment_parts'
             )
             parts = serializer.validated_data.get('_payment_parts')
             if parts is not None:
@@ -5576,7 +5596,7 @@ class FinanceTransactionViewSet(BaseAuthenticatedViewSet):
             if changed:
                 raise drf_serializers.ValidationError({'detail': 'Связанная оплата редактируется в карточке продажи, абонемента, пробника или зарплаты.'})
             # A full edit form may echo financial fields; keep their historical snapshots untouched.
-            for field in financial_fields | {'_payment_parts'}:
+            for field in protected_fields | {'_payment_parts'}:
                 serializer.validated_data.pop(field, None)
         old_manager = serializer.instance.manager_id
         instance = serializer.save()

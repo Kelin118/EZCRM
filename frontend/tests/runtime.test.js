@@ -398,6 +398,16 @@ test('group management lives in visits while old group links remain usable', asy
   assert.doesNotMatch(sidebar, /to: '\/groups'/);
 });
 
+test('certificate checkout chooses a branch for both single and batch sales', async () => {
+  const source = await readFile(new URL('../src/pages/CertificatesPage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /branch: ''/);
+  assert.match(source, /<SelectField label="Филиал продажи"/);
+  assert.match(source, /totalSalePrice > 0 && !certificateForm\.branch/);
+  assert.match(source, /const payload = \{ \.\.\.certificateForm, payment_parts:/);
+  assert.match(source, /if \(!payload\.branch\) delete payload\.branch/);
+  assert.match(source, /certificateForm\.mode === 'batch'\s*\? await api\.post\('certificates\/bulk-create\/', payload\)\s*: await api\.post\('certificates\/', payload\)/);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

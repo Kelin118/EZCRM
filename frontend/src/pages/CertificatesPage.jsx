@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
 import { getStoredUser, isAdmin } from '../auth.js';
+import useBranches from '../hooks/useBranches.js';
 import { todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import CertificateCard from '../components/certificates/CertificateCard.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
@@ -43,6 +44,7 @@ const emptyCertificate = {
   purchaser_client: '',
   purchaser_name: '',
   purchaser_phone: '',
+  branch: '',
   quantity: 1,
   start_number: '',
   recipient_name: '',
@@ -91,9 +93,11 @@ export default function CertificatesPage() {
   const [certificateForm, setCertificateForm] = useState(emptyCertificate);
   const [selectedCertificate, setSelectedCertificate] = useState(null);
   const [deletingCertificateId, setDeletingCertificateId] = useState(null);
+  const [certificateSaving, setCertificateSaving] = useState(false);
   const [redeemForm, setRedeemForm] = useState({ amount: '', visitor_name: '', visitor_phone: '', service_name: '', comment: '' });
   const cardRef = useRef(null);
-  const { clientOptions } = useClientOptions();
+  const { clientOptions, getClientById } = useClientOptions();
+  const { branchOptions, getBranchById } = useBranches();
   const canDelete = isAdmin(getStoredUser());
 
   const templateOptions = templates.map((item) => ({ value: String(item.id), label: item.name }));
@@ -163,12 +167,16 @@ export default function CertificatesPage() {
   };
 
   const createCertificate = async () => {
+    if (certificateSaving) return;
     if (!certificateForm.template) return dispatchError('Выберите шаблон сертификата.');
+    if (totalSalePrice > 0 && !certificateForm.branch) return dispatchError('Выберите филиал продажи сертификата.');
     if (totalSalePrice > 0 && paymentPartsTotal(certificateForm.payment_parts) !== totalSalePrice) {
       return dispatchError('Сумма оплат по способам должна совпадать с ценой продажи сертификата.');
     }
+    setCertificateSaving(true);
     try {
       const payload = { ...certificateForm, payment_parts: paymentPartsPayload(certificateForm.payment_parts) };
+      if (!payload.branch) delete payload.branch;
       const { data } = certificateForm.mode === 'batch'
         ? await api.post('certificates/bulk-create/', payload)
         : await api.post('certificates/', payload);
@@ -179,6 +187,8 @@ export default function CertificatesPage() {
       dispatchSuccess(certificateForm.mode === 'batch' ? `Создана партия сертификатов: ${data.batch?.serial_from || ''}–${data.batch?.serial_to || ''}` : 'Сертификат создан.');
     } catch (error) {
       showApiError(error);
+    } finally {
+      setCertificateSaving(false);
     }
   };
 
@@ -413,7 +423,7 @@ export default function CertificatesPage() {
         title="Оформить сертификат"
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        footer={<><Button variant="secondary" onClick={() => setWizardOpen(false)}>Отмена</Button>{wizardStep > 1 && <Button variant="secondary" onClick={() => setWizardStep(wizardStep - 1)}>Назад</Button>}{wizardStep < 3 ? <Button onClick={() => setWizardStep(wizardStep + 1)}>Далее</Button> : <Button onClick={createCertificate}>Создать сертификат</Button>}</>}
+        footer={<><Button variant="secondary" onClick={() => setWizardOpen(false)} disabled={certificateSaving}>Отмена</Button>{wizardStep > 1 && <Button variant="secondary" onClick={() => setWizardStep(wizardStep - 1)} disabled={certificateSaving}>Назад</Button>}{wizardStep < 3 ? <Button onClick={() => setWizardStep(wizardStep + 1)}>Далее</Button> : <Button onClick={createCertificate} disabled={certificateSaving}>{certificateSaving ? 'Сохранение…' : 'Создать сертификат'}</Button>}</>}
       >
         <div className="mb-5 grid grid-cols-3 gap-2 text-center text-sm font-bold">
           {['Шаблон', 'Оформление', 'Подтверждение'].map((label, idx) => <div key={label} className={`rounded-xl px-3 py-2 ${wizardStep === idx + 1 ? 'bg-brand text-white' : 'bg-slate-100 text-slate-500'}`}>{label}</div>)}
@@ -433,7 +443,11 @@ export default function CertificatesPage() {
             <SelectField label="Режим" value={certificateForm.mode} onChange={(value) => setCertificateForm({ ...certificateForm, mode: value, quantity: value === 'batch' ? certificateForm.quantity : 1 })} options={[{ value: 'single', label: 'Один сертификат' }, { value: 'batch', label: 'Партия сертификатов' }]} />
             <SelectField label="Формат" value={certificateForm.issue_mode} onChange={(value) => setCertificateForm({ ...certificateForm, issue_mode: value })} options={[{ value: 'digital', label: 'Цифровой сертификат' }, { value: 'physical', label: 'Физические сертификаты' }]} />
             <SelectField label="Шаблон" value={certificateForm.template} onChange={(value) => setCertificateForm({ ...certificateForm, template: value })} options={[{ value: '', label: 'Выберите шаблон' }, ...templateOptions]} />
-            <SelectField label="Клиент-покупатель" value={certificateForm.purchaser_client} onChange={(value) => setCertificateForm({ ...certificateForm, purchaser_client: value })} options={[{ value: '', label: 'Без клиента' }, ...clientOptions]} />
+            <SelectField label="Клиент-покупатель" value={certificateForm.purchaser_client} onChange={(value) => {
+              const client = getClientById(value);
+              setCertificateForm({ ...certificateForm, purchaser_client: value, branch: client?.branch ? String(client.branch) : certificateForm.branch });
+            }} options={[{ value: '', label: 'Без клиента' }, ...clientOptions]} />
+            <SelectField label="Филиал продажи" value={certificateForm.branch} onChange={(value) => setCertificateForm({ ...certificateForm, branch: value })} options={[{ value: '', label: 'Выберите филиал' }, ...branchOptions]} />
             {!certificateForm.purchaser_client && (
               <>
                 <Input label="Имя покупателя" value={certificateForm.purchaser_name} onChange={(e) => setCertificateForm({ ...certificateForm, purchaser_name: e.target.value })} />
@@ -473,6 +487,7 @@ export default function CertificatesPage() {
               <p>Получатель: {certificateForm.recipient_name || '—'}</p>
               <p>Телефон: {certificateForm.recipient_phone || '—'}</p>
               <p>Количество: {certificateQuantity}</p>
+              <p>Филиал: {getBranchById(certificateForm.branch)?.name || 'Не выбран'}</p>
               <p>Номера: {certificateForm.mode === 'batch' ? previewRange : 'будет присвоен автоматически'}</p>
               <p>Номинал одного: {money(certificateForm.face_value)}</p>
               <p>Общий номинал: {money(totalFaceValue)}</p>

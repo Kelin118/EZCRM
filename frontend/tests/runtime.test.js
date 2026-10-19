@@ -408,6 +408,13 @@ test('certificate checkout chooses a branch for both single and batch sales', as
   assert.match(source, /certificateForm\.mode === 'batch'\s*\? await api\.post\('certificates\/bulk-create\/', payload\)\s*: await api\.post\('certificates\/', payload\)/);
 });
 
+test('finance source filter hides unused choices without changing historical labels', async () => {
+  const source = await readFile(new URL('../src/pages/FinancePage.jsx', import.meta.url), 'utf8');
+  assert.match(source, /const sourceFilterOptions = sourceOptions\.filter\(\(item\) => !\['addon', 'retail', 'manual'\]\.includes\(item\.value\)\)/);
+  assert.match(source, /const sourceLabel = \(value\) => sourceOptions\.find/);
+  assert.match(source, /options=\{\[\{ value: '', label: '[^']+' \}, \.\.\.sourceFilterOptions\]\}/);
+});
+
 for (const status of [401, 500]) {
   test(`refresh ${status} propagates its status and only 401 clears auth`, async (t) => {
     const storage = new Map([['access', 'expired'], ['refresh', 'refresh-token']]);

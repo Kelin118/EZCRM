@@ -32,6 +32,7 @@ const sourceOptions = [
   { value: 'manual', label: 'Ручная операция' }, { value: 'salary', label: 'Зарплата' }, { value: 'salary_advance', label: 'Аванс' },
   { value: 'rent', label: 'Аренда' }, { value: 'other', label: 'Другое' },
 ];
+const sourceFilterOptions = sourceOptions.filter((item) => !['addon', 'retail', 'manual'].includes(item.value));
 const sourceLabel = (value) => sourceOptions.find((item) => item.value === value)?.label || value || 'Другое';
 const typeLabel = (value) => (value === 'income' ? 'Доход' : value === 'expense' ? 'Расход' : value);
 const masterClassStaffNames = (row) => (Array.isArray(row.master_class_staff) ? row.master_class_staff : [])
@@ -367,7 +368,7 @@ export default function FinancePage() {
         <Input label="Дата до" type="date" value={crud.filters.date_to} onChange={(event) => crud.setFilters({ ...crud.filters, date_to: event.target.value })} />
         <SelectField label="Филиал" value={crud.filters.branch} onChange={(value) => crud.setFilters({ ...crud.filters, branch: value })} options={branchFilterOptions} />
         <SelectField label="Тип" value={crud.filters.transaction_type} onChange={(value) => crud.setFilters({ ...crud.filters, transaction_type: value })} options={[{ value: '', label: 'Все операции' }, { value: 'income', label: 'Доход' }, { value: 'expense', label: 'Расход' }]} />
-        <SelectField label={'\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a'} value={crud.filters.source} onChange={(value) => crud.setFilters({ ...crud.filters, source: value })} options={[{ value: '', label: '\u0412\u0441\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438' }, ...sourceOptions]} />
+        <SelectField label={'\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a'} value={crud.filters.source} onChange={(value) => crud.setFilters({ ...crud.filters, source: value })} options={[{ value: '', label: '\u0412\u0441\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438' }, ...sourceFilterOptions]} />
         <SelectField label="Способ оплаты" value={crud.filters.payment_method} onChange={(value) => crud.setFilters({ ...crud.filters, payment_method: value })} options={[{ value: 'all', label: 'Все способы' }, ...paymentOptions, { value: 'unassigned', label: 'Не указан' }]} />
         <SelectField label="Скидка" value={crud.filters.discount} onChange={(value) => crud.setFilters({ ...crud.filters, discount: value })} options={[{ value: 'all', label: 'Все скидки' }, ...discountOptions, { value: 'unassigned', label: 'Без скидки' }]} />
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: 'all', label: 'Все менеджеры' }, ...managerOptions, { value: 'unassigned', label: 'Не указан' }]} />

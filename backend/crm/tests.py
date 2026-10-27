@@ -5086,6 +5086,58 @@ class MasterClassFinanceSyncTests(APITestCase):
         self.assertEqual(master_class.payment_amount, Decimal('5000.00'))
         self.assertEqual(master_class.finance_transaction_id, transaction.id)
 
+    def test_bulk_create_keeps_each_master_class_payment_separate(self):
+        second_subject = MasterClassSubject.objects.create(name='МК Art')
+        starts_at = timezone.now()
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'items': [
+                {
+                    'subject': self.master_class_subject.id, 'starts_at': starts_at.isoformat(), 'price': '5000.00',
+                    'initial_payment': {'amount': '5000.00', 'payment_date': '2026-07-20',
+                                        'payment_parts': [{'payment_method': self.cash.id, 'amount': '5000.00'}]},
+                },
+                {
+                    'subject': second_subject.id, 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '7000.00',
+                    'initial_payment': {'amount': '7000.00', 'payment_date': '2026-07-21',
+                                        'payment_parts': [{'payment_method': self.card.id, 'amount': '7000.00'}]},
+                },
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual([item['payment_status'] for item in response.data], ['paid', 'paid'])
+        master_classes = list(MasterClass.objects.order_by('starts_at'))
+        self.assertEqual([item.paid_total for item in master_classes], [Decimal('5000.00'), Decimal('7000.00')])
+        transactions = list(FinanceTransaction.objects.filter(source='master_class').order_by('amount'))
+        self.assertEqual([item.amount for item in transactions], [Decimal('5000.00'), Decimal('7000.00')])
+        self.assertEqual(sum((item.amount for item in transactions), Decimal('0.00')), Decimal('12000.00'))
+        self.assertEqual([item.payment_method_id for item in transactions], [self.cash.id, self.card.id])
+        self.assertEqual([timezone.localdate(item.paid_at) for item in transactions], [date(2026, 7, 20), date(2026, 7, 21)])
+        self.assertEqual(MasterClassPayment.objects.count(), 2)
+
+    def test_bulk_create_rejects_overpayment_without_writes(self):
+        second_subject = MasterClassSubject.objects.create(name='МК Art')
+        starts_at = timezone.now()
+        response = self.client.post('/api/master-classes/bulk-create/', {
+            'client': self.student.id,
+            'branch': self.branch.id,
+            'items': [
+                {'subject': self.master_class_subject.id, 'starts_at': starts_at.isoformat(), 'price': '5000.00'},
+                {
+                    'subject': second_subject.id, 'starts_at': (starts_at + timedelta(hours=1)).isoformat(), 'price': '7000.00',
+                    'initial_payment': {'amount': '7000.01',
+                                        'payment_parts': [{'payment_method': self.cash.id, 'amount': '7000.01'}]},
+                },
+            ],
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(MasterClass.objects.count(), 0)
+        self.assertEqual(MasterClassPayment.objects.count(), 0)
+        self.assertEqual(FinanceTransaction.objects.count(), 0)
+
     def test_update_master_class_does_not_mutate_existing_payment_transaction(self):
         master_class = self.create_master_class_with_initial_payment()
         transaction_id = master_class.finance_transaction_id

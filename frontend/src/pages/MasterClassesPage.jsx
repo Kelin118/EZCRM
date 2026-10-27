@@ -221,6 +221,11 @@ export const createExtraMasterClassFromForm = (form = {}) => ({
   duration_minutes: form.duration_minutes,
   price: form.price,
   discount: '',
+  initial_payment_enabled: Boolean(form.initial_payment_enabled),
+  initial_payment_amount: '',
+  initial_payment_date: '',
+  initial_payment_parts: [],
+  initial_payment_comment: '',
 });
 
 export const calculateExtraMasterClassTotals = (item = {}, discount = null) => ({
@@ -228,7 +233,7 @@ export const calculateExtraMasterClassTotals = (item = {}, discount = null) => (
   totalAfterDiscount: calculateDiscountedTotal(item.price, discount),
 });
 
-export const buildMasterClassBulkItems = ({ payload, extraMasterClasses, form, normalize = normalizePayload }) => [
+export const buildMasterClassBulkItems = ({ payload, extraMasterClasses, form, getDiscountById = () => null, normalize = normalizePayload }) => [
   payload,
   ...extraMasterClasses.map((item) => {
     const itemPayload = normalize({
@@ -238,10 +243,20 @@ export const buildMasterClassBulkItems = ({ payload, extraMasterClasses, form, n
       duration_minutes: item.duration_minutes || form.duration_minutes,
       price: item.price || form.price,
       discount: item.discount || null,
-      initial_payment: undefined,
     });
     itemPayload.discount = item.discount || null;
     delete itemPayload.initial_payment;
+    if (item.initial_payment_enabled) {
+      itemPayload.initial_payment = {
+        payment_type: 'prepayment',
+        amount: item.initial_payment_amount === ''
+          ? calculateExtraMasterClassTotals(item, getDiscountById(item.discount)).totalAfterDiscount
+          : item.initial_payment_amount,
+        payment_date: item.initial_payment_date || todayIso(),
+        payment_parts: paymentPartsPayload(item.initial_payment_parts),
+        comment: item.initial_payment_comment || '',
+      };
+    }
     return itemPayload;
   }),
 ];
@@ -678,6 +693,8 @@ export default function MasterClassesPage() {
           {extraMasterClasses.map((item, index) => {
             const rowDiscount = getDiscountById(item.discount);
             const rowTotals = calculateExtraMasterClassTotals(item, rowDiscount);
+            const updateExtra = (patch) => setExtraMasterClasses((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+            const rowPaymentAmount = item.initial_payment_amount === '' ? rowTotals.totalAfterDiscount : item.initial_payment_amount;
             return (
               <div key={index} className="grid gap-3 rounded-2xl bg-white p-3 shadow-sm">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -696,6 +713,18 @@ export default function MasterClassesPage() {
                   <span>Скидка: {money(rowTotals.discountAmount)}</span>
                   <span className="text-slate-900">Итого: {money(rowTotals.totalAfterDiscount)}</span>
                 </div>
+                <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={Boolean(item.initial_payment_enabled)} onChange={(event) => updateExtra({ initial_payment_enabled: event.target.checked })} />
+                  Внести оплату этого МК
+                </label>
+                {item.initial_payment_enabled && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Input label="Сумма оплаты" type="number" value={rowPaymentAmount} onChange={(event) => updateExtra({ initial_payment_amount: event.target.value })} />
+                    <Input label="Дата оплаты" type="date" value={item.initial_payment_date || todayIso()} onChange={(event) => updateExtra({ initial_payment_date: event.target.value })} />
+                    <PaymentSplitFields totalAmount={rowPaymentAmount} value={item.initial_payment_parts} onChange={(initial_payment_parts) => updateExtra({ initial_payment_parts })} />
+                    <Input label="Комментарий к оплате" value={item.initial_payment_comment} onChange={(event) => updateExtra({ initial_payment_comment: event.target.value })} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -879,12 +908,17 @@ export default function MasterClassesPage() {
                   <input
                     type="checkbox"
                     checked={Boolean(current.initial_payment_enabled)}
-                    onChange={(event) => update({
-                      ...current,
-                      initial_payment_enabled: event.target.checked,
-                      initial_payment_date: event.target.checked ? nextInitialDate : current.initial_payment_date,
-                      initial_payment_amount: event.target.checked && !current.initial_payment_amount ? totalAfterDiscount : current.initial_payment_amount,
-                    })}
+                    onChange={(event) => {
+                      if (event.target.checked) {
+                        setExtraMasterClasses((items) => items.map((item) => ({ ...item, initial_payment_enabled: true })));
+                      }
+                      update({
+                        ...current,
+                        initial_payment_enabled: event.target.checked,
+                        initial_payment_date: event.target.checked ? nextInitialDate : current.initial_payment_date,
+                        initial_payment_amount: event.target.checked && !current.initial_payment_amount ? totalAfterDiscount : current.initial_payment_amount,
+                      });
+                    }}
                   />
                   Внести предоплату сейчас
                 </label>
@@ -968,6 +1002,19 @@ export default function MasterClassesPage() {
       dispatchError('Выберите предмет МК для каждой строки.');
       return;
     }
+    for (const [index, item] of extraMasterClasses.entries()) {
+      if (!item.initial_payment_enabled) continue;
+      const due = calculateExtraMasterClassTotals(item, getDiscountById(item.discount)).totalAfterDiscount;
+      const amount = Number(item.initial_payment_amount === '' ? due : item.initial_payment_amount);
+      if (!Number.isFinite(amount) || amount <= 0 || amount > due) {
+        dispatchError(`Проверьте сумму оплаты МК #${index + 2}: она должна быть больше нуля и не выше стоимости МК.`);
+        return;
+      }
+      if (paymentPartsTotal(item.initial_payment_parts) !== amount) {
+        dispatchError(`Сумма оплат по способам для МК #${index + 2} должна совпадать с его оплатой.`);
+        return;
+      }
+    }
     if (form.initial_payment_enabled) {
       const initialAmount = Number(form.initial_payment_amount || 0);
       if (initialAmount <= 0) {
@@ -1026,7 +1073,7 @@ export default function MasterClassesPage() {
       }
       if (form.id) await api.patch(`master-classes/${form.id}/`, payload);
       else if (extraMasterClasses.length) {
-        const items = buildMasterClassBulkItems({ payload, extraMasterClasses, form });
+        const items = buildMasterClassBulkItems({ payload, extraMasterClasses, form, getDiscountById });
         await api.post('master-classes/bulk-create/', {
           client: payload.client,
           branch: payload.branch,

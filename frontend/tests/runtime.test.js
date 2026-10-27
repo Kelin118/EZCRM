@@ -178,12 +178,15 @@ test('master class bulk rows keep independent discounts in payload and UI source
   };
   const extra = createExtraMasterClassFromForm(form);
   assert.equal(extra.discount, '');
+  assert.equal(createExtraMasterClassFromForm({ ...form, initial_payment_enabled: true }).initial_payment_enabled, true);
 
   const items = buildMasterClassBulkItems({
-    payload: { client: 1, branch: 2, manager: 3, subject: '1', starts_at: form.starts_at, duration_minutes: 60, price: '20000', discount: '10' },
+    payload: { client: 1, branch: 2, manager: 3, subject: '1', starts_at: form.starts_at, duration_minutes: 60, price: '20000', discount: '10', initial_payment: { amount: '50000' } },
     form,
     extraMasterClasses: [
-      { ...extra, subject: '2', price: '26000', discount: '' },
+      { ...extra, subject: '2', price: '26000', discount: '', initial_payment_enabled: true,
+        initial_payment_amount: '26000', initial_payment_date: '2026-09-14',
+        initial_payment_parts: [{ payment_method: '4', amount: '26000' }] },
       { ...extra, subject: '3', price: '15000', discount: '20' },
     ],
     normalize: (payload) => Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined)),
@@ -194,6 +197,12 @@ test('master class bulk rows keep independent discounts in payload and UI source
   assert.equal(items[2].discount, '20');
   assert.equal(items[1].subject, '2');
   assert.equal(items[2].price, '15000');
+  assert.equal(items[0].initial_payment.amount, '50000');
+  assert.equal(items[1].initial_payment.amount, '26000');
+  assert.deepEqual(items[1].initial_payment.payment_parts, [{ payment_method: 4, amount: '26000' }]);
+  assert.ok(!Object.hasOwn(items[2], 'initial_payment'));
+  assert.match(masterClassesSource, /Внести оплату этого МК/);
+  assert.match(masterClassesSource, /setExtraMasterClasses\(\(items\) => items\.map\(\(item\) => \(\{ \.\.\.item, initial_payment_enabled: true \}\)\)\)/);
   assert.equal(calculateExtraMasterClassTotals({ price: '15000' }, { discount_type: 'percentage', value: '20' }).totalAfterDiscount, 12000);
   assert.match(masterClassesSource, /<DiscountSelect value=\{item\.discount \|\| ''\}/);
   assert.match(masterClassesSource, /calculateExtraMasterClassTotals\(item, rowDiscount\)/);

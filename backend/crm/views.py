@@ -2776,6 +2776,10 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             queryset = queryset.filter(Q(teacher_id=teacher) | Q(staff_assignments__employee_id=teacher))
         if client:
             queryset = queryset.filter(participants__id=client)
+        purchase_group = self.request.query_params.get('purchase_group')
+        if purchase_group:
+            group_id = drf_serializers.UUIDField().run_validation(purchase_group)
+            queryset = queryset.filter(purchase_group=group_id)
         if subject and subject != 'all':
             if subject == 'unassigned':
                 queryset = queryset.filter(subject__isnull=True)
@@ -3015,6 +3019,46 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 'duplicate': self._duplicate_payload(duplicate),
             })
 
+    @action(detail=False, methods=['post'], url_path='group-existing')
+    def group_existing(self, request):
+        raw_ids = request.data.get('ids')
+        if not isinstance(raw_ids, list) or not 2 <= len(raw_ids) <= 20:
+            raise drf_serializers.ValidationError({'ids': 'Выберите от 2 до 20 МК одной покупки.'})
+        ids = [drf_serializers.IntegerField(min_value=1).run_validation(value) for value in raw_ids]
+        if len(set(ids)) != len(ids):
+            raise drf_serializers.ValidationError({'ids': 'МК нельзя выбирать повторно.'})
+
+        with transaction.atomic():
+            master_classes = list(MasterClass.objects.select_for_update().prefetch_related('participants').filter(pk__in=ids).order_by('pk'))
+            if len(master_classes) != len(ids):
+                raise drf_serializers.ValidationError({'ids': 'Один из выбранных МК не найден.'})
+            if any(item.purchase_group for item in master_classes):
+                raise drf_serializers.ValidationError({'ids': 'Один из МК уже входит в покупку.'})
+            clients = [list(item.participants.all()) for item in master_classes]
+            if any(len(items) != 1 for items in clients) or len({items[0].pk for items in clients}) != 1:
+                raise drf_serializers.ValidationError({'ids': 'В одной покупке должны быть МК одного клиента.'})
+            if len({item.branch_id for item in master_classes}) != 1:
+                raise drf_serializers.ValidationError({'ids': 'В одной покупке должны быть МК одного филиала.'})
+            group_id = uuid.uuid4()
+            MasterClass.objects.filter(pk__in=ids).update(purchase_group=group_id)
+            for item in master_classes:
+                item.purchase_group = group_id
+                self._log_instance(AuditLog.Action.UPDATE, item, 'МК добавлен в покупку', {'purchase_group': str(group_id)})
+        return Response({'purchase_group': str(group_id), 'ids': ids})
+
+    @action(detail=False, methods=['post'], url_path='ungroup-existing')
+    def ungroup_existing(self, request):
+        group_id = drf_serializers.UUIDField().run_validation(request.data.get('purchase_group'))
+        with transaction.atomic():
+            master_classes = list(MasterClass.objects.select_for_update().filter(purchase_group=group_id).order_by('pk'))
+            if not master_classes:
+                raise drf_serializers.ValidationError({'purchase_group': 'Покупка не найдена.'})
+            MasterClass.objects.filter(purchase_group=group_id).update(purchase_group=None)
+            for item in master_classes:
+                item.purchase_group = None
+                self._log_instance(AuditLog.Action.UPDATE, item, 'МК исключён из покупки', {'purchase_group': str(group_id)})
+        return Response({'ids': [item.pk for item in master_classes]})
+
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request):
         items = request.data.get('items')
@@ -3042,6 +3086,8 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
             self._raise_duplicate_if_needed(client=client, starts_at=starts_at, title=title)
             serializers.append(serializer)
 
+        group_keys = {(serializer.validated_data['client'].pk, serializer.validated_data['branch'].pk if serializer.validated_data.get('branch') else None) for serializer in serializers}
+        purchase_group = uuid.uuid4() if len(serializers) > 1 and len(group_keys) == 1 else None
         created = []
         with transaction.atomic():
             locked_clients = {
@@ -3053,7 +3099,7 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 client = serializer.validated_data.get('client')
                 if client:
                     serializer.validated_data['client'] = locked_clients[client.pk]
-                master_class = serializer.save()
+                master_class = serializer.save(purchase_group=purchase_group) if purchase_group else serializer.save()
                 initial_payment = getattr(master_class, 'selected_initial_payment', None)
                 if initial_payment:
                     self._create_payment(

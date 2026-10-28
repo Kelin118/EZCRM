@@ -209,6 +209,24 @@ test('master class bulk rows keep independent discounts in payload and UI source
   assert.doesNotMatch(masterClassesSource, /\.\.\.payload,[\s\S]{0,220}initial_payment: undefined,[\s\S]{0,80}\}\)\)/);
 });
 
+test('master class purchases group only explicitly linked rows', async () => {
+  const { buildMasterClassPurchaseRows } = await loadModule('pages/MasterClassesPage.jsx');
+  const items = [
+    { id: 1, purchase_group: 'purchase-1', price: '6000.00', amount_due: '6000.00', paid_total: '7000.00', remaining_amount: '0.00', overpaid_amount: '1000.00' },
+    { id: 2, purchase_group: 'purchase-1', price: '12000.00', amount_due: '12000.00', paid_total: '0.00', remaining_amount: '12000.00', overpaid_amount: '0.00' },
+    { id: 3, purchase_group: null, price: '5000.00', amount_due: '5000.00', paid_total: '5000.00', remaining_amount: '0.00' },
+  ];
+  const rows = buildMasterClassPurchaseRows(items);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0].purchase_items.map((item) => item.id), [1, 2]);
+  assert.equal(rows[0].amount_due, '18000.00');
+  assert.equal(rows[0].paid_total, '7000.00');
+  assert.equal(rows[0].remaining_amount, '12000.00');
+  assert.equal(rows[0].overpaid_amount, '1000.00');
+  assert.equal(rows[1].id, 3);
+  assert.equal(items[0].price, '6000.00');
+});
+
 test('finance date formatter uses API precision across workstation timezones', () => {
   for (const zone of ['UTC', 'Asia/Almaty', 'America/Los_Angeles']) {
     process.env.TZ = zone;

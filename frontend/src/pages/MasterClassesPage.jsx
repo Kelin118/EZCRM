@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Eye, Link2, Unlink2 } from 'lucide-react';
 
 import api from '../api/axios.js';
 import KanbanBoard from '../components/ui/KanbanBoard.jsx';
@@ -261,6 +261,37 @@ export const buildMasterClassBulkItems = ({ payload, extraMasterClasses, form, g
   }),
 ];
 
+const sumMoney = (items, field) => (items.reduce((sum, item) => sum + Math.round(Number(item[field] || 0) * 100), 0) / 100).toFixed(2);
+
+export function buildMasterClassPurchaseRows(items = []) {
+  const rows = [];
+  const groups = new Map();
+  for (const item of items) {
+    if (!item.purchase_group) {
+      rows.push(item);
+      continue;
+    }
+    let row = groups.get(item.purchase_group);
+    if (!row) {
+      row = { ...item, id: `purchase-${item.purchase_group}`, is_purchase_group: true, purchase_items: [] };
+      groups.set(item.purchase_group, row);
+      rows.push(row);
+    }
+    row.purchase_items.push(item);
+  }
+  for (const row of groups.values()) {
+    row.price = sumMoney(row.purchase_items, 'price');
+    row.amount_due = sumMoney(row.purchase_items, 'amount_due');
+    row.paid_total = sumMoney(row.purchase_items, 'paid_total');
+    row.remaining_amount = sumMoney(row.purchase_items, 'remaining_amount');
+    row.overpaid_amount = sumMoney(row.purchase_items, 'overpaid_amount');
+    row.has_payment_mismatch = row.purchase_items.some((item) => item.has_payment_mismatch);
+    row.payment_attention_level = row.purchase_items.some((item) => item.payment_attention_level === 'critical')
+      ? 'critical' : (row.purchase_items.some((item) => item.payment_attention_level === 'warning') ? 'warning' : 'none');
+  }
+  return rows;
+}
+
 function managerScheduleTitle(schedule = managerScheduleFallback) {
   const lines = [];
   if (schedule.schedule_start && schedule.schedule_end) lines.push(`График: ${schedule.schedule_start}–${schedule.schedule_end}`);
@@ -335,7 +366,7 @@ function ViewToggle({ value, onChange }) {
   );
 }
 
-function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
+function MasterClassCard({ canEdit, item, onEdit, onOpenPurchase, dragProps }) {
   const clientName = clientDisplay(item);
   const clientInfo = clientSecondary(item);
   const timeOutside = item.time_outside_regular_hours ?? item.outside_regular_hours ?? item.is_outside_regular_hours;
@@ -370,6 +401,7 @@ function MasterClassCard({ canEdit, item, onEdit, dragProps }) {
       </dl>
       {item.has_payment_mismatch && <div className="mt-3"><PaymentCheckBadge item={item} /></div>}
       {item.description && <p className="mt-3 line-clamp-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{item.description}</p>}
+      {item.purchase_group && <Button variant="secondary" className="mt-3 w-full" onClick={onOpenPurchase}><Eye size={15} />Покупка МК</Button>}
       {canEdit && <Button variant="secondary" className="mt-3 w-full" onClick={onEdit}>Редактировать</Button>}
     </KanbanCard>
   );
@@ -393,11 +425,17 @@ export default function MasterClassesPage() {
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [deletingPaymentId, setDeletingPaymentId] = useState(null);
   const [extraMasterClasses, setExtraMasterClasses] = useState([]);
+  const [selectedPurchaseIds, setSelectedPurchaseIds] = useState([]);
+  const [purchaseModal, setPurchaseModal] = useState({ open: false, id: null, items: [], loading: false });
+  const [groupingPurchase, setGroupingPurchase] = useState(false);
   const [masterClassSubjects, setMasterClassSubjects] = useState([]);
   const [masterClassSubjectFilters, setMasterClassSubjectFilters] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
+  const hasNarrowingFilters = Object.entries(crud.filters).some(([key, value]) => key !== 'branch' && value !== '' && value !== 'all' && value !== null && value !== undefined);
+  const purchaseRows = hasNarrowingFilters ? crud.items : buildMasterClassPurchaseRows(crud.items);
+  const selectedVisibleIds = selectedPurchaseIds.filter((id) => crud.items.some((item) => item.id === id && !item.purchase_group));
   const form = crud.editing || empty;
   const setForm = (value) => crud.setEditing(value);
   const { getDiscountById } = useDiscounts({ branch: form.branch });
@@ -534,6 +572,46 @@ export default function MasterClassesPage() {
     const { data } = await api.get(`master-classes/${form.id}/`);
     crud.setEditing(data);
     await crud.reload();
+  };
+
+  const openPurchase = async (groupId) => {
+    setPurchaseModal({ open: true, id: groupId, items: [], loading: true });
+    try {
+      const { data } = await api.get('master-classes/', { params: { purchase_group: groupId } });
+      setPurchaseModal({ open: true, id: groupId, items: Array.isArray(data) ? data : data.results || [], loading: false });
+    } catch (error) {
+      setPurchaseModal({ open: false, id: null, items: [], loading: false });
+      showApiError(error);
+    }
+  };
+
+  const groupSelectedPurchase = async () => {
+    if (selectedVisibleIds.length < 2 || groupingPurchase) return;
+    setGroupingPurchase(true);
+    try {
+      const { data } = await api.post('master-classes/group-existing/', { ids: selectedVisibleIds });
+      setSelectedPurchaseIds([]);
+      await crud.reload();
+      await openPurchase(data.purchase_group);
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setGroupingPurchase(false);
+    }
+  };
+
+  const ungroupPurchase = async () => {
+    if (!purchaseModal.id || groupingPurchase || !window.confirm('Разъединить МК этой покупки? Оплаты и финансовые операции не изменятся.')) return;
+    setGroupingPurchase(true);
+    try {
+      await api.post('master-classes/ungroup-existing/', { purchase_group: purchaseModal.id });
+      setPurchaseModal({ open: false, id: null, items: [], loading: false });
+      await crud.reload();
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setGroupingPurchase(false);
+    }
   };
 
   const openPaymentModal = (payment = null) => {
@@ -1149,18 +1227,25 @@ export default function MasterClassesPage() {
           items={crud.items}
           getColumnId={masterClassColumnId}
           onMove={moveMasterClass}
-          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
+          renderCard={(item, dragProps) => <MasterClassCard key={item.id} item={item} canEdit={canEdit} onOpenPurchase={() => openPurchase(item.purchase_group)} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(item); crud.setModalOpen(true); }} dragProps={dragProps} />}
         />
       ) : (
-        <Table data={crud.items} rowClassName={(row) => row.payment_attention_level === 'critical' ? 'bg-red-50/60' : (row.payment_attention_level === 'warning' ? 'bg-amber-50/60' : '')} columns={[
+        <>
+        {canDelete && <div className="mb-3 flex items-center gap-3">
+          <Button variant="secondary" onClick={groupSelectedPurchase} disabled={selectedVisibleIds.length < 2 || groupingPurchase}><Link2 size={16} />Объединить МК ({selectedVisibleIds.length})</Button>
+        </div>}
+        <Table data={purchaseRows} rowClassName={(row) => row.payment_attention_level === 'critical' ? 'bg-red-50/60' : (row.payment_attention_level === 'warning' ? 'bg-amber-50/60' : '')} columns={[
+          ...(canDelete ? [{ key: 'select', header: '', render: (row) => row.is_purchase_group || row.purchase_group ? null : <input type="checkbox" aria-label={`Выбрать МК ${masterClassTitle(row)}`} checked={selectedVisibleIds.includes(row.id)} onChange={(event) => setSelectedPurchaseIds((ids) => event.target.checked ? [...ids, row.id] : ids.filter((id) => id !== row.id))} /> }] : []),
           { key: 'client', header: 'Клиент', render: (row) => (
             <div>
               <p className="font-semibold text-slate-900">{clientDisplay(row)}</p>
               {clientSecondary(row) && <p className="text-xs font-medium text-slate-500">{clientSecondary(row)}</p>}
+              {row.is_purchase_group && <p className="text-xs font-semibold text-brand">Покупка · {row.purchase_items.length} МК</p>}
             </div>
           ) },
-          { key: 'subject_name', header: 'Предмет', render: (row) => masterClassTitle(row) || '—' },
+          { key: 'subject_name', header: 'Предмет', nowrap: false, render: (row) => row.is_purchase_group ? row.purchase_items.map((item) => masterClassTitle(item)).join(', ') : masterClassTitle(row) || '—' },
           { key: 'staff', header: 'Мастера', render: (row) => {
+            if (row.is_purchase_group) return `${row.purchase_items.length} МК`;
             const { leadName, assistantNames } = staffNames(row);
             return (
               <div className="text-sm">
@@ -1171,27 +1256,73 @@ export default function MasterClassesPage() {
           } },
           { key: 'starts_at', header: 'Дата проведения МК', render: (row) => {
             const value = eventDateTime(row.starts_at);
-            return <div><p className="font-semibold text-slate-900">{value.date}</p>{value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;
+            return <div><p className="font-semibold text-slate-900">{value.date}</p>{!row.is_purchase_group && value.time && <p className="text-xs font-medium text-slate-500">{value.time}</p>}</div>;
           } },
-          { key: 'stage', header: 'Этап', render: (row) => <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
+          { key: 'stage', header: 'Этап', render: (row) => row.is_purchase_group ? 'Несколько' : <Badge value={row.stage}>{stageLabel(row.stage)}</Badge> },
           { key: 'time_kind', header: 'Учёт', render: (row) => {
+            if (row.is_purchase_group) return '—';
             const timeOutside = row.time_outside_regular_hours ?? row.outside_regular_hours ?? row.is_outside_regular_hours;
             if (row.is_extra_work) return <Badge value="outside">Вне времени МК</Badge>;
             if (timeOutside) return <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700">Вне 16:00–21:00 · не отмечен</span>;
             return 'Обычный';
           } },
-          { key: 'manager_work_schedule', header: 'График куратора', render: (row) => <ManagerScheduleBadge schedule={row.manager_work_schedule} /> },
-          { key: 'duration_minutes', header: 'Длительность', render: (row) => row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана' },
-          { key: 'capacity', header: 'Мест' },
+          { key: 'manager_work_schedule', header: 'График куратора', render: (row) => row.is_purchase_group ? '—' : <ManagerScheduleBadge schedule={row.manager_work_schedule} /> },
+          { key: 'duration_minutes', header: 'Длительность', render: (row) => row.is_purchase_group ? '—' : (row.duration_minutes ? `${row.duration_minutes} мин` : 'Не указана') },
+          { key: 'capacity', header: 'Мест', render: (row) => row.is_purchase_group ? '—' : (row.capacity || '—') },
           { key: 'price', header: 'Цена', render: (row) => money(row.price) },
           { key: 'paid_total', header: 'Оплачено', render: (row) => <span className={row.has_payment_mismatch ? 'font-black text-slate-900 tabular-nums' : 'tabular-nums'}>{money(row.paid_total ?? row.payment_amount)}</span> },
           { key: 'remaining_amount', header: 'Остаток', render: (row) => <span className={row.has_payment_mismatch ? (row.payment_attention_level === 'critical' ? 'font-black text-red-700 tabular-nums' : 'font-black text-amber-700 tabular-nums') : 'tabular-nums'}>{money(row.remaining_amount)}</span> },
-          { key: 'payment_status', header: 'Статус оплаты', render: (row) => <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
-          { key: 'payment_check', header: 'Расхождение', nowrap: false, render: (row) => <PaymentCheckBadge item={row} /> },
-          { key: 'actions', header: '', render: (row) => <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => deleteMasterClass(row)} /> },
+          { key: 'payment_status', header: 'Статус оплаты', render: (row) => row.is_purchase_group ? `${row.purchase_items.filter((item) => ['paid', 'overpaid'].includes(item.payment_status)).length} из ${row.purchase_items.length} без долга` : <Badge value={paymentStatusBadge(row.payment_status)}>{paymentStatusLabels[row.payment_status] || 'Не оплачено'}</Badge> },
+          { key: 'payment_check', header: 'Расхождение', nowrap: false, render: (row) => row.is_purchase_group ? (row.has_payment_mismatch ? 'Есть расхождение' : '—') : <PaymentCheckBadge item={row} /> },
+          { key: 'actions', header: '', render: (row) => row.is_purchase_group || row.purchase_group ? <Button variant="secondary" onClick={() => openPurchase(row.purchase_group)}><Eye size={15} />Покупка</Button> : <Actions canEdit={canEdit} canDelete={canDelete} onEdit={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(row); crud.setModalOpen(true); }} onDelete={() => deleteMasterClass(row)} /> },
         ]} />
+        </>
       )}
       <CrudModal title="Мастер-класс" open={crud.modalOpen} onClose={() => { setDuplicateError(null); setExtraMasterClasses([]); crud.setModalOpen(false); }} fields={fields} form={form} setForm={setForm} saving={crud.saving || saving} onSubmit={saveMasterClass} />
+      <Modal
+        title="Покупка мастер-классов"
+        open={purchaseModal.open}
+        onClose={() => setPurchaseModal({ open: false, id: null, items: [], loading: false })}
+        size="wide"
+        footer={<>
+          {canDelete && !purchaseModal.loading && <Button variant="secondary" onClick={ungroupPurchase} disabled={groupingPurchase}><Unlink2 size={16} />Разъединить</Button>}
+          <Button variant="secondary" onClick={() => setPurchaseModal({ open: false, id: null, items: [], loading: false })}>Закрыть</Button>
+        </>}
+      >
+        {purchaseModal.loading ? <p className="text-sm text-slate-500">Загрузка...</p> : <div className="grid gap-5">
+          <div>
+            <p className="font-semibold text-slate-900">{clientDisplay(purchaseModal.items[0] || {})}</p>
+            <div className="mt-3 grid gap-3 border-y border-slate-100 py-3 text-sm sm:grid-cols-4">
+              <p>МК: <b>{purchaseModal.items.length}</b></p>
+              <p>К оплате: <b>{money(sumMoney(purchaseModal.items, 'amount_due'))}</b></p>
+              <p>Оплачено: <b>{money(sumMoney(purchaseModal.items, 'paid_total'))}</b></p>
+              <p>Остаток: <b>{money(sumMoney(purchaseModal.items, 'remaining_amount'))}</b></p>
+            </div>
+            {Number(sumMoney(purchaseModal.items, 'overpaid_amount')) > 0 && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">Переплата по отдельным МК: {money(sumMoney(purchaseModal.items, 'overpaid_amount'))}. Она не переносится на другие МК автоматически.</p>}
+            <p className="mt-3 text-xs text-slate-500">Оплата каждого МК учитывается отдельно. Объединение записей не меняет финансовые операции.</p>
+          </div>
+          <div className="grid gap-0 divide-y divide-slate-100">
+            {purchaseModal.items.map((item) => (
+              <div key={item.id} className="grid gap-2 py-3 text-sm sm:grid-cols-[minmax(0,2fr)_repeat(3,minmax(0,1fr))_auto] sm:items-center">
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-900">{masterClassTitle(item)}</p>
+                  <p className="text-xs text-slate-500">{dateTime(item.starts_at)} · {staffNames(item).leadName}</p>
+                </div>
+                <p>Цена: <b>{money(item.amount_due)}</b></p>
+                <p>Оплачено: <b>{money(item.paid_total)}</b></p>
+                <p>{paymentStatusLabels[item.payment_status] || 'Не оплачено'}</p>
+                {canEdit && <Button variant="secondary" onClick={() => {
+                  setPurchaseModal({ open: false, id: null, items: [], loading: false });
+                  setDuplicateError(null);
+                  setExtraMasterClasses([]);
+                  crud.setEditing(item);
+                  crud.setModalOpen(true);
+                }}>Изменить</Button>}
+              </div>
+            ))}
+          </div>
+        </div>}
+      </Modal>
       <Modal
         title={paymentModal.payment ? 'Изменить оплату' : 'Добавить оплату'}
         open={paymentModal.open}

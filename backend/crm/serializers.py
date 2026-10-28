@@ -1197,7 +1197,7 @@ class MasterClassSerializer(BranchNameMixin, serializers.ModelSerializer):
     class Meta:
         model = MasterClass
         fields = '__all__'
-        read_only_fields = ('payment_amount', 'payment_date', 'finance_transaction')
+        read_only_fields = ('payment_amount', 'payment_date', 'finance_transaction', 'purchase_group')
         extra_kwargs = {'title': {'required': False}}
 
     def __init__(self, *args, **kwargs):

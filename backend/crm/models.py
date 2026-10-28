@@ -521,6 +521,7 @@ class MasterClass(TimeStampedModel):
         CANCELLED = 'cancelled', 'Cancelled'
 
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
+    purchase_group = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
     subject = models.ForeignKey(MasterClassSubject, on_delete=models.SET_NULL, null=True, blank=True, related_name='master_classes')
     title = models.CharField(max_length=150)
     description = models.TextField(blank=True)

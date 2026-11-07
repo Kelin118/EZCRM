@@ -39,7 +39,7 @@ const emptyCatalogForm = {
   is_active: true,
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
-const emptyMasterClassSubjectForm = { name: '', description: '', is_active: true };
+const emptyMasterClassSubjectForm = { name: '', description: '', is_active: true, is_culinary: false };
 const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true };
 const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
 const emptyChannelForm = { provider: 'whatsapp', name: '', external_account_id: '', phone_number: '', branch: '', default_manager: '', is_active: true };
@@ -677,22 +677,23 @@ export default function SettingsPage() {
           id="master-class-subjects-settings"
           icon={Wrench}
           title="Предметы МК"
-          subtitle="Отдельный справочник предметов для мастер-классов"
+          subtitle="Отметьте кулинарные предметы для общей суммы на странице МК"
           action={canEditCatalog && <Button onClick={() => { setMasterClassSubjectForm(emptyMasterClassSubjectForm); setMasterClassSubjectModal({ open: true, item: null }); }}><Plus size={16} />Добавить предмет</Button>}
         >
-          <div className="overflow-hidden rounded-2xl border border-slate-100">
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
             <table className="w-full min-w-[720px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3">Действия</th></tr></thead>
+              <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Название</th><th className="px-4 py-3">Описание</th><th className="px-4 py-3">Категория</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3">Действия</th></tr></thead>
               <tbody>
                 {masterClassSubjects.map((item) => (
                   <tr key={item.id} className="hover:bg-slate-50">
                     <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.description || '—'}</td>
+                    <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.is_culinary ? 'Кулинария' : '—'}</td>
                     <td className="border-b border-slate-100 px-4 py-3"><Badge value={item.is_active ? 'paid' : 'cancelled'}>{item.is_active ? 'Активен' : 'Отключён'}</Badge></td>
-                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, name: item.name ?? '', description: item.description || '', is_active: item.is_active ?? true }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
+                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, name: item.name ?? '', description: item.description || '', is_active: item.is_active ?? true, is_culinary: item.is_culinary ?? false }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
                   </tr>
                 ))}
-                {!masterClassSubjects.length && <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Предметы МК ещё не добавлены</td></tr>}
+                {!masterClassSubjects.length && <tr><td colSpan={5} className="px-4 py-8 text-center font-semibold text-slate-500">Предметы МК ещё не добавлены</td></tr>}
               </tbody>
             </table>
           </div>
@@ -957,6 +958,7 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={masterClassSubjectForm.name} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, name: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={masterClassSubjectForm.description || ''} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, description: event.target.value })} />
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectForm.is_culinary} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, is_culinary: event.target.checked })} />Кулинария (входит в общую сумму)</label>
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectForm.is_active} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, is_active: event.target.checked })} />Активен</label>
         </div>
       </Modal>

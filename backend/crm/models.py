@@ -234,6 +234,7 @@ class MasterClassSubject(TimeStampedModel):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+    is_culinary = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0, blank=True)
 
     class Meta:

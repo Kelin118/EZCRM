@@ -391,6 +391,16 @@ test('master class event range is primary and payment range stays independent', 
   assert.match(source, /const params = \{ \.\.\.crud\.filters, outside_regular_hours: 'true'/);
 });
 
+test('culinary month covers every day and keeps other filters', async () => {
+  const { culinaryMonthFilters } = await loadModule('pages/MasterClassesPage.jsx');
+  const filters = { subject: 'all', branch: '2', event_date_from: '', event_date_to: '', payment_status: '' };
+  assert.deepEqual(culinaryMonthFilters(filters, '2028-02'), {
+    ...filters, subject: 'culinary', event_date_from: '2028-02-01', event_date_to: '2028-02-29',
+  });
+  assert.equal(culinaryMonthFilters(filters, '2026-11').event_date_to, '2026-11-30');
+  assert.deepEqual(culinaryMonthFilters(filters, '2026-13'), filters);
+});
+
 test('employee schedule separates exact shifts from versioned templates', async () => {
   const source = await readFile(new URL('../src/pages/EmployeeSchedulePage.jsx', import.meta.url), 'utf8');
   assert.match(source, /useState\('shifts'\)/);

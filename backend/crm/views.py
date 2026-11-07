@@ -2783,6 +2783,8 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
         if subject and subject != 'all':
             if subject == 'unassigned':
                 queryset = queryset.filter(subject__isnull=True)
+            elif subject == 'culinary':
+                queryset = queryset.filter(subject__is_culinary=True)
             else:
                 queryset = queryset.filter(subject_id=subject)
         if search:

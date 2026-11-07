@@ -35,7 +35,7 @@ function notifyError(message) {
 
 const money = (value) => `${Number(value || 0).toLocaleString('ru-RU')} ₸`;
 
-export default function AddonSaleModal({ open, onClose, onSaved, initialClient = '' }) {
+export default function AddonSaleModal({ open, onClose, onSaved, initialClient = '', initialCatalogItemId = null }) {
   const { branchOptions } = useBranches();
   const [client, setClient] = useState(initialClient ? String(initialClient) : '');
   const [branch, setBranch] = useState('');
@@ -65,10 +65,10 @@ export default function AddonSaleModal({ open, onClose, onSaved, initialClient =
     setDiscount('');
     setPaymentAmount('');
     setComment('');
-    setAddons([]);
+    setAddons(initialCatalogItemId ? [{ catalog_item: initialCatalogItemId, quantity: 1 }] : []);
     setCatalogItems([]);
     setPaymentTouched(false);
-  }, [open, initialClient]);
+  }, [open, initialClient, initialCatalogItemId]);
 
   useEffect(() => {
     if (!open || paymentTouched) return;

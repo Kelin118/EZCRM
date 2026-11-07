@@ -25,6 +25,7 @@ import LeadsPage from './pages/LeadsPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MasterClassesPage from './pages/MasterClassesPage.jsx';
 import PayrollPage from './pages/PayrollPage.jsx';
+import ProductsPage from './pages/ProductsPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import PublicCertificatePage from './pages/PublicCertificatePage.jsx';
@@ -171,6 +172,7 @@ export default function App() {
         <Route path="schedule" element={<SchedulePage />} />
         <Route path="lessons/:id/attendance" element={<LessonAttendancePage />} />
         <Route path="finance" element={<FinancePage />} />
+        <Route path="products" element={<ProductsPage />} />
         <Route path="daily-payments" element={<DailyPaymentsPage />} />
         <Route path="employee-schedule" element={<EmployeeSchedulePage />} />
         <Route path="employee-worklog" element={<EmployeeWorklogPage />} />

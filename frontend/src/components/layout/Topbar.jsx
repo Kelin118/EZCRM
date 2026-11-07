@@ -22,6 +22,7 @@ const titles = {
   '/groups': 'Группы',
   '/schedule': 'Расписание',
   '/finance': 'Финансы',
+  '/products': 'Товары',
   '/daily-payments': 'Сводка оплат',
   '/employee-schedule': 'График сотрудников',
   '/employee-worklog': 'Учёт времени',

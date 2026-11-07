@@ -5,6 +5,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { matchesProductFilter, productStatus } from '../src/utils/productStatus.js';
 import {
   addCalendarDays, businessMonthRange, calendarWeekDates, calendarWeekStart, formatDateTimeLocal,
   formatDisplayDateTime, formatFinanceDate, formatWeekdayDate, formatWeekRange, normalizeDateForInput,
@@ -25,6 +26,22 @@ async function loadModule(path) {
 }
 
 const loadApi = async () => (await loadModule('api/axios.js')).default;
+
+test('product status follows recorded sales and remaining stock', () => {
+  const newProduct = { is_active: true, sold_quantity: 0, available_quantity: 1 };
+  const partlySold = { is_active: true, sold_quantity: 1, available_quantity: 2 };
+  const sold = { is_active: true, sold_quantity: 1, available_quantity: 0 };
+  assert.equal(productStatus(newProduct).label, 'В продаже');
+  assert.equal(productStatus(partlySold).label, 'В продаже');
+  assert.equal(productStatus({ ...partlySold, available_quantity: null }).label, 'В продаже · остаток не задан');
+  assert.equal(productStatus(sold).label, 'Продан');
+  assert.equal(matchesProductFilter(partlySold, 'sold'), false);
+  assert.equal(matchesProductFilter(sold, 'sold'), true);
+  assert.equal(matchesProductFilter(sold, 'active'), false);
+  assert.equal(matchesProductFilter({ ...sold, available_quantity: -1 }, 'active'), false);
+  assert.equal(productStatus({ ...sold, available_quantity: -1 }).label, 'Ошибка остатка');
+  assert.equal(productStatus({ ...sold, is_active: false }).label, 'Продан');
+});
 
 test('quick client form shows branch and includes it in the create payload', async () => {
   const QuickClientCreateModal = (await loadModule('components/clients/QuickClientCreateModal.jsx')).default;

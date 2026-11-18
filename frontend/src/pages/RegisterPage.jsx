@@ -56,15 +56,15 @@ export default function RegisterPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <Input label="Логин" value={form.username} onChange={(event) => set('username', event.target.value)} />
-          <Input label="ФИО" value={form.full_name} onChange={(event) => set('full_name', event.target.value)} />
-          <Input label="Телефон" value={form.phone} onChange={(event) => set('phone', event.target.value)} />
-          <Input label="Email" type="email" value={form.email} onChange={(event) => set('email', event.target.value)} />
-          <Input label="Пароль" type="password" value={form.password} onChange={(event) => set('password', event.target.value)} />
-          <Input label="Повторите пароль" type="password" value={form.password_confirm} onChange={(event) => set('password_confirm', event.target.value)} />
+          <Input label="Логин" name="username" autoComplete="username" required value={form.username} onChange={(event) => set('username', event.target.value)} />
+          <Input label="ФИО" name="full_name" autoComplete="name" required value={form.full_name} onChange={(event) => set('full_name', event.target.value)} />
+          <Input label="Телефон" name="phone" autoComplete="tel" value={form.phone} onChange={(event) => set('phone', event.target.value)} />
+          <Input label="Email" name="email" autoComplete="email" type="email" value={form.email} onChange={(event) => set('email', event.target.value)} />
+          <Input label="Пароль" name="password" autoComplete="new-password" required type="password" value={form.password} onChange={(event) => set('password', event.target.value)} />
+          <Input label="Повторите пароль" name="password_confirm" autoComplete="new-password" required type="password" value={form.password_confirm} onChange={(event) => set('password_confirm', event.target.value)} />
         </div>
 
-        {error && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
+        {error && <p role="alert" className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
         {success && <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">{success}</p>}
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

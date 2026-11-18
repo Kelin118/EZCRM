@@ -60,11 +60,15 @@ export default function FinancePage() {
   const { clientOptions } = useClientOptions();
   const { employeeOptions: managerOptions } = useEmployeeOptions(['admin', 'manager']);
   const { employeeOptions: teacherOptions } = useEmployeeOptions(['admin', 'teacher']);
-  const [summary, setSummary] = useState({ income: 0, expense: 0, balance: 0, transactions_count: 0, average_income: 0 });
-  const [cashBalance, setCashBalance] = useState({ opening_balance: 0, cash_income: 0, cash_expense: 0, expected_balance: 0, last_reconciliation: null });
+  const [summary, setSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState(false);
+  const [cashBalance, setCashBalance] = useState(null);
+  const [cashBalanceError, setCashBalanceError] = useState(false);
   const [cashModalOpen, setCashModalOpen] = useState(false);
   const [cashForm, setCashForm] = useState(emptyCashForm);
-  const [cashPreview, setCashPreview] = useState(cashBalance);
+  const [cashPreview, setCashPreview] = useState(null);
+  const [cashPreviewError, setCashPreviewError] = useState(false);
+  const [cashReconcileSaving, setCashReconcileSaving] = useState(false);
   const [addonSaleOpen, setAddonSaleOpen] = useState(false);
   const [receiptFiles, setReceiptFiles] = useState([]);
   const [receiptViewer, setReceiptViewer] = useState({ open: false, transaction: null });
@@ -83,22 +87,34 @@ export default function FinancePage() {
   const subscriptionOptions = subscriptions.map((item) => ({ value: String(item.id), label: subscriptionLabel(item) }));
 
   useEffect(() => {
-    api.get('finance/summary/', { params: crud.filters }).then(({ data }) => setSummary(data));
+    let active = true;
+    setSummary(null);
+    setSummaryError(false);
+    api.get('finance/summary/', { params: crud.filters })
+      .then(({ data }) => { if (active) setSummary(data); })
+      .catch(() => { if (active) setSummaryError(true); });
+    return () => { active = false; };
   }, [crud.filters, crud.items]);
 
-  const loadCashBalance = async (branch = crud.filters.branch || 'all') => {
-    const { data } = await api.get('finance/cash-balance/', { params: { branch } });
-    setCashBalance(data);
-    return data;
-  };
-
   useEffect(() => {
-    loadCashBalance(crud.filters.branch || 'all');
+    let active = true;
+    setCashBalance(null);
+    setCashBalanceError(false);
+    api.get('finance/cash-balance/', { params: { branch: crud.filters.branch || 'all' } })
+      .then(({ data }) => { if (active) setCashBalance(data); })
+      .catch(() => { if (active) setCashBalanceError(true); });
+    return () => { active = false; };
   }, [crud.filters.branch, crud.items]);
 
   useEffect(() => {
     if (!cashModalOpen) return;
-    api.get('finance/cash-balance/', { params: { branch: cashForm.branch || 'unassigned' } }).then(({ data }) => setCashPreview(data));
+    let active = true;
+    setCashPreview(null);
+    setCashPreviewError(false);
+    api.get('finance/cash-balance/', { params: { branch: cashForm.branch || 'unassigned' } })
+      .then(({ data }) => { if (active) setCashPreview(data); })
+      .catch(() => { if (active) setCashPreviewError(true); });
+    return () => { active = false; };
   }, [cashModalOpen, cashForm.branch]);
 
   const currentInactiveMethod = form.payment_method && !paymentOptions.some((item) => item.value === String(form.payment_method))
@@ -182,24 +198,28 @@ export default function FinancePage() {
   const resetFilters = () => crud.setFilters(emptyFilters);
   const refreshFinance = async () => {
     await crud.reload();
-    const { data } = await api.get('finance/summary/', { params: crud.filters });
-    setSummary(data);
-    await loadCashBalance(crud.filters.branch || 'all');
   };
   const openCashReconcile = () => {
     const branch = crud.filters.branch && crud.filters.branch !== 'all' && crud.filters.branch !== 'unassigned' ? crud.filters.branch : '';
     setCashForm({ ...emptyCashForm, branch });
-    setCashPreview(cashBalance);
     setCashModalOpen(true);
   };
   const saveCashReconcile = async () => {
-    const { data } = await api.post('finance/cash-balance/reconcile/', {
-      branch: cashForm.branch || null,
-      amount: cashForm.amount,
-      comment: cashForm.comment,
-    });
-    setCashBalance(data);
-    setCashModalOpen(false);
+    if (cashReconcileSaving || !cashPreview) return;
+    setCashReconcileSaving(true);
+    try {
+      const { data } = await api.post('finance/cash-balance/reconcile/', {
+        branch: cashForm.branch || null,
+        amount: cashForm.amount,
+        comment: cashForm.comment,
+      });
+      setCashBalance(data);
+      setCashModalOpen(false);
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setCashReconcileSaving(false);
+    }
   };
   const saveTransaction = async () => {
     if (Number(form.amount || 0) > 0 && paymentPartsTotal(form.payment_parts) !== Number(form.amount || 0)) {
@@ -317,7 +337,7 @@ export default function FinancePage() {
       setDeletingFinanceId(null);
     }
   };
-  const cashDifference = Number(cashForm.amount || 0) - Number(cashPreview.expected_balance || 0);
+  const cashDifference = cashPreview ? Number(cashForm.amount || 0) - Number(cashPreview.expected_balance) : null;
   const hasSpecificPaymentMethodFilter = crud.filters.payment_method && !['all', 'unassigned'].includes(crud.filters.payment_method);
 
   return (
@@ -332,32 +352,32 @@ export default function FinancePage() {
       </PageHeader>
       <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         {[
-          ['Доход', summary.income, 'text-emerald-700'], ['Расход', summary.expense, 'text-red-700'],
-          ['Баланс', summary.balance, 'text-brand'], ['Операций', summary.transactions_count, 'text-slate-900'],
-          ['Средний доходный чек', summary.average_income, 'text-slate-900'],
-        ].map(([label, value, tone], index) => <div key={label} className="rounded-[22px] border border-slate-100 bg-white p-4 shadow-card"><p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p><p className={`mt-2 text-xl font-bold ${tone}`}>{index === 3 ? value : money(value)}</p></div>)}
+          ['Доход', summary?.income, 'text-emerald-700'], ['Расход', summary?.expense, 'text-red-700'],
+          ['Баланс', summary?.balance, 'text-brand'], ['Операций', summary?.transactions_count, 'text-slate-900'],
+          ['Средний доходный чек', summary?.average_income, 'text-slate-900'],
+        ].map(([label, value, tone], index) => <div key={label} className="rounded-[22px] border border-slate-100 bg-white p-4 shadow-card"><p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p><p className={`mt-2 text-xl font-bold ${tone}`}>{summaryError ? 'Не удалось загрузить' : !summary ? 'Загрузка...' : index === 3 ? value : money(value)}</p></div>)}
       </section>
       <section className="mb-5 rounded-[24px] border border-emerald-100 bg-white p-5 shadow-card">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Наличные в кассе</p>
-            <p className="mt-2 text-3xl font-black text-slate-900">{money(cashBalance.expected_balance)}</p>
+            <p className="mt-2 text-3xl font-black text-slate-900">{cashBalanceError ? 'Не удалось загрузить' : cashBalance ? money(cashBalance.expected_balance) : 'Загрузка...'}</p>
             <p className="mt-1 text-sm text-slate-500">
-              Последняя сверка: {cashBalance.last_reconciliation?.recorded_at ? formatDisplayDateTime(cashBalance.last_reconciliation.recorded_at) : 'не было'}
+              Последняя сверка: {cashBalance?.last_reconciliation?.recorded_at ? formatDisplayDateTime(cashBalance.last_reconciliation.recorded_at) : cashBalance ? 'не было' : '—'}
             </p>
           </div>
           <div className="grid gap-3 text-sm sm:grid-cols-3 lg:min-w-[520px]">
             <div className="rounded-2xl bg-slate-50 p-3">
               <p className="text-slate-500">База</p>
-              <p className="font-bold text-slate-900">{money(cashBalance.opening_balance)}</p>
+              <p className="font-bold text-slate-900">{cashBalance ? money(cashBalance.opening_balance) : '—'}</p>
             </div>
             <div className="rounded-2xl bg-emerald-50 p-3">
               <p className="text-emerald-700">Наличные доходы после сверки</p>
-              <p className="font-bold text-emerald-800">{money(cashBalance.cash_income)}</p>
+              <p className="font-bold text-emerald-800">{cashBalance ? money(cashBalance.cash_income) : '—'}</p>
             </div>
             <div className="rounded-2xl bg-red-50 p-3">
               <p className="text-red-700">Наличные расходы после сверки</p>
-              <p className="font-bold text-red-800">{money(cashBalance.cash_expense)}</p>
+              <p className="font-bold text-red-800">{cashBalance ? money(cashBalance.cash_expense) : '—'}</p>
             </div>
           </div>
           {canEdit && <Button variant="secondary" onClick={openCashReconcile}>Сверить кассу</Button>}
@@ -477,8 +497,8 @@ export default function FinancePage() {
       <Modal
         title="Сверить кассу"
         open={cashModalOpen}
-        onClose={() => setCashModalOpen(false)}
-        footer={<><Button variant="secondary" onClick={() => setCashModalOpen(false)}>Отмена</Button><Button onClick={saveCashReconcile}>Сохранить сверку</Button></>}
+        onClose={() => { if (!cashReconcileSaving) setCashModalOpen(false); }}
+        footer={<><Button variant="secondary" onClick={() => setCashModalOpen(false)} disabled={cashReconcileSaving}>Отмена</Button><Button onClick={saveCashReconcile} disabled={cashReconcileSaving || !cashPreview}>{cashReconcileSaving ? 'Сохраняем...' : 'Сохранить сверку'}</Button></>}
       >
         <div className="grid gap-4 md:grid-cols-2">
           <SelectField label="Филиал" value={cashForm.branch} onChange={(value) => setCashForm({ ...cashForm, branch: value })} options={[{ value: '', label: 'Без филиала' }, ...branchOptions]} />
@@ -486,11 +506,11 @@ export default function FinancePage() {
           <Input label="Комментарий" className="md:col-span-2" value={cashForm.comment} onChange={(event) => setCashForm({ ...cashForm, comment: event.target.value })} />
           <div className="rounded-2xl bg-slate-50 p-4">
             <p className="text-sm text-slate-500">Рассчитано системой</p>
-            <p className="mt-1 text-xl font-bold text-slate-900">{money(cashPreview.expected_balance)}</p>
+            <p className="mt-1 text-xl font-bold text-slate-900">{cashPreviewError ? 'Не удалось загрузить' : cashPreview ? money(cashPreview.expected_balance) : 'Загрузка...'}</p>
           </div>
           <div className="rounded-2xl bg-slate-50 p-4">
             <p className="text-sm text-slate-500">Разница</p>
-            <p className={`mt-1 text-xl font-bold ${cashDifference === 0 ? 'text-slate-900' : cashDifference > 0 ? 'text-emerald-700' : 'text-red-700'}`}>{money(cashDifference)}</p>
+            <p className={`mt-1 text-xl font-bold ${cashDifference === null || cashDifference === 0 ? 'text-slate-900' : cashDifference > 0 ? 'text-emerald-700' : 'text-red-700'}`}>{cashDifference === null ? '—' : money(cashDifference)}</p>
           </div>
         </div>
       </Modal>

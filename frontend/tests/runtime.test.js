@@ -451,8 +451,10 @@ test('group management lives in visits while old group links remain usable', asy
   assert.match(visits, /\{ value: 'groups', label: 'Группы' \}/);
   assert.match(visits, /<GroupsPage embedded onChanged=\{onGroupsChanged\} \/>/);
   assert.match(visits, /refreshGroups\(\)/);
-  assert.match(visits, /loadAttendance\(selectedLesson\)/);
-  assert.match(visits, /dirtyRows\.length\) \{\s*dispatchError\('Сначала сохраните или очистите изменения табеля\.'/);
+  assert.match(visits, /loadAttendance\(selectedLesson, true\)/);
+  assert.match(visits, /if \(!dirtyRows\.length\) return true;\s*dispatchError\('Сначала сохраните или очистите изменения табеля\.'/);
+  assert.match(visits, /if \(!canLeaveAttendance\(\)\) return;\s*try \{\s*let lesson = item/);
+  assert.match(visits, /onChange=\{\(event\) => changeJournalContext\(\(\) => setSelectedDate/);
   assert.match(groups, /onChanged\?\.\(\)/);
   assert.match(groups, /study-groups\/\$\{selectedGroup\.id\}\/add-member\//);
   assert.match(groups, /study-groups\/\$\{selectedGroup\.id\}\/remove-member\//);

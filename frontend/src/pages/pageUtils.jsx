@@ -1,5 +1,5 @@
 import { ChevronDown, Pencil, Plus, Save, SlidersHorizontal, Trash2, X } from 'lucide-react';
-import { Children, useEffect, useMemo, useState } from 'react';
+import { Children, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
 import ClientSelectWithCreate from '../components/clients/ClientSelectWithCreate.jsx';
@@ -410,6 +410,7 @@ export function useCrudResource(endpoint, initialFilters = {}) {
   const [saving, setSaving] = useState(false);
   const [editing, setEditingState] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const requestId = useRef(0);
 
   const setEditing = (value) => {
     if (typeof value === 'function') {
@@ -430,16 +431,26 @@ export function useCrudResource(endpoint, initialFilters = {}) {
     return clean;
   }, [filters]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    const currentRequest = ++requestId.current;
     setLoading(true);
-    const { data } = await api.get(endpoint, { params });
-    setItems(Array.isArray(data) ? data : data.results || []);
-    setLoading(false);
-  };
+    try {
+      const { data } = await api.get(endpoint, { params });
+      if (currentRequest === requestId.current) setItems(Array.isArray(data) ? data : data.results || []);
+    } catch (error) {
+      if (currentRequest === requestId.current) {
+        setItems([]);
+        showApiError(error);
+      }
+    } finally {
+      if (currentRequest === requestId.current) setLoading(false);
+    }
+  }, [endpoint, params]);
 
   useEffect(() => {
     load();
-  }, [endpoint, params]);
+    return () => { requestId.current += 1; };
+  }, [load]);
 
   const save = async (payload) => {
     setSaving(true);

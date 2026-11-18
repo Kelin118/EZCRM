@@ -1,5 +1,5 @@
 import { AlertCircle, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Plus, RotateCcw, Save, Search, Thermometer, UserCheck, UserMinus, UserX } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import api from '../api/axios.js';
@@ -148,7 +148,7 @@ export default function VisitsPage() {
     ? requestedMode : 'journal';
   const [periodGroup, setPeriodGroup] = useState(initialGroup);
   const [periodRange, setPeriodRange] = useState(() => businessMonthRange(todayLocalDate()));
-  const [selectedDate, setSelectedDate] = useState(isoDate(new Date()));
+  const [selectedDate, setSelectedDate] = useState(todayLocalDate);
   const [lessons, setLessons] = useState([]);
   const [lessonsLoading, setLessonsLoading] = useState(false);
   const [selectedLesson, setSelectedLesson] = useState(null);
@@ -172,6 +172,8 @@ export default function VisitsPage() {
   const [memberToRemove, setMemberToRemove] = useState(null);
   const [removingMember, setRemovingMember] = useState(false);
   const [groupRevision, setGroupRevision] = useState(0);
+  const lessonRequestId = useRef(0);
+  const attendanceRequestId = useRef(0);
 
   const historyCrud = useCrudResource('visits/', { date_from: '', date_to: '', client: '', group: '', teacher: '', status: '', subscription: '' });
   const { clientOptions } = useClientOptions();
@@ -189,11 +191,24 @@ export default function VisitsPage() {
     [attendanceRows, initialRows],
   );
 
+  const canLeaveAttendance = () => {
+    if (!dirtyRows.length) return true;
+    dispatchError('Сначала сохраните или очистите изменения табеля.');
+    return false;
+  };
+
+  const changeJournalContext = (change) => {
+    if (!canLeaveAttendance()) return;
+    attendanceRequestId.current += 1;
+    setAttendanceLoading(false);
+    setSelectedLesson(null);
+    setAttendanceRows([]);
+    setInitialRows([]);
+    change();
+  };
+
   const selectMode = (nextMode) => {
-    if (mode === 'journal' && nextMode !== mode && dirtyRows.length) {
-      dispatchError('Сначала сохраните или очистите изменения табеля.');
-      return;
-    }
+    if (mode === 'journal' && nextMode !== mode && !canLeaveAttendance()) return;
     if (nextMode === 'period' && lessonFilters.group) setPeriodGroup(lessonFilters.group);
     setSearchParams((current) => {
       const params = new URLSearchParams(current);
@@ -218,6 +233,7 @@ export default function VisitsPage() {
   }, [attendanceRows, studentSearch, statusFilter]);
 
   const loadLessons = async () => {
+    const requestId = ++lessonRequestId.current;
     setLessonsLoading(true);
     try {
       const params = { date: selectedDate, ...lessonFilters };
@@ -225,6 +241,7 @@ export default function VisitsPage() {
         if (!params[key]) delete params[key];
       });
       const { data } = await api.get('attendance/day/', { params });
+      if (requestId !== lessonRequestId.current) return;
       const items = (data.items || []).sort((left, right) => String(left.start_time || '').localeCompare(String(right.start_time || '')));
       setLessons(items);
       if (selectedLesson && !items.some((lesson) => lesson.lesson_id === selectedLesson.id)) {
@@ -233,18 +250,21 @@ export default function VisitsPage() {
         setInitialRows([]);
       }
     } catch (error) {
+      if (requestId !== lessonRequestId.current) return;
       showApiError(error);
       setLessons([]);
     } finally {
-      setLessonsLoading(false);
+      if (requestId === lessonRequestId.current) setLessonsLoading(false);
     }
   };
 
   const loadAttendance = async (lesson, preserveChanges = false) => {
     if (!lesson?.id) return;
+    const requestId = ++attendanceRequestId.current;
     setAttendanceLoading(true);
     try {
       const { data } = await api.get(`lessons/${lesson.id}/attendance/`);
+      if (requestId !== attendanceRequestId.current) return;
       const serverRows = normalizeRows(data.items || data.students || []);
       let rows = serverRows;
       if (preserveChanges) {
@@ -255,13 +275,15 @@ export default function VisitsPage() {
       setAttendanceRows(rows);
       setInitialRows(serverRows);
     } catch (error) {
-      showApiError(error);
+      if (requestId === attendanceRequestId.current) showApiError(error);
     } finally {
-      setAttendanceLoading(false);
+      if (requestId === attendanceRequestId.current) setAttendanceLoading(false);
     }
   };
 
   const openDayItem = async (item) => {
+    if (selectedLesson?.id === (item.lesson_id || item.id)) return;
+    if (!canLeaveAttendance()) return;
     try {
       let lesson = item;
       if (item.type === 'schedule_slot') {
@@ -278,6 +300,7 @@ export default function VisitsPage() {
   };
 
   const openPeriodLesson = async (lesson, groupId) => {
+    if (!canLeaveAttendance()) return;
     setSelectedLesson(null);
     setAttendanceRows([]);
     setInitialRows([]);
@@ -289,6 +312,7 @@ export default function VisitsPage() {
 
   useEffect(() => {
     if (mode === 'journal') loadLessons();
+    return () => { lessonRequestId.current += 1; };
   }, [selectedDate, mode, JSON.stringify(lessonFilters)]);
 
   useEffect(() => {
@@ -297,7 +321,7 @@ export default function VisitsPage() {
   }, [searchParams.get('group')]);
 
   useEffect(() => {
-    if (mode === 'journal' && selectedLesson && groupRevision) loadAttendance(selectedLesson);
+    if (mode === 'journal' && selectedLesson && groupRevision) loadAttendance(selectedLesson, true);
   }, [mode, groupRevision]);
 
   useEffect(() => {
@@ -380,7 +404,7 @@ export default function VisitsPage() {
 
   const openStudentModal = () => {
     if (!selectedLesson || !canAddStudent) return;
-    setStudentForm({ ...emptyStudentVisit, payment_date: isoDate(new Date()) });
+    setStudentForm({ ...emptyStudentVisit, payment_date: todayLocalDate() });
     setPaymentTouched(false);
     setActiveStudentSubscription(null);
     setStudentModalOpen(true);
@@ -422,7 +446,7 @@ export default function VisitsPage() {
 
   const selectStudentService = (value) => {
     const service = services.find((item) => String(item.id) === String(value));
-    const startDate = studentForm.start_date || selectedLesson?.lesson_date || isoDate(new Date());
+    const startDate = studentForm.start_date || selectedLesson?.lesson_date || todayLocalDate();
     const basePrice = Number(service?.price || 0);
     const nextSubtotal = basePrice + addonsTotal(studentForm.addons, addonCatalogItems);
     setStudentForm({
@@ -434,7 +458,7 @@ export default function VisitsPage() {
       remaining_visits: service?.lessons_count || 0,
       price: basePrice,
       payment_amount: paymentTouched ? studentForm.payment_amount : calculateDiscountedTotal(nextSubtotal, getDiscountById(studentForm.discount)),
-      payment_date: studentForm.payment_date || isoDate(new Date()),
+      payment_date: studentForm.payment_date || todayLocalDate(),
     });
   };
 
@@ -525,10 +549,10 @@ export default function VisitsPage() {
       {mode === 'journal' ? (
         <>
           <div className="mb-5 grid gap-3 rounded-[22px] border border-slate-100 bg-white p-4 shadow-card md:grid-cols-2 xl:grid-cols-6 xl:items-end">
-            <Input label="Дата" type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-            <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => setLessonFilters({ ...lessonFilters, group: value })} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
-            <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => setLessonFilters({ ...lessonFilters, teacher: value })} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
-            <SelectField label="Филиал" value={lessonFilters.branch || 'all'} onChange={(value) => setLessonFilters({ ...lessonFilters, branch: value })} options={branchFilterOptions} />
+            <Input label="Дата" type="date" value={selectedDate} onChange={(event) => changeJournalContext(() => setSelectedDate(event.target.value))} />
+            <SelectField label="Группа" value={lessonFilters.group} onChange={(value) => changeJournalContext(() => setLessonFilters({ ...lessonFilters, group: value }))} options={[{ value: '', label: 'Все группы' }, ...groupOptions]} />
+            <SelectField label="Преподаватель" value={lessonFilters.teacher} onChange={(value) => changeJournalContext(() => setLessonFilters({ ...lessonFilters, teacher: value }))} options={[{ value: '', label: 'Все преподаватели' }, ...teacherOptions]} />
+            <SelectField label="Филиал" value={lessonFilters.branch || 'all'} onChange={(value) => changeJournalContext(() => setLessonFilters({ ...lessonFilters, branch: value }))} options={branchFilterOptions} />
             <Input label="Поиск по ученику" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="ФИО, телефон, родитель" />
             <SelectField label="Статус" value={statusFilter} onChange={setStatusFilter} options={journalStatusOptions} />
           </div>
@@ -536,18 +560,18 @@ export default function VisitsPage() {
           <div className="grid max-w-full gap-6 xl:grid-cols-[360px_1fr]">
             <section className="rounded-[24px] border border-slate-100 bg-white p-5 shadow-card">
               <div className="mb-4 flex items-center justify-between gap-2">
-                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, -1))} aria-label="Предыдущий день">
+                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => changeJournalContext(() => setSelectedDate(addDays(selectedDate, -1)))} aria-label="Предыдущий день">
                   <ChevronLeft size={16} />
                 </Button>
                 <div className="text-center">
                   <p className="text-xs font-bold uppercase text-slate-400">Дата</p>
                   <p className="font-bold text-slate-900">{parseLocalDate(selectedDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
                 </div>
-                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => setSelectedDate(addDays(selectedDate, 1))} aria-label="Следующий день">
+                <Button variant="secondary" className="h-10 w-10 rounded-xl p-0" onClick={() => changeJournalContext(() => setSelectedDate(addDays(selectedDate, 1)))} aria-label="Следующий день">
                   <ChevronRight size={16} />
                 </Button>
               </div>
-              <Button variant="accent" className="mb-4 w-full" onClick={() => setSelectedDate(isoDate(new Date()))}>
+              <Button variant="accent" className="mb-4 w-full" onClick={() => changeJournalContext(() => setSelectedDate(todayLocalDate()))}>
                 <CalendarDays size={16} />
                 Сегодня
               </Button>

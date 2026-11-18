@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
 import api from './api/axios.js';
@@ -7,51 +7,57 @@ import { ACCESS_TOKEN_KEY, canAccessPath, getStoredUser, setStoredUser } from '.
 import AppLayout from './components/layout/AppLayout.jsx';
 import Button from './components/ui/Button.jsx';
 import Modal from './components/ui/Modal.jsx';
-import AuditLogsPage from './pages/AuditLogsPage.jsx';
-import ChatPage from './pages/ChatPage.jsx';
-import CertificatesPage from './pages/CertificatesPage.jsx';
-import ClientDetailPage from './pages/ClientDetailPage.jsx';
-import ClientsPage from './pages/ClientsPage.jsx';
-import DashboardPage from './pages/DashboardPage.jsx';
-import DailyPaymentsPage from './pages/DailyPaymentsPage.jsx';
-import DictionariesPage from './pages/DictionariesPage.jsx';
-import EmployeesPage from './pages/EmployeesPage.jsx';
-import EmployeeSchedulePage from './pages/EmployeeSchedulePage.jsx';
-import EmployeeWorklogPage from './pages/EmployeeWorklogPage.jsx';
-import ExportPage from './pages/ExportPage.jsx';
-import FinancePage from './pages/FinancePage.jsx';
-import LessonAttendancePage from './pages/LessonAttendancePage.jsx';
-import LeadsPage from './pages/LeadsPage.jsx';
-import LoginPage from './pages/LoginPage.jsx';
-import MasterClassesPage from './pages/MasterClassesPage.jsx';
-import PayrollPage from './pages/PayrollPage.jsx';
-import ProductsPage from './pages/ProductsPage.jsx';
-import ReportsPage from './pages/ReportsPage.jsx';
-import RegisterPage from './pages/RegisterPage.jsx';
-import PublicCertificatePage from './pages/PublicCertificatePage.jsx';
-import SchedulePage from './pages/SchedulePage.jsx';
-import SettingsPage from './pages/SettingsPage.jsx';
-import SubscriptionsPage from './pages/SubscriptionsPage.jsx';
-import TasksPage from './pages/TasksPage.jsx';
-import TrialsPage from './pages/TrialsPage.jsx';
-import VisitsPage from './pages/VisitsPage.jsx';
+const AuditLogsPage = lazy(() => import('./pages/AuditLogsPage.jsx'));
+const ChatPage = lazy(() => import('./pages/ChatPage.jsx'));
+const CertificatesPage = lazy(() => import('./pages/CertificatesPage.jsx'));
+const ClientDetailPage = lazy(() => import('./pages/ClientDetailPage.jsx'));
+const ClientsPage = lazy(() => import('./pages/ClientsPage.jsx'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage.jsx'));
+const DailyPaymentsPage = lazy(() => import('./pages/DailyPaymentsPage.jsx'));
+const DictionariesPage = lazy(() => import('./pages/DictionariesPage.jsx'));
+const EmployeesPage = lazy(() => import('./pages/EmployeesPage.jsx'));
+const EmployeeSchedulePage = lazy(() => import('./pages/EmployeeSchedulePage.jsx'));
+const EmployeeWorklogPage = lazy(() => import('./pages/EmployeeWorklogPage.jsx'));
+const ExportPage = lazy(() => import('./pages/ExportPage.jsx'));
+const FinancePage = lazy(() => import('./pages/FinancePage.jsx'));
+const LessonAttendancePage = lazy(() => import('./pages/LessonAttendancePage.jsx'));
+const LeadsPage = lazy(() => import('./pages/LeadsPage.jsx'));
+const LoginPage = lazy(() => import('./pages/LoginPage.jsx'));
+const MasterClassesPage = lazy(() => import('./pages/MasterClassesPage.jsx'));
+const PayrollPage = lazy(() => import('./pages/PayrollPage.jsx'));
+const ProductsPage = lazy(() => import('./pages/ProductsPage.jsx'));
+const ReportsPage = lazy(() => import('./pages/ReportsPage.jsx'));
+const RegisterPage = lazy(() => import('./pages/RegisterPage.jsx'));
+const PublicCertificatePage = lazy(() => import('./pages/PublicCertificatePage.jsx'));
+const SchedulePage = lazy(() => import('./pages/SchedulePage.jsx'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage.jsx'));
+const SubscriptionsPage = lazy(() => import('./pages/SubscriptionsPage.jsx'));
+const TasksPage = lazy(() => import('./pages/TasksPage.jsx'));
+const TrialsPage = lazy(() => import('./pages/TrialsPage.jsx'));
+const VisitsPage = lazy(() => import('./pages/VisitsPage.jsx'));
 
 function ProtectedRoute() {
   const location = useLocation();
   const [user, setUser] = useState(() => getStoredUser());
   const [loading, setLoading] = useState(Boolean(localStorage.getItem(ACCESS_TOKEN_KEY)) && !getStoredUser());
+  const [authError, setAuthError] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (!localStorage.getItem(ACCESS_TOKEN_KEY) || user) return;
 
     let mounted = true;
     setLoading(true);
+    setAuthError(false);
     api
       .get('auth/me/')
       .then(({ data }) => {
         if (!mounted) return;
         setStoredUser(data);
         setUser(data);
+      })
+      .catch(() => {
+        if (mounted) setAuthError(true);
       })
       .finally(() => {
         if (mounted) setLoading(false);
@@ -60,10 +66,18 @@ function ProtectedRoute() {
     return () => {
       mounted = false;
     };
-  }, [user]);
+  }, [user, retry]);
 
   if (!localStorage.getItem(ACCESS_TOKEN_KEY)) return <Navigate to="/login" replace />;
   if (loading) return <div className="grid min-h-screen place-items-center bg-app text-sm font-semibold text-slate-500">Загрузка...</div>;
+  if (!user) return (
+    <div className="grid min-h-screen place-items-center bg-app p-4 text-center">
+      <div className="grid gap-3">
+        <p role="alert" className="text-sm font-semibold text-red-700">{authError ? 'Не удалось проверить вход. Проверьте соединение.' : 'Проверяем вход...'}</p>
+        <Button onClick={() => setRetry((current) => current + 1)}>Повторить</Button>
+      </div>
+    </div>
+  );
   if (user && !canAccessPath(location.pathname, user)) return <Navigate to="/" replace />;
 
   return (
@@ -137,6 +151,7 @@ function UnprocessedTrialsModal() {
 
 export default function App() {
   return (
+    <Suspense fallback={<div className="grid min-h-screen place-items-center bg-app text-sm font-semibold text-slate-500">Загрузка раздела...</div>}>
     <Routes>
       <Route
         path="/login"
@@ -185,5 +200,6 @@ export default function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </Suspense>
   );
 }

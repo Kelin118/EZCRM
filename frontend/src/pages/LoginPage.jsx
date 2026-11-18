@@ -24,8 +24,10 @@ export default function LoginPage() {
       const { data: user } = await api.get('auth/me/');
       setStoredUser(user);
       navigate('/');
-    } catch {
-      setError('Неверный логин или пароль');
+    } catch (requestError) {
+      setError([400, 401].includes(requestError.response?.status)
+        ? 'Неверный логин или пароль'
+        : 'Не удалось связаться с сервером. Повторите попытку позже.');
     } finally {
       setLoading(false);
     }
@@ -44,14 +46,17 @@ export default function LoginPage() {
           </div>
         </div>
         <div className="grid gap-4">
-          <Input label="Логин" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
+          <Input label="Логин" name="username" autoComplete="username" required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
           <Input
             label="Пароль"
             type="password"
+            name="password"
+            autoComplete="current-password"
+            required
             value={form.password}
             onChange={(event) => setForm({ ...form, password: event.target.value })}
           />
-          {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
+          {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>}
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? 'Входим...' : 'Войти'}
           </Button>

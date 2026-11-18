@@ -1,11 +1,11 @@
 ﻿import { toBlob } from 'html-to-image';
-import { Download, Eye, Gift, MessageCircle, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
+import { Download, Eye, Gift, MessageCircle, Pencil, Plus, RotateCcw, Send, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
 import { getStoredUser, isAdmin } from '../auth.js';
 import useBranches from '../hooks/useBranches.js';
-import { todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
+import { formatDisplayDate, todayLocalDate, BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
 import CertificateCard from '../components/certificates/CertificateCard.jsx';
 import PaymentSplitFields, { paymentPartsPayload, paymentPartsTotal } from '../components/finance/PaymentSplitFields.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -92,6 +92,8 @@ export default function CertificatesPage() {
   const [wizardStep, setWizardStep] = useState(1);
   const [certificateForm, setCertificateForm] = useState(emptyCertificate);
   const [selectedCertificate, setSelectedCertificate] = useState(null);
+  const [saleEdit, setSaleEdit] = useState(null);
+  const [saleSaving, setSaleSaving] = useState(false);
   const [deletingCertificateId, setDeletingCertificateId] = useState(null);
   const [certificateSaving, setCertificateSaving] = useState(false);
   const [redeemForm, setRedeemForm] = useState({ amount: '', visitor_name: '', visitor_phone: '', service_name: '', comment: '' });
@@ -212,6 +214,39 @@ export default function CertificatesPage() {
       if (selectedCertificate?.id === data.id) setSelectedCertificate(data);
     } catch (error) {
       showApiError(error);
+    }
+  };
+
+  const openSaleEdit = (certificate) => {
+    setSaleEdit({
+      issued_at: certificate.issued_at || '',
+      payment_date: certificate.sale_payment?.paid_on || certificate.issued_at || '',
+      sale_price: certificate.sale_price || '',
+      branch: String(certificate.sale_payment?.branch || ''),
+      payment_parts: certificate.payment_parts || [],
+    });
+  };
+
+  const saveSaleEdit = async () => {
+    if (!selectedCertificate || !saleEdit || saleSaving) return;
+    if (!saleEdit.issued_at || !saleEdit.payment_date || !saleEdit.branch) return dispatchError('Укажите даты и филиал продажи.');
+    if (Number(saleEdit.sale_price) <= 0 || paymentPartsTotal(saleEdit.payment_parts) !== Number(saleEdit.sale_price)) {
+      return dispatchError('Сумма частей оплаты должна совпадать с ценой продажи.');
+    }
+    setSaleSaving(true);
+    try {
+      const { data } = await api.post(`certificates/${selectedCertificate.id}/correct-sale/`, {
+        ...saleEdit,
+        payment_parts: paymentPartsPayload(saleEdit.payment_parts),
+      });
+      setSelectedCertificate(data);
+      setCertificates((items) => items.map((item) => item.id === data.id ? data : item));
+      setSaleEdit(null);
+      dispatchSuccess('Данные продажи исправлены.');
+    } catch (error) {
+      showApiError(error);
+    } finally {
+      setSaleSaving(false);
     }
   };
 
@@ -501,12 +536,41 @@ export default function CertificatesPage() {
       <Modal
         title={selectedCertificate ? `Сертификат ${selectedCertificate.serial_code || selectedCertificate.code}` : 'Сертификат'}
         open={Boolean(selectedCertificate)}
-        onClose={() => setSelectedCertificate(null)}
-        footer={<><Button variant="secondary" onClick={() => setSelectedCertificate(null)}>Закрыть</Button></>}
+        onClose={() => { if (!saleSaving) { setSelectedCertificate(null); setSaleEdit(null); } }}
+        footer={<><Button variant="secondary" onClick={() => { setSelectedCertificate(null); setSaleEdit(null); }} disabled={saleSaving}>Закрыть</Button></>}
       >
         {selectedCertificate && (
           <div className="grid gap-5">
             <CertificateCard certificate={selectedCertificate} cardRef={cardRef} />
+            <section className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Продажа и оплата</h3>
+                {canDelete && selectedCertificate.sale_payment && selectedCertificate.batch_quantity <= 1 && !selectedCertificate.redemptions?.length && !saleEdit && (
+                  <Button variant="secondary" className="h-9 px-3" onClick={() => openSaleEdit(selectedCertificate)}><Pencil size={15} />Исправить</Button>
+                )}
+              </div>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+                <div><dt className="text-slate-500">Оформил</dt><dd className="font-semibold text-slate-900">{selectedCertificate.created_by_name || 'Не указан'}</dd></div>
+                <div><dt className="text-slate-500">Дата оформления</dt><dd className="font-semibold text-slate-900">{formatDisplayDate(selectedCertificate.issued_at)}</dd></div>
+                <div><dt className="text-slate-500">Цена продажи</dt><dd className="font-semibold text-slate-900">{money(selectedCertificate.sale_price)}</dd></div>
+                <div><dt className="text-slate-500">Дата оплаты</dt><dd className="font-semibold text-slate-900">{selectedCertificate.sale_payment?.paid_on ? formatDisplayDate(selectedCertificate.sale_payment.paid_on) : 'Без оплаты'}</dd></div>
+                <div><dt className="text-slate-500">Филиал продажи</dt><dd className="font-semibold text-slate-900">{selectedCertificate.sale_payment?.branch_name || 'Не распределён'}</dd></div>
+                <div><dt className="text-slate-500">Способ оплаты</dt><dd className="font-semibold text-slate-900">{selectedCertificate.payment_parts?.length ? selectedCertificate.payment_parts.map((part) => `${part.payment_method_name}: ${money(part.amount)}`).join(' · ') : '—'}</dd></div>
+              </dl>
+              {saleEdit && (
+                <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
+                  <Input label="Дата оформления" type="date" value={saleEdit.issued_at} onChange={(event) => setSaleEdit({ ...saleEdit, issued_at: event.target.value })} disabled={saleSaving} />
+                  <Input label="Дата оплаты" type="date" value={saleEdit.payment_date} onChange={(event) => setSaleEdit({ ...saleEdit, payment_date: event.target.value })} disabled={saleSaving} />
+                  <Input label="Цена продажи, ₸" type="number" min="0.01" step="0.01" value={saleEdit.sale_price} onChange={(event) => setSaleEdit({ ...saleEdit, sale_price: event.target.value })} disabled={saleSaving} />
+                  <SelectField label="Филиал продажи" value={saleEdit.branch} onChange={(value) => setSaleEdit({ ...saleEdit, branch: value })} options={[{ value: '', label: 'Выберите филиал' }, ...branchOptions]} />
+                  <PaymentSplitFields totalAmount={saleEdit.sale_price} value={saleEdit.payment_parts} onChange={(payment_parts) => setSaleEdit({ ...saleEdit, payment_parts })} disabled={saleSaving} />
+                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                    <Button onClick={saveSaleEdit} disabled={saleSaving}>{saleSaving ? 'Сохранение…' : 'Сохранить исправление'}</Button>
+                    <Button variant="secondary" onClick={() => setSaleEdit(null)} disabled={saleSaving}>Отмена</Button>
+                  </div>
+                </div>
+              )}
+            </section>
             <div className="flex flex-wrap gap-2">
               <Button onClick={openWhatsapp}><MessageCircle size={16} />Открыть WhatsApp</Button>
               <Button variant="secondary" onClick={sharePng}><Send size={16} />Поделиться PNG</Button>

@@ -3591,7 +3591,7 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
     def get_queryset(self):
         queryset = GiftCertificate.objects.select_related(
             'template', 'template__background_asset', 'batch', 'background_asset',
-            'purchaser_client', 'finance_transaction', 'created_by',
+            'purchaser_client', 'finance_transaction__branch', 'created_by',
         ).prefetch_related('redemptions__created_by', 'finance_transaction__payment_parts__payment_method')
         search = self.request.query_params.get('search')
         status_value = self.request.query_params.get('status')
@@ -3732,6 +3732,95 @@ class GiftCertificateViewSet(BaseAuthenticatedViewSet):
             if certificate.sale_price > 0:
                 self._sync_finance(certificate, payment_parts)
             self._log_instance(AuditLog.Action.CERTIFICATE_UPDATE, certificate, '??????? ??????????', _certificate_audit(certificate))
+
+    @action(detail=True, methods=['post'], url_path='correct-sale')
+    def correct_sale(self, request, pk=None):
+        if not is_admin(request.user):
+            self.permission_denied(request, message='Исправлять продажу сертификата может только администратор.')
+        visible = self.get_object()
+        with transaction.atomic():
+            certificate = get_object_or_404(
+                GiftCertificate.objects.select_for_update(of=('self',)).select_related('batch'), pk=visible.pk,
+            )
+            batch = (CertificateBatch.objects.select_for_update().get(pk=certificate.batch_id)
+                     if certificate.batch_id else None)
+            if batch and (batch.quantity != 1 or batch.certificates.exclude(pk=certificate.pk).exists()):
+                return Response({'detail': 'Общую оплату партии нельзя исправить через один сертификат.'}, status=status.HTTP_409_CONFLICT)
+            if certificate.redemptions.exists() or certificate.remaining_amount != certificate.face_value:
+                return Response({'detail': 'Сертификат уже использовался. Исправление продажи недоступно.'}, status=status.HTTP_409_CONFLICT)
+            if not certificate.finance_transaction_id:
+                return Response({'detail': 'У сертификата нет связанной оплаты.'}, status=status.HTTP_409_CONFLICT)
+            finance = FinanceTransaction.objects.select_for_update().get(pk=certificate.finance_transaction_id)
+            if (finance.source != 'certificate'
+                    or (batch and batch.finance_transaction_id != finance.pk)
+                    or finance.certificates.exclude(pk=certificate.pk).exists()
+                    or CertificateBatch.objects.filter(finance_transaction=finance).exclude(pk=batch.pk if batch else None).exists()
+                    or Subscription.objects.filter(finance_transaction=finance).exists()
+                    or Trial.objects.filter(finance_transaction=finance).exists()
+                    or AddonSale.objects.filter(finance_transaction=finance).exists()
+                    or MasterClass.objects.filter(finance_transaction=finance).exists()
+                    or MasterClassPayment.objects.filter(finance_transaction=finance).exists()
+                    or PayrollStatement.objects.filter(finance_transaction=finance).exists()):
+                return Response({'detail': 'Оплата связана с другими записями. Исправление остановлено.'}, status=status.HTTP_409_CONFLICT)
+
+            issued_at = drf_serializers.DateField().run_validation(request.data.get('issued_at'))
+            payment_date = drf_serializers.DateField().run_validation(request.data.get('payment_date'))
+            sale_price = drf_serializers.DecimalField(
+                max_digits=12, decimal_places=2, min_value=Decimal('0.01'),
+            ).run_validation(request.data.get('sale_price'))
+            if sale_price > certificate.face_value:
+                raise drf_serializers.ValidationError({'sale_price': 'Цена продажи не может превышать номинал.'})
+            branch = _certificate_sale_branch(request.data, certificate.purchaser_client)
+            if not branch:
+                raise drf_serializers.ValidationError({'branch': 'Выберите филиал продажи.'})
+            parts = request.data.get('payment_parts')
+            if parts is None and sale_price != finance.amount:
+                raise drf_serializers.ValidationError({'payment_parts': 'Укажите разбивку новой суммы оплаты.'})
+            if parts is not None:
+                parts = validate_payment_parts(parts, total_amount=sale_price)
+            existing_parts = list(finance.payment_parts.all())
+            parts_changed = parts is not None and (
+                len(parts) != len(existing_parts) or any(
+                    item['payment_method'].pk != previous.payment_method_id or item['amount'] != previous.amount
+                    for item, previous in zip(parts, existing_parts)
+                )
+            )
+
+            before = {
+                'issued_at': str(certificate.issued_at), 'sale_price': str(certificate.sale_price),
+                'payment_date': str(_local_date(finance.paid_at)), 'branch_id': finance.branch_id,
+                'payment_parts': payment_parts_audit(finance),
+            }
+            original_validity = certificate.valid_until - certificate.issued_at
+            discount_percent = ((Decimal('1') - sale_price / certificate.face_value) * Decimal('100')).quantize(Decimal('0.00001'))
+            certificate.issued_at = issued_at
+            certificate.valid_until = issued_at + original_validity
+            certificate.sale_price = sale_price
+            certificate.sale_discount_percent = discount_percent
+            certificate.save(update_fields=('issued_at', 'valid_until', 'sale_price', 'sale_discount_percent', 'updated_at'))
+            if batch:
+                batch.issued_at = issued_at
+                batch.sale_price_per_certificate = sale_price
+                batch.total_sale_price = sale_price
+                batch.save(update_fields=('issued_at', 'sale_price_per_certificate', 'total_sale_price', 'updated_at'))
+            finance.amount = sale_price
+            finance.discount_amount = certificate.face_value - sale_price
+            finance.discount_name = f'Скидка сертификата {discount_percent}%'
+            finance.paid_at = _paid_at_from_date(payment_date)
+            finance.branch = branch
+            finance.save(update_fields=('amount', 'discount_amount', 'discount_name', 'paid_at', 'branch', 'updated_at'))
+            if parts_changed:
+                sync_finance_payment_parts(finance, parts)
+            after = {
+                'issued_at': str(issued_at), 'sale_price': str(sale_price),
+                'payment_date': str(payment_date), 'branch_id': branch.pk,
+                'payment_parts': payment_parts_audit(finance),
+            }
+            log_action(request, AuditLog.Action.CERTIFICATE_UPDATE, self._audit_entity_type(),
+                       entity_id=certificate.pk, entity_name=str(certificate),
+                       description='Исправлена продажа сертификата', changes={'before': before, 'after': after})
+        certificate = self.get_queryset().get(pk=certificate.pk)
+        return Response(self.get_serializer(certificate).data)
 
     @action(detail=True, methods=['post'])
     @transaction.atomic

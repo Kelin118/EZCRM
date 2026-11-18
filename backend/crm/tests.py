@@ -5838,6 +5838,92 @@ class CertificateApiTests(APITestCase):
         self.assertIsNotNone(certificate.batch)
         self.assertEqual(certificate.batch.quantity, 1)
 
+    def test_certificate_sale_details_and_admin_correction_keep_finance_in_sync(self):
+        branch = Branch.objects.create(name='Certificate correction branch')
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        certificate_id = created.data['id']
+        finance_id = created.data['finance_transaction']
+        self.assertEqual(created.data['created_by_name'], self.admin.username)
+        self.assertEqual(Decimal(str(created.data['sale_payment']['amount'])), Decimal('45000.00'))
+        response = self.client.post(f'/api/certificates/{certificate_id}/correct-sale/', {
+            'issued_at': '2026-09-14', 'payment_date': '2026-09-15',
+            'sale_price': '43000.00', 'branch': branch.pk,
+            'payment_parts': [
+                {'payment_method': self.cash.pk, 'amount': '20000.00'},
+                {'payment_method': self.card.pk, 'amount': '23000.00'},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        certificate = GiftCertificate.objects.get(pk=certificate_id)
+        finance = FinanceTransaction.objects.get(pk=finance_id)
+        self.assertEqual(certificate.sale_price, Decimal('43000.00'))
+        self.assertEqual(certificate.sale_discount_percent, Decimal('14.00000'))
+        self.assertEqual(certificate.batch.total_sale_price, Decimal('43000.00'))
+        self.assertEqual(str(certificate.issued_at), '2026-09-14')
+        self.assertEqual(str(certificate.valid_until), '2027-09-14')
+        self.assertEqual(finance.amount, Decimal('43000.00'))
+        self.assertEqual(finance.discount_amount, Decimal('7000.00'))
+        self.assertEqual(finance.branch_id, branch.pk)
+        self.assertEqual(timezone.localdate(finance.paid_at).isoformat(), '2026-09-15')
+        self.assertEqual(finance.payment_parts.count(), 2)
+        self.assertEqual(FinanceTransaction.objects.count(), 1)
+        self.assertEqual(response.data['sale_payment']['branch_name'], branch.name)
+        self.assertTrue(AuditLog.objects.filter(entity_id=certificate_id, action=AuditLog.Action.CERTIFICATE_UPDATE).exists())
+
+    def test_certificate_sale_correction_rejects_invalid_amount_and_non_admin(self):
+        branch = Branch.objects.create(name='Certificate edit branch')
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        certificate_id = created.data['id']
+        payload = {
+            'issued_at': '2026-09-14', 'payment_date': '2026-09-15',
+            'sale_price': '43000.00', 'branch': branch.pk,
+            'payment_parts': [{'payment_method': self.cash.pk, 'amount': '42000.00'}],
+        }
+        self.client.force_authenticate(self.manager)
+        denied = self.client.post(f'/api/certificates/{certificate_id}/correct-sale/', payload, format='json')
+        self.assertEqual(denied.status_code, 403)
+        self.client.force_authenticate(self.admin)
+        rejected = self.client.post(f'/api/certificates/{certificate_id}/correct-sale/', payload, format='json')
+        self.assertEqual(rejected.status_code, 400)
+        certificate = GiftCertificate.objects.get(pk=certificate_id)
+        self.assertEqual(certificate.sale_price, Decimal('45000.00'))
+        self.assertEqual(certificate.finance_transaction.amount, Decimal('45000.00'))
+
+    def test_certificate_sale_correction_does_not_change_shared_batch_payment(self):
+        branch = Branch.objects.create(name='Certificate batch branch')
+        created = self.client.post('/api/certificates/bulk-create/', {
+            'template': self.template.pk, 'quantity': 2,
+            'purchaser_client': self.client_obj.pk, 'face_value': '10000.00',
+            'branch': branch.pk,
+            'payment_parts': [{'payment_method': self.cash.pk, 'amount': '18000.00'}],
+        }, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        certificate_id = created.data['certificates'][0]['id']
+        response = self.client.post(f'/api/certificates/{certificate_id}/correct-sale/', {
+            'issued_at': '2026-09-14', 'payment_date': '2026-09-15',
+            'sale_price': '8000.00', 'branch': branch.pk,
+            'payment_parts': [{'payment_method': self.cash.pk, 'amount': '8000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(FinanceTransaction.objects.get(pk=created.data['batch']['finance_transaction']).amount, Decimal('18000.00'))
+
+    def test_certificate_date_correction_preserves_payment_part_snapshot(self):
+        branch = Branch.objects.create(name='Certificate date branch')
+        created = self.client.post('/api/certificates/', self.payload(), format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        part = FinancePaymentPart.objects.get(transaction_id=created.data['finance_transaction'])
+        part.payment_method_name = 'Историческое название'
+        part.save(update_fields=('payment_method_name',))
+        response = self.client.post(f'/api/certificates/{created.data["id"]}/correct-sale/', {
+            'issued_at': '2026-09-14', 'payment_date': '2026-09-15',
+            'sale_price': '45000.00', 'branch': branch.pk,
+            'payment_parts': [{'payment_method': self.cash.pk, 'amount': '45000.00'}],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        part.refresh_from_db()
+        self.assertEqual(part.payment_method_name, 'Историческое название')
+
     def test_free_certificate_does_not_create_finance_transaction(self):
         self.template.sale_discount_percent = Decimal('100.00000')
         self.template.save()

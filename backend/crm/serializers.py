@@ -1622,6 +1622,8 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
     visits_count = serializers.SerializerMethodField()
     last_visit = serializers.SerializerMethodField()
     background_asset_url = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    sale_payment = serializers.SerializerMethodField()
 
     class Meta:
         model = GiftCertificate
@@ -1634,6 +1636,21 @@ class GiftCertificateSerializer(serializers.ModelSerializer):
 
     def get_purchaser_client_name(self, obj):
         return str(obj.purchaser_client) if obj.purchaser_client else ''
+
+    def get_created_by_name(self, obj):
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else ''
+
+    def get_sale_payment(self, obj):
+        finance = obj.finance_transaction
+        if not finance:
+            return None
+        return {
+            'amount': finance.amount,
+            'paid_at': finance.paid_at,
+            'paid_on': timezone.localdate(finance.paid_at) if finance.paid_at else None,
+            'branch': finance.branch_id,
+            'branch_name': finance.branch.name if finance.branch else '',
+        }
 
     def get_template_title(self, obj):
         return obj.template_snapshot.get('title') or obj.template_name

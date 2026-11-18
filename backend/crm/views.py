@@ -87,6 +87,7 @@ from .models import (
     MasterClassPayment,
     MasterClassStaffAssignment,
     MasterClassSubject,
+    MasterClassSubjectGroup,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -125,6 +126,8 @@ from .permissions import (
     MessagingChannelPermission,
     ExportPermission,
     MasterClassPermission,
+    MasterClassSubjectPermission,
+    MasterClassSubjectGroupPermission,
     ReportsPermission,
     SettingsPermission,
     SubscriptionPermission,
@@ -164,6 +167,7 @@ from .serializers import (
     MasterClassPaymentSerializer,
     MasterClassSerializer,
     MasterClassSubjectSerializer,
+    MasterClassSubjectGroupSerializer,
     MessagingChannelSerializer,
     MetaWebhookEventSerializer,
     PaymentMethodSerializer,
@@ -903,7 +907,7 @@ class SubjectViewSet(EducationBaseViewSet):
 
 
 class MasterClassSubjectViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
-    permission_classes = (IsAuthenticated, SettingsPermission)
+    permission_classes = (IsAuthenticated, MasterClassSubjectPermission)
     queryset = MasterClassSubject.objects.all()
     serializer_class = MasterClassSubjectSerializer
     audit_entity_type = 'MasterClassSubject'
@@ -925,7 +929,21 @@ class MasterClassSubjectViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSe
         return queryset.order_by('sort_order', 'name')
 
     def get_delete_usage(self, instance):
-        return {'master_classes': instance.master_classes.count()}
+        return {'master_classes': instance.master_classes.count(), 'groups': instance.custom_groups.count()}
+
+
+class MasterClassSubjectGroupViewSet(SettingsSafeDeleteMixin, BaseAuthenticatedViewSet):
+    permission_classes = (IsAuthenticated, MasterClassSubjectGroupPermission)
+    queryset = MasterClassSubjectGroup.objects.prefetch_related('subjects').all()
+    serializer_class = MasterClassSubjectGroupSerializer
+    audit_entity_type = 'MasterClassSubjectGroup'
+    audit_create_description = 'Создана группа предметов МК'
+    audit_update_description = 'Изменена группа предметов МК'
+    delete_audit_description = 'Удалена группа предметов МК'
+    delete_blocked_detail = 'Группа содержит предметы МК. Отключите её или уберите предметы перед удалением.'
+
+    def get_delete_usage(self, instance):
+        return {'subjects': instance.subjects.count()}
 
 
 class RoomViewSet(EducationBaseViewSet):
@@ -2785,6 +2803,9 @@ class MasterClassViewSet(BaseAuthenticatedViewSet):
                 queryset = queryset.filter(subject__isnull=True)
             elif subject == 'culinary':
                 queryset = queryset.filter(subject__is_culinary=True)
+            elif subject.startswith('group:'):
+                group_id = drf_serializers.IntegerField(min_value=1).run_validation(subject[6:])
+                queryset = queryset.filter(subject__custom_groups__id=group_id)
             else:
                 queryset = queryset.filter(subject_id=subject)
         if search:

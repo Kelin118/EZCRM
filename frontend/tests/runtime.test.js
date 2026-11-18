@@ -401,6 +401,15 @@ test('culinary month covers every day and keeps other filters', async () => {
   assert.deepEqual(culinaryMonthFilters(filters, '2026-13'), filters);
 });
 
+test('named MC group uses the selected month and keeps branch filter', async () => {
+  const { subjectGroupMonthFilters } = await loadModule('pages/MasterClassesPage.jsx');
+  const filters = { subject: 'all', branch: '2', event_date_from: '', event_date_to: '' };
+  assert.deepEqual(subjectGroupMonthFilters(filters, '2028-02', 'group:3'), {
+    ...filters, subject: 'group:3', event_date_from: '2028-02-01', event_date_to: '2028-02-29',
+  });
+  assert.deepEqual(subjectGroupMonthFilters(filters, '2026-13', 'group:3'), filters);
+});
+
 test('employee schedule separates exact shifts from versioned templates', async () => {
   const source = await readFile(new URL('../src/pages/EmployeeSchedulePage.jsx', import.meta.url), 'utf8');
   assert.match(source, /useState\('shifts'\)/);

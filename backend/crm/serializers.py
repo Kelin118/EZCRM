@@ -48,6 +48,7 @@ from .models import (
     MasterClassPayment,
     MasterClassStaffAssignment,
     MasterClassSubject,
+    MasterClassSubjectGroup,
     MessagingChannel,
     MessagingContact,
     MetaWebhookEvent,
@@ -296,6 +297,33 @@ class MasterClassSubjectSerializer(serializers.ModelSerializer):
         if 'sort_order' not in getattr(self, 'initial_data', {}):
             validated_data['sort_order'] = next_sort_order(MasterClassSubject)
         return super().create(validated_data)
+
+
+class MasterClassSubjectGroupSerializer(serializers.ModelSerializer):
+    subject_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MasterClassSubjectGroup
+        fields = ('id', 'name', 'description', 'is_active', 'subjects', 'subject_names', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'subject_names', 'created_at', 'updated_at')
+
+    def get_subject_names(self, obj):
+        return [subject.name for subject in obj.subjects.all()]
+
+    def validate_name(self, value):
+        name = str(value or '').strip()
+        if not name:
+            raise serializers.ValidationError('Укажите название группы МК.')
+        if name.casefold() == 'кулинария':
+            raise serializers.ValidationError('Группа «Кулинария» уже существует в фильтре МК.')
+        queryset = MasterClassSubjectGroup.objects.annotate(
+            normalized_name=Lower(Trim('name')),
+        ).filter(normalized_name=name.lower())
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError('Группа МК с таким названием уже существует.')
+        return name
 
 
 class RoomSerializer(BranchNameMixin, serializers.ModelSerializer):

@@ -4715,6 +4715,39 @@ class MasterClassSubjectApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data['sort_order'], 30)
 
+    def test_manager_can_create_and_mark_culinary_subject_without_settings_delete_access(self):
+        self.client.force_authenticate(self.manager)
+        created = self.client.post('/api/master-class-subjects/', {
+            'name': 'Кулинарный мастер класс: Пицца', 'is_culinary': True,
+        }, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        subject_id = created.data['id']
+        self.assertTrue(created.data['is_culinary'])
+
+        changed = self.client.patch(f'/api/master-class-subjects/{subject_id}/', {
+            'name': 'Кулинарный мастер класс: Выпечка', 'is_culinary': False,
+        }, format='json')
+        self.assertEqual(changed.status_code, 200, changed.data)
+        self.assertFalse(changed.data['is_culinary'])
+        self.assertEqual(MasterClassSubject.objects.get(pk=subject_id).name, 'Кулинарный мастер класс: Выпечка')
+
+        deleted = self.client.delete(f'/api/master-class-subjects/{subject_id}/')
+        self.assertEqual(deleted.status_code, 403)
+        self.assertTrue(MasterClassSubject.objects.filter(pk=subject_id).exists())
+
+        branch_edit = self.client.post('/api/branches/', {'name': 'Не должен создаться'}, format='json')
+        self.assertEqual(branch_edit.status_code, 403)
+
+    def test_teacher_cannot_edit_master_class_subjects(self):
+        teacher = get_user_model().objects.create_user(
+            username='mc-subject-teacher', password='pass', role='teacher', roles=['teacher'],
+        )
+        self.client.force_authenticate(teacher)
+        response = self.client.post('/api/master-class-subjects/', {
+            'name': 'Кулинарный мастер класс: Торт', 'is_culinary': True,
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+
     def test_subject_create_duplicate_filter_and_delete_rules(self):
         subject = self.create_subject(' Рисование ').data
         duplicate = self.client.post('/api/master-class-subjects/', {'name': 'РИСОВАНИЕ'}, format='json')

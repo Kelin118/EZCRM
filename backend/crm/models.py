@@ -250,6 +250,22 @@ class MasterClassSubject(TimeStampedModel):
         return self.name
 
 
+class MasterClassSubjectGroup(TimeStampedModel):
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    subjects = models.ManyToManyField(MasterClassSubject, related_name='custom_groups', blank=True)
+
+    class Meta:
+        ordering = ('name',)
+        constraints = [
+            models.UniqueConstraint(Lower(Trim('name')), name='unique_mc_subject_group_normalized_name'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class Room(TimeStampedModel):
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='rooms')
     name = models.CharField(max_length=150)

@@ -79,12 +79,16 @@ export function updateEventRangeFilters(filters, field, value) {
 }
 
 export function culinaryMonthFilters(filters, month) {
+  return subjectGroupMonthFilters(filters, month, 'culinary');
+}
+
+export function subjectGroupMonthFilters(filters, month, subject) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return filters;
   const [year, monthNumber] = month.split('-').map(Number);
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
   return {
     ...filters,
-    subject: 'culinary',
+    subject,
     event_date_from: `${month}-01`,
     event_date_to: `${month}-${String(lastDay).padStart(2, '0')}`,
   };
@@ -442,6 +446,7 @@ export default function MasterClassesPage() {
   const [groupingPurchase, setGroupingPurchase] = useState(false);
   const [masterClassSubjects, setMasterClassSubjects] = useState([]);
   const [masterClassSubjectFilters, setMasterClassSubjectFilters] = useState([]);
+  const [masterClassSubjectGroups, setMasterClassSubjectGroups] = useState([]);
   const user = getStoredUser();
   const canEdit = canManageSales(user);
   const canDelete = canDeleteDangerous(user);
@@ -467,6 +472,9 @@ export default function MasterClassesPage() {
   };
   const masterClassSubjectOptions = masterClassSubjects.map((subject) => ({ value: subject.id, label: subject.name }));
   const masterClassSubjectFilterOptions = masterClassSubjectFilters.map((subject) => ({ value: subject.id, label: subject.name }));
+  const masterClassGroupFilterOptions = masterClassSubjectGroups.map((group) => ({ value: `group:${group.id}`, label: `Группа: ${group.name}${group.is_active ? '' : ' (отключена)'}` }));
+  const selectedGroup = masterClassSubjectGroups.find((group) => `group:${group.id}` === String(crud.filters.subject));
+  const groupMonthSelected = crud.filters.subject === 'culinary' || Boolean(selectedGroup);
   const hasMasterClassSubjects = masterClassSubjectOptions.length > 0;
 
   useEffect(() => {
@@ -476,6 +484,9 @@ export default function MasterClassesPage() {
     api.get('master-class-subjects/')
       .then(({ data }) => setMasterClassSubjectFilters(Array.isArray(data) ? data : data.results || []))
       .catch(() => setMasterClassSubjectFilters([]));
+    api.get('master-class-subject-groups/')
+      .then(({ data }) => setMasterClassSubjectGroups(Array.isArray(data) ? data : data.results || []))
+      .catch(() => setMasterClassSubjectGroups([]));
   }, []);
 
   useEffect(() => {
@@ -1069,9 +1080,9 @@ export default function MasterClassesPage() {
     crud.setFilters(result.filters);
   };
   const setSubjectFilter = (value) => {
-    if (value === 'culinary') {
+    if (value === 'culinary' || String(value).startsWith('group:')) {
       const month = (crud.filters.event_date_from || todayIso()).slice(0, 7);
-      crud.setFilters(culinaryMonthFilters(crud.filters, month));
+      crud.setFilters(subjectGroupMonthFilters(crud.filters, month, value));
     } else {
       crud.setFilters({ ...crud.filters, subject: value });
     }
@@ -1212,7 +1223,7 @@ export default function MasterClassesPage() {
   return (
     <>
       <PageHeader title="Мастер-классы" actionLabel="Добавить МК" onAction={canEdit ? () => { setDuplicateError(null); setExtraMasterClasses([]); crud.setEditing(empty); crud.setModalOpen(true); } : undefined}>
-        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">{crud.filters.subject === 'culinary' ? 'Кулинария · оплачено: ' : 'Оплачено: '}{money(total)}</span>
+        <span className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm">{crud.filters.subject === 'culinary' ? 'Кулинария · оплачено: ' : selectedGroup ? `${selectedGroup.name} · оплачено: ` : 'Оплачено: '}{money(total)}</span>
         {paymentIssueCount > 0 && <Button variant="secondary" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={() => setPaymentCheck('issue')}><AlertTriangle size={16} aria-hidden="true" />Расхождений: {paymentIssueCount}</Button>}
         <Button variant="secondary" onClick={() => crud.setFilters({ ...crud.filters, extra_work: 'true' })}>Только вне времени</Button>
         <ViewToggle value={viewMode} onChange={setViewMode} />
@@ -1223,8 +1234,8 @@ export default function MasterClassesPage() {
         <Input label="Проведение до" type="date" value={crud.filters.event_date_to} onChange={(event) => setEventRange('event_date_to', event.target.value)} />
         <SelectField label="Этап" value={crud.filters.stage} onChange={(value) => crud.setFilters({ ...crud.filters, stage: value })} options={[{ value: '', label: 'Все' }, ...masterClassStages]} />
         <SelectField label="Проверка оплаты" value={paymentCheckValue} onChange={setPaymentCheck} options={[{ value: 'all', label: 'Все' }, { value: 'issue', label: 'Есть расхождение' }, { value: 'partial', label: 'Недоплата' }, { value: 'paid', label: 'Полностью оплачено' }, { value: 'unpaid', label: 'Не оплачено' }]} />
-        <SelectField label="Предмет МК" value={crud.filters.subject || 'all'} onChange={setSubjectFilter} options={[{ value: 'all', label: 'Все предметы' }, { value: 'culinary', label: 'Вся кулинария' }, ...masterClassSubjectFilterOptions, { value: 'unassigned', label: 'Без предмета / старые МК' }]} />
-        {crud.filters.subject === 'culinary' && <Input label="Месяц кулинарных МК" type="month" value={(crud.filters.event_date_from || todayIso()).slice(0, 7)} onChange={(event) => crud.setFilters(culinaryMonthFilters(crud.filters, event.target.value))} />}
+        <SelectField label="Предмет МК" value={crud.filters.subject || 'all'} onChange={setSubjectFilter} options={[{ value: 'all', label: 'Все предметы' }, { value: 'culinary', label: 'Вся кулинария' }, ...masterClassGroupFilterOptions, ...masterClassSubjectFilterOptions, { value: 'unassigned', label: 'Без предмета / старые МК' }]} />
+        {groupMonthSelected && <Input label="Месяц группы МК" type="month" value={(crud.filters.event_date_from || todayIso()).slice(0, 7)} onChange={(event) => crud.setFilters(subjectGroupMonthFilters(crud.filters, event.target.value, crud.filters.subject))} />}
         <SelectField label="Менеджер" value={crud.filters.manager} onChange={(value) => crud.setFilters({ ...crud.filters, manager: value })} options={[{ value: '', label: 'Все' }, ...managerOptions]} />
         <SelectField label="Мастер / преподаватель" value={crud.filters.teacher} onChange={(value) => crud.setFilters({ ...crud.filters, teacher: value })} options={[{ value: '', label: 'Все' }, ...teacherOptions]} />
         <SelectField label="Учёт времени" value={crud.filters.extra_work} onChange={(value) => crud.setFilters({ ...crud.filters, extra_work: value })} options={[{ value: '', label: 'Все' }, { value: 'false', label: 'Обычные' }, { value: 'true', label: 'Вне времени МК' }]} />

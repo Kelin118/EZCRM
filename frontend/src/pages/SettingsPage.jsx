@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import api from '../api/axios.js';
 import { BUSINESS_TIME_ZONE } from '../utils/dateTime.js';
-import { canDeleteSettings, canEditStudioSettings, canImportExcel, getStoredUser, isAdmin } from '../auth.js';
+import { canDeleteSettings, canEditStudioSettings, canImportExcel, getStoredUser, hasRole, isAdmin } from '../auth.js';
 import AuthenticatedImage from '../components/ui/AuthenticatedImage.jsx';
 import Button from '../components/ui/Button.jsx';
 import Input from '../components/ui/Input.jsx';
@@ -40,6 +40,7 @@ const emptyCatalogForm = {
 };
 const emptyBranchForm = { name: '', address: '', phone: '', description: '', is_active: true };
 const emptyMasterClassSubjectForm = { name: '', description: '', is_active: true, is_culinary: false };
+const emptyMasterClassSubjectGroupForm = { name: '', description: '', is_active: true, subjects: [] };
 const emptyPaymentMethodForm = { name: '', code: '', description: '', is_cash: false, is_active: true };
 const emptyDiscountForm = { name: '', discount_type: 'percentage', value: '', branch: '', valid_from: '', valid_until: '', description: '', is_active: true };
 const emptyChannelForm = { provider: 'whatsapp', name: '', external_account_id: '', phone_number: '', branch: '', default_manager: '', is_active: true };
@@ -55,6 +56,7 @@ const settingsNav = [
   { id: 'studio-settings', label: 'Основные' },
   { id: 'branches-settings', label: 'Филиалы' },
   { id: 'master-class-subjects-settings', label: 'Предметы МК' },
+  { id: 'master-class-subject-groups-settings', label: 'Группы МК' },
   { id: 'payments-settings', label: 'Оплата' },
   { id: 'integrations-settings', label: 'Интеграции' },
   { id: 'discounts-settings', label: 'Скидки' },
@@ -86,6 +88,7 @@ export default function SettingsPage() {
   const user = getStoredUser();
   const canEditStudio = canEditStudioSettings(user);
   const canEditCatalog = isAdmin(user);
+  const canEditMasterClassSubjects = isAdmin(user) || hasRole(user, 'manager');
   const canEditChannels = isAdmin(user);
   const canDeleteSettingsRecords = canDeleteSettings(user);
   const canImport = canImportExcel(user);
@@ -109,6 +112,11 @@ export default function SettingsPage() {
   const [masterClassSubjects, setMasterClassSubjects] = useState([]);
   const [masterClassSubjectModal, setMasterClassSubjectModal] = useState({ open: false, item: null });
   const [masterClassSubjectForm, setMasterClassSubjectForm] = useState(emptyMasterClassSubjectForm);
+  const [masterClassSubjectSaving, setMasterClassSubjectSaving] = useState(false);
+  const [masterClassSubjectGroups, setMasterClassSubjectGroups] = useState([]);
+  const [masterClassSubjectGroupModal, setMasterClassSubjectGroupModal] = useState({ open: false, item: null });
+  const [masterClassSubjectGroupForm, setMasterClassSubjectGroupForm] = useState(emptyMasterClassSubjectGroupForm);
+  const [masterClassSubjectGroupSaving, setMasterClassSubjectGroupSaving] = useState(false);
   const { paymentMethods, refreshPaymentMethods } = usePaymentMethods({ activeOnly: false });
   const [paymentMethodModal, setPaymentMethodModal] = useState({ open: false, item: null });
   const [paymentMethodForm, setPaymentMethodForm] = useState(emptyPaymentMethodForm);
@@ -152,6 +160,7 @@ export default function SettingsPage() {
     loadCatalogItems();
     loadBranches();
     loadMasterClassSubjects();
+    loadMasterClassSubjectGroups();
     loadDiscounts();
     loadChannels();
     loadManagers();
@@ -404,23 +413,69 @@ export default function SettingsPage() {
     setMasterClassSubjects(Array.isArray(data) ? data : data.results || []);
   };
 
+  const loadMasterClassSubjectGroups = async () => {
+    const { data } = await api.get('master-class-subject-groups/');
+    setMasterClassSubjectGroups(Array.isArray(data) ? data : data.results || []);
+  };
+
+  const saveMasterClassSubjectGroup = async () => {
+    if (masterClassSubjectGroupSaving) return;
+    if (!masterClassSubjectGroupForm.name.trim()) return showError('Укажите название группы МК.');
+    setMasterClassSubjectGroupSaving(true);
+    try {
+      const payload = { ...masterClassSubjectGroupForm, name: masterClassSubjectGroupForm.name.trim() };
+      if (masterClassSubjectGroupModal.item) await api.patch(`master-class-subject-groups/${masterClassSubjectGroupModal.item.id}/`, payload);
+      else await api.post('master-class-subject-groups/', payload);
+      setMasterClassSubjectGroupModal({ open: false, item: null });
+      setMasterClassSubjectGroupForm(emptyMasterClassSubjectGroupForm);
+      await loadMasterClassSubjectGroups();
+      showSuccess('Группа МК сохранена.');
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setMasterClassSubjectGroupSaving(false);
+    }
+  };
+
+  const toggleMasterClassSubjectGroup = async (item) => {
+    try {
+      await api.patch(`master-class-subject-groups/${item.id}/`, { is_active: !item.is_active });
+      await loadMasterClassSubjectGroups();
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    }
+  };
+
   const saveMasterClassSubject = async () => {
-    if (!masterClassSubjectForm.name.trim()) return;
+    if (masterClassSubjectSaving) return;
+    if (!masterClassSubjectForm.name.trim()) return showError('Укажите название предмета МК.');
     const payload = {
       ...masterClassSubjectForm,
       name: masterClassSubjectForm.name.trim(),
     };
     delete payload.sort_order;
-    if (masterClassSubjectModal.item) await api.patch(`master-class-subjects/${masterClassSubjectModal.item.id}/`, payload);
-    else await api.post('master-class-subjects/', payload);
-    setMasterClassSubjectModal({ open: false, item: null });
-    setMasterClassSubjectForm(emptyMasterClassSubjectForm);
-    await loadMasterClassSubjects();
+    setMasterClassSubjectSaving(true);
+    try {
+      if (masterClassSubjectModal.item) await api.patch(`master-class-subjects/${masterClassSubjectModal.item.id}/`, payload);
+      else await api.post('master-class-subjects/', payload);
+      setMasterClassSubjectModal({ open: false, item: null });
+      setMasterClassSubjectForm(emptyMasterClassSubjectForm);
+      await loadMasterClassSubjects();
+      showSuccess('Предмет МК сохранён.');
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    } finally {
+      setMasterClassSubjectSaving(false);
+    }
   };
 
   const toggleMasterClassSubject = async (item) => {
-    await api.patch(`master-class-subjects/${item.id}/`, { is_active: !item.is_active });
-    await loadMasterClassSubjects();
+    try {
+      await api.patch(`master-class-subjects/${item.id}/`, { is_active: !item.is_active });
+      await loadMasterClassSubjects();
+    } catch (error) {
+      showError(getApiErrorMessage(error));
+    }
   };
 
   const savePaymentMethod = async () => {
@@ -678,7 +733,7 @@ export default function SettingsPage() {
           icon={Wrench}
           title="Предметы МК"
           subtitle="Отметьте кулинарные предметы для общей суммы на странице МК"
-          action={canEditCatalog && <Button onClick={() => { setMasterClassSubjectForm(emptyMasterClassSubjectForm); setMasterClassSubjectModal({ open: true, item: null }); }}><Plus size={16} />Добавить предмет</Button>}
+          action={canEditMasterClassSubjects && <Button onClick={() => { setMasterClassSubjectForm(emptyMasterClassSubjectForm); setMasterClassSubjectModal({ open: true, item: null }); }}><Plus size={16} />Добавить предмет</Button>}
         >
           <div className="overflow-x-auto rounded-2xl border border-slate-100">
             <table className="w-full min-w-[720px] text-left text-sm">
@@ -690,10 +745,32 @@ export default function SettingsPage() {
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.description || '—'}</td>
                     <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.is_culinary ? 'Кулинария' : '—'}</td>
                     <td className="border-b border-slate-100 px-4 py-3"><Badge value={item.is_active ? 'paid' : 'cancelled'}>{item.is_active ? 'Активен' : 'Отключён'}</Badge></td>
-                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditCatalog} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, name: item.name ?? '', description: item.description || '', is_active: item.is_active ?? true, is_culinary: item.is_culinary ?? false }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
+                    <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditMasterClassSubjects} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectForm({ ...emptyMasterClassSubjectForm, name: item.name ?? '', description: item.description || '', is_active: item.is_active ?? true, is_culinary: item.is_culinary ?? false }); setMasterClassSubjectModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubject(item)} onDelete={() => requestDelete({ title: 'Удалить предмет МК?', itemName: item.name, endpoint: `master-class-subjects/${item.id}/`, onDeleted: loadMasterClassSubjects })} /></td>
                   </tr>
                 ))}
                 {!masterClassSubjects.length && <tr><td colSpan={5} className="px-4 py-8 text-center font-semibold text-slate-500">Предметы МК ещё не добавлены</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </SettingsCard>
+        <SettingsCard
+          id="master-class-subject-groups-settings"
+          icon={Wrench}
+          title="Группы МК"
+          subtitle="Объединяйте предметы для просмотра МК и общей суммы за месяц. Изменение состава влияет и на прошлые месяцы."
+          action={canEditMasterClassSubjects && <Button onClick={() => { setMasterClassSubjectGroupForm(emptyMasterClassSubjectGroupForm); setMasterClassSubjectGroupModal({ open: true, item: null }); }}><Plus size={16} />Добавить группу</Button>}
+        >
+          <div className="overflow-x-auto rounded-2xl border border-slate-100">
+            <table className="w-full min-w-[620px] text-left text-sm">
+              <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Группа</th><th className="px-4 py-3">Предметы</th><th className="px-4 py-3">Статус</th><th className="px-4 py-3">Действия</th></tr></thead>
+              <tbody>
+                {masterClassSubjectGroups.map((item) => <tr key={item.id} className="hover:bg-slate-50">
+                  <td className="border-b border-slate-100 px-4 py-3 font-semibold text-slate-900">{item.name}</td>
+                  <td className="border-b border-slate-100 px-4 py-3 text-slate-600">{item.subject_names?.join(', ') || '—'}</td>
+                  <td className="border-b border-slate-100 px-4 py-3"><StatusBadge active={item.is_active} /></td>
+                  <td className="border-b border-slate-100 px-4 py-3"><RowActions canEdit={canEditMasterClassSubjects} canDelete={canDeleteSettingsRecords} active={item.is_active} onEdit={() => { setMasterClassSubjectGroupForm({ name: item.name, description: item.description || '', is_active: item.is_active, subjects: item.subjects || [] }); setMasterClassSubjectGroupModal({ open: true, item }); }} onToggle={() => toggleMasterClassSubjectGroup(item)} onDelete={() => requestDelete({ title: 'Удалить группу МК?', itemName: item.name, endpoint: `master-class-subject-groups/${item.id}/`, onDeleted: loadMasterClassSubjectGroups })} /></td>
+                </tr>)}
+                {!masterClassSubjectGroups.length && <tr><td colSpan={4} className="px-4 py-8 text-center font-semibold text-slate-500">Группы МК ещё не добавлены</td></tr>}
               </tbody>
             </table>
           </div>
@@ -952,14 +1029,32 @@ export default function SettingsPage() {
       <Modal
         title={masterClassSubjectModal.item ? 'Редактировать предмет МК' : 'Новый предмет МК'}
         open={masterClassSubjectModal.open}
-        onClose={() => setMasterClassSubjectModal({ open: false, item: null })}
-        footer={<><Button variant="secondary" onClick={() => setMasterClassSubjectModal({ open: false, item: null })}>Отмена</Button><Button onClick={saveMasterClassSubject}>Сохранить</Button></>}
+        onClose={() => { if (!masterClassSubjectSaving) setMasterClassSubjectModal({ open: false, item: null }); }}
+        footer={<><Button variant="secondary" onClick={() => setMasterClassSubjectModal({ open: false, item: null })} disabled={masterClassSubjectSaving}>Отмена</Button><Button onClick={saveMasterClassSubject} disabled={masterClassSubjectSaving}>{masterClassSubjectSaving ? 'Сохранение…' : 'Сохранить'}</Button></>}
       >
         <div className="grid gap-4 md:grid-cols-2">
           <Input label="Название" value={masterClassSubjectForm.name} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, name: event.target.value })} />
           <Input label="Описание" className="md:col-span-2" value={masterClassSubjectForm.description || ''} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, description: event.target.value })} />
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectForm.is_culinary} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, is_culinary: event.target.checked })} />Кулинария (входит в общую сумму)</label>
           <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectForm.is_active} onChange={(event) => setMasterClassSubjectForm({ ...masterClassSubjectForm, is_active: event.target.checked })} />Активен</label>
+        </div>
+      </Modal>
+
+      <Modal
+        title={masterClassSubjectGroupModal.item ? 'Редактировать группу МК' : 'Новая группа МК'}
+        open={masterClassSubjectGroupModal.open}
+        onClose={() => { if (!masterClassSubjectGroupSaving) setMasterClassSubjectGroupModal({ open: false, item: null }); }}
+        footer={<><Button variant="secondary" onClick={() => setMasterClassSubjectGroupModal({ open: false, item: null })} disabled={masterClassSubjectGroupSaving}>Отмена</Button><Button onClick={saveMasterClassSubjectGroup} disabled={masterClassSubjectGroupSaving}>{masterClassSubjectGroupSaving ? 'Сохранение…' : 'Сохранить'}</Button></>}
+      >
+        <div className="grid gap-4">
+          <Input label="Название группы" value={masterClassSubjectGroupForm.name} onChange={(event) => setMasterClassSubjectGroupForm({ ...masterClassSubjectGroupForm, name: event.target.value })} />
+          <Input label="Описание" value={masterClassSubjectGroupForm.description} onChange={(event) => setMasterClassSubjectGroupForm({ ...masterClassSubjectGroupForm, description: event.target.value })} />
+          <fieldset className="max-h-60 overflow-y-auto rounded-2xl border border-slate-200 p-4">
+            <legend className="px-2 text-sm font-semibold">Предметы МК</legend>
+            <div className="grid gap-3 sm:grid-cols-2">{masterClassSubjects.map((subject) => <label key={subject.id} className="flex items-center gap-2 text-sm"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectGroupForm.subjects.includes(subject.id)} onChange={(event) => setMasterClassSubjectGroupForm((current) => ({ ...current, subjects: event.target.checked ? [...current.subjects, subject.id] : current.subjects.filter((id) => id !== subject.id) }))} />{subject.name}{!subject.is_active && ' (отключён)'}</label>)}</div>
+            {!masterClassSubjects.length && <p className="text-sm text-slate-500">Сначала добавьте предметы МК.</p>}
+          </fieldset>
+          <label className="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" className={checkboxClassName} checked={masterClassSubjectGroupForm.is_active} onChange={(event) => setMasterClassSubjectGroupForm({ ...masterClassSubjectGroupForm, is_active: event.target.checked })} />Активна</label>
         </div>
       </Modal>
 

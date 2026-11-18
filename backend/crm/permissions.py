@@ -230,6 +230,20 @@ class SettingsPermission(RolePermission):
     }
 
 
+class MasterClassSubjectPermission(SettingsPermission):
+    allowed_by_role = {
+        **SettingsPermission.allowed_by_role,
+        MANAGER: {'read', 'list', 'retrieve', 'create', 'update', 'partial_update'},
+    }
+
+
+class MasterClassSubjectGroupPermission(MasterClassSubjectPermission):
+    allowed_by_role = {
+        **MasterClassSubjectPermission.allowed_by_role,
+        ACCOUNTANT: {'read', 'list', 'retrieve'},
+    }
+
+
 class CatalogItemPermission(BasePermission):
     def has_permission(self, request, view):
         if not is_authenticated(request.user):
